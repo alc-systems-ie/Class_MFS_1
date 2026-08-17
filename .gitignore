@@ -1,0 +1,10 @@
+# Zephyr / west build output.
+build/
+compile_commands.json
+.cache/
+
+# Secrets — TAN seed and provisioning key. Never commit.
+credentials.conf
+
+# macOS.
+.DS_Store

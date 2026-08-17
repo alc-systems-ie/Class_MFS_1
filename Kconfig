@@ -1,0 +1,73 @@
+mainmenu "Project CLASS Multi-Function Sensor 1 (nRF54L05)"
+
+config MFS_SCAN_PERIOD_MS
+	int "Passive scan period (milliseconds)"
+	default 6000
+	help
+	  How often the device wakes to scan. The default 6000 ms is preset 5 of
+	  the ladder in docs/v1-scope.md section 7.1 and budgets at ~69 uA, about
+	  2.4 years on a CR123A. The useful range is 1000-30000 ms; above 30000 ms
+	  the cell's shelf life caps battery life and longer periods buy nothing.
+
+config MFS_SCAN_WINDOW_MS
+	int "Passive scan window (milliseconds)"
+	default 100
+	help
+	  How long each scan listens. 100 ms captures a 20 ms advertiser with
+	  near-certainty. Do not confuse this with the counterpart's 20-50 ms
+	  advertising interval. Shortening it trades detection reliability, not
+	  latency — see docs/v1-scope.md section 7.3.
+
+config MFS_ADXL_INACTIVITY_SECS
+	int "ADXL367 loop inactivity time (seconds)"
+	default 5
+	help
+	  Stillness required before the ADXL367 activity engine re-arms. This is
+	  also the LED B timeout — the hardware loop does the timing, so there is
+	  no software timer.
+
+config MFS_ADXL_THRESHOLD
+	int "ADXL367 referenced-activity threshold (11-bit, 2 g range)"
+	default 150
+	help
+	  Matches alc_drawer_master's M_ADXL_THRESHOLD. Referenced mode only —
+	  never Absolute, or the vertical gravity component latches the part awake
+	  permanently. See docs/v1-scope.md section 3.
+
+config MFS_DEBUG_LED
+	bool "Drive the state LEDs (bench only)"
+	default y
+	help
+	  LED A on while Inactive, LED B on while Active and triggered. NOT
+	  VIABLE IN PRODUCTION: a continuously lit LED draws ~2 mA against a
+	  ~69 uA budget, roughly 29 days of battery life. Set n for production
+	  until a bounded indication scheme is chosen — see docs/v1-scope.md
+	  section 5.
+
+config ALC_DEVICE_SERIAL
+	string "Device serial number"
+	default "MFS-0000-0000"
+	help
+	  Unique serial identifier (e.g. MFS-0826-0043). The prefix is
+	  provisional pending assignment of the CLASS device type.
+
+config MFS_TAN_SEED
+	string "TAN seed (64-char hex string)"
+	default ""
+	help
+	  32-byte per-device secret from which every day's TANs are derived.
+	  Loaded from credentials.conf (gitignored) for bench work only.
+	  PRODUCTION MUST USE THE nRF54L05 KMU — a seed in the image is readable,
+	  and a readable seed makes TAN expiry decorative. See
+	  docs/tan-scheme.md section 7.
+
+config MFS_PROVISION_KEY
+	string "Provisioning key (64-char hex string)"
+	default ""
+	help
+	  32-byte per-device secret authorising time-of-day sync, and nothing
+	  else. Must be distinct from MFS_TAN_SEED so that a compromised
+	  provisioner can cause denial of service but not entry. See
+	  docs/tan-scheme.md section 7.1.
+
+source "Kconfig.zephyr"

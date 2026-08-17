@@ -1,0 +1,168 @@
+/*
+ * Project CLASS MFS_1 pin map.
+ *
+ * Brought up on the bespoke alc_drawer_master board (nRF54L05 + nPM2100 +
+ * nRF21540 + ADXL367). MFS_1 does not use the FEM, so the nRF21540 SPI bus and
+ * MPSL FEM node are absent here — but the part is physically fitted, so its four
+ * control pins are exposed under zephyr,user and driven low at boot by
+ * App::parkFrontEndModule(). A floating PDN would leave the FEM in an
+ * indeterminate state.
+ *
+ * I²C (i2c21) - nPM2100:        SCL P1.04, SDA P1.05, addr 0x74.
+ *                ADXL367:                             addr 0x1D.
+ * LEDs (replace DK's):          LED A P1.02 (led0), LED B P1.03 (led1).
+ * PMIC host signals:            GPIO0 P1.06, RESET P1.07, GPIO1 P2.01.
+ * ADXL367 INT1:                 P2.02 — wakes the SoC.
+ * nRF21540 (unused, parked):    PDN P0.04, TX_EN P1.09, RX_EN P1.10, MODE P1.11.
+ *
+ * ADXL367 INT2 IS DELIBERATELY ABSENT. It is hard-wired to the nPM2100 SHPHLD
+ * pin on this board. MFS_1 must configure the ADXL367 so INT2 is never asserted:
+ * a 5 s assertion followed by release is the nPM2100 ship-mode gesture and would
+ * power the device off, and SHPHLD has a 1.9 V absolute maximum. See
+ * docs/v1-scope.md section 2.
+ *
+ * GPIO active levels for PMIC_RESET and the interrupt inputs are inherited
+ * assumptions from alc_drawer_master; confirm against the PMIC / ADXL pin
+ * configuration once driven.
+ */
+
+&pinctrl {
+    /* ─── i2c21 → nPM2100 + ADXL367 ─── */
+    i2c21_default: i2c21_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 5)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 4)>;
+            bias-pull-up;
+        };
+    };
+
+    i2c21_sleep: i2c21_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 5)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 4)>;
+            low-power-enable;
+        };
+    };
+};
+
+&i2c21 {
+    status = "okay";
+    pinctrl-0 = <&i2c21_default>;
+    pinctrl-1 = <&i2c21_sleep>;
+    pinctrl-names = "default", "sleep";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+};
+
+/* The DK board files fit an onboard Macronix MX25R64 external flash on spi00 and
+ * enable it by default. The bespoke board has no such part, so enabling
+ * CONFIG_FLASH for NVS made the spi_nor driver probe a device that is not there
+ * and log on every boot:
+ *
+ *   <err> spi_nor: Device id 00 00 00 does not match config c2 28 17
+ *
+ * Harmless, but a permanent spurious error trains you to ignore real ones. NVS
+ * lives in the nRF54L05's internal RRAM, not here. Disable the flash node and the
+ * bus it sits on — spi00 is not used by this design either.
+ */
+&mx25r64 {
+    status = "disabled";
+};
+
+&spi00 {
+    status = "disabled";
+};
+
+/ {
+    /* Application-side control GPIOs that don't belong to a standard driver
+     * binding. Access from C++ via e.g.:
+     *   GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), adxl_int1_gpios)
+     */
+    zephyr_user: zephyr,user {
+        pmic-gpio0-gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
+        pmic-reset-gpios = <&gpio1 7 GPIO_ACTIVE_LOW>;
+        pmic-gpio1-gpios = <&gpio2 1 GPIO_ACTIVE_HIGH>;
+        adxl-int1-gpios  = <&gpio2 2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+
+        /* nRF21540 control pins — fitted but unused. Parked low at boot so the
+         * FEM sits in power-down (~0.4 uA) rather than floating. */
+        fem-pdn-gpios    = <&gpio0  4 GPIO_ACTIVE_HIGH>;
+        fem-tx-en-gpios  = <&gpio1  9 GPIO_ACTIVE_HIGH>;
+        fem-rx-en-gpios  = <&gpio1 10 GPIO_ACTIVE_HIGH>;
+        fem-mode-gpios   = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+    };
+};
+
+/* Release P1.02 / P1.03 from the NFC peripheral so they can be used as
+ * GPIOs (LEDs on this board). Without this UICR property, the NFCT block
+ * owns those pads and any GPIO writes have no effect on the physical pin.
+ * Setting this property bakes the bit into the UICR hex at build time. */
+&uicr {
+    nfct-pins-as-gpios;
+};
+
+/* Override DK's LED pins to match the bespoke board.
+ * The DK's nRF54L05 variant only defines led0 and led1 (no led2/led3).
+ * led0 = LED A (Inactive indicator), led1 = LED B (Active + triggered). */
+&led0 {
+    gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;
+};
+
+&led1 {
+    gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
+};
+
+/* HFXO trim, inherited from alc_drawer_master. CL = 8 pF (Kyocera CX2016DB,
+ * f_tol +/- 15 ppm, f_tem +/- 20 ppm).
+ *
+ * Trimmed 2026-05-28 on that board, residual +1.27 ppm at 2440 MHz, 25 degC
+ * (CONFIG_HFXO_TRIM=y). Layout sensitivity ~9.3 ppm/pF;
+ * load-capacitance-femtofarad must be a multiple of 250 fF per the
+ * nordic,nrf54l-hfxo binding enum.
+ *
+ * NOTE: that trim was measured with the FEM in TX state. MFS_1 has no FEM, so
+ * re-verify the residual on this build before relying on it.
+ */
+&hfxo {
+    load-capacitance-femtofarad = <14000>;
+};
+
+/*
+ * LFXO — 32.768 kHz crystal, confirmed fitted on the bespoke board.
+ *
+ * This is the timebase for TAN day indexing, so its accuracy is a security
+ * parameter, not just a convenience (docs/tan-scheme.md section 8.4). No Kconfig
+ * is needed to select it: CONFIG_CLOCK_CONTROL_NRF_K32SRC_XTAL and
+ * CONFIG_NRF_GRTC_TIMER_SOURCE_LFXO are already the defaults for this target.
+ *
+ * Crystal: Abracon ABS06N-32.768kHz-9-T. The "-9-" field is the specified load
+ * capacitance, CL = 9 pF, hence 9000 fF below.
+ *
+ * The property is the crystal's load capacitance, not a raw register value. Per
+ * the nRF54L15 PS, quoted in zephyr/soc/nordic/nrf54l/soc.c:
+ *   CAPVALUE = round((2*CAPACITANCE - 12) * (SLOPE + 0.765625*2^9)/2^9 + OFFSET/2^6)
+ *   where CAPACITANCE is the desired capacitor value in pF, 4-18 pF in 0.5 pF steps.
+ * The "-12" is the device subtracting its own pin/package contribution, and the
+ * FICR XOSC32KTRIM slope/offset apply the per-die factory trim.
+ *
+ * The value is stated EXPLICITLY rather than inherited, because silently
+ * inheriting the DK's 17000 fF is precisely how this went unexamined in
+ * alc_drawer_master. That value corresponds to a 17 pF crystal; against this
+ * board's 9 pF part it over-capacitates by 8 pF, which pulls the oscillator
+ * roughly 45-50 ppm SLOW (estimate assumes ABS06N-typical C0 ~1.2 pF,
+ * C1 ~2.2 fF) — about 25 minutes lost per year, on top of the crystal's own
+ * tolerance.
+ *
+ * !!! STILL TO TRIM BY MEASUREMENT. 9000 fF is the nominal value from the part
+ * number, not a measured one. Board stray capacitance shifts the optimum: note
+ * that &hfxo above sits at 14000 fF against a nominally 8 pF crystal after
+ * trimming on this same board. Measure and record the residual here, as was done
+ * for &hfxo.
+ *
+ * A mispulled LFXO will not show up as a fault: Bluetooth LE tolerates up to
+ * 500 ppm of sleep-clock error, so links work normally at 100 ppm and nothing
+ * complains. Only accumulated drift reveals it. See docs/power-budget.md 8.5.2.
+ */
+&lfxo {
+    load-capacitors = "internal";
+    load-capacitance-femtofarad = <9000>;
+};
