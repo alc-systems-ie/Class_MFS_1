@@ -76,6 +76,11 @@ config MFS_BLINK_MS
 	help
 	  Rounded down to the 100 ms main-loop poll interval.
 
+	  SET TO 0 TO DISABLE LED A ENTIRELY - not blinking, and not lit as an
+	  Inactive indicator either. That is the setting for a true measurement.
+	  LED B still works, so arming the device and nudging it is the liveness
+	  check.
+
 	  500 ms is highly visible but costs ~167 uA at 2 mA LED current. 100 ms
 	  costs ~33 uA and is still clearly visible; 10 ms would cost ~3 uA but
 	  needs the loop poll shortened to resolve it. Lower this if the aim is to
