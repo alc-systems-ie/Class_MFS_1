@@ -87,8 +87,9 @@ handling: any disturbance holds the ADXL367 in measurement mode (~0.89 µA) inst
 of autosleep wake-up mode (~180 nA) for 5 s, and a brief window catches it. Let
 the board sit untouched for ten minutes before trusting an average.
 
-**The fresh-cell figure is not the life figure.** See §3.1 — consumption rises as
-V<sub>BAT</sub> falls, so a single 3.0 V reading understates lifetime consumption.
+**The fresh-cell figure is not the life figure** — but it errs the safe way here.
+Consumption *falls* as V<sub>BAT</sub> falls (§3.1), so dividing capacity by the
+3.0 V reading is conservative.
 
 ### 3.1 RESOLVED — the boost is in pass-through across the range
 
