@@ -395,8 +395,88 @@ namespace alc
     result = m_accelerometer.Init();
     if (result < 0) { return result; }
 
-    return m_accelerometer.ConfigureLoopMode(CONFIG_MFS_ADXL_THRESHOLD, CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
-                                             CONFIG_MFS_ADXL_INACTIVITY_SECS);
+    // Probe only. The part is NOT configured here: a deactivated device holds it
+    // in standby, and the loop engine is configured at the moment of arming - see
+    // enableAccelerometer(). Cold start is Inactive, so it stays in standby now.
+    result = m_accelerometer.Standby();
+    if (result < 0) {
+      LOG_ERR("Failed to put the accelerometer in standby: %d!", result);
+      return result;
+    }
+
+    LOG_INF("ADXL367 held in standby until the device is activated.");
+    return 0;
+  }
+
+  int App::enableAccelerometer()
+  {
+    // ================================================================
+    //  ENABLE ORDER - SAFETY CRITICAL. See docs/v1-scope.md section 1.0.1.
+    //
+    //  Configure the part, prove it is reporting inactivity, and ONLY
+    //  then let m_arm_state go Active. The device therefore cannot come
+    //  up armed on motion that predates arming.
+    // ================================================================
+    int result { 0 };
+    bool awake { true };
+
+    // Configuring IS the clear: the datasheet's loop mode initialization routine
+    // soft-resets the part and forces one activity/inactivity cycle, which drives
+    // AWAKE low and captures a valid reference. Doing it per-arm also means the
+    // reference is always taken in the orientation the device is actually left in.
+    result = m_accelerometer.ConfigureLoopMode(CONFIG_MFS_ADXL_THRESHOLD, CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
+                                               CONFIG_MFS_ADXL_INACTIVITY_SECS);
+    if (result < 0) {
+      LOG_ERR("Arming refused - the accelerometer would not configure: %d!", result);
+      return result;
+    }
+
+    // Confirm AWAKE from STATUS rather than from INT1. The register is what the
+    // engine actually holds; the pin only mirrors it.
+    result = m_accelerometer.ReadAwake(awake);
+    if (result < 0) {
+      LOG_ERR("Arming refused - AWAKE could not be read: %d!", result);
+      return result;
+    }
+
+    // Should already be clear. If handling the device has woken it again in the
+    // moments since, that assertion still predates arming, so suppress it until
+    // INT1 de-asserts and a fresh edge arrives.
+    m_ignore_stale_trigger = awake;
+    if (awake) { LOG_WRN("ADXL still awake after configuring - suppressing until it clears!"); }
+
+    m_awake_ticks = 0;
+    return 0;
+  }
+
+  int App::disableAccelerometer()
+  {
+    // ================================================================
+    //  DISABLE ORDER - SAFETY CRITICAL.
+    //
+    //  The output is taken to 0 through the single derivation point
+    //  BEFORE the part is stopped, so there is no instant at which a
+    //  deactivated device still reads as triggered. m_arm_state has
+    //  already been set Inactive by the caller - the output is DERIVED
+    //  from it, so the boolean necessarily moves first and the
+    //  derivation follows immediately, before the sensor is touched.
+    // ================================================================
+    int result { 0 };
+
+    m_ignore_stale_trigger = false;
+    m_awake_ticks          = 0;
+    updateOutputState();
+
+    // Standby stops the loop engine and de-asserts INT1. The rail stays up: LSOUT
+    // is shared and power-cycling it would cost the ADXL367's fuse-load sequence
+    // and the 100 ms settling delay on every arm.
+    result = m_accelerometer.Standby();
+    if (result < 0) {
+      LOG_ERR("Failed to put the accelerometer in standby: %d!", result);
+      return result;
+    }
+
+    return 0;
   }
 
   void App::updateOutputState()
@@ -432,7 +512,9 @@ namespace alc
     // an unacceptable failure mode for an alarm sensor, so recover rather than
     // sit dead. Re-running the loop configuration includes the bootstrap that
     // guarantees AWAKE clears.
-    if (awake) {
+    // Only while armed: a deactivated device holds the part in standby, where the
+    // loop engine is stopped and AWAKE is necessarily clear.
+    if (m_arm_state == ArmState::Active && awake) {
       if (++m_awake_ticks >= M_AWAKE_STUCK_TICKS) {
         m_awake_ticks = 0;
         LOG_ERR("ADXL stuck AWAKE for %u s - re-arming the loop engine!", M_AWAKE_STUCK_TICKS / 10U);
@@ -449,13 +531,11 @@ namespace alc
 
   void App::setArmState(ArmState state)
   {
-    m_arm_state = state;
-
     // EDGE-TRIGGERED ARMING - SAFETY CRITICAL.
     //
     // The ADXL367 AWAKE bit is a LEVEL, not a latch: once motion has occurred it
-    // stays asserted for the whole inactivity period (5 s) and cannot be cleared
-    // by reading STATUS. So arming while the part is still awake would take that
+    // stays asserted for the whole inactivity period and cannot be cleared by
+    // reading STATUS. So arming a continuously-running part would take that
     // assertion - which belongs to motion from BEFORE arming - as an immediate
     // trigger, and the device would fire the instant it was armed.
     //
@@ -464,16 +544,27 @@ namespace alc
     // moment. In the product the trigger switches a voltage, so a false fire on
     // activation is dangerous, not merely untidy.
     //
-    // Suppress until INT1 de-asserts, so only a FRESH assertion after arming
-    // counts. alc_drawer_master solves the equivalent problem differently -
-    // it uses latched activity, so it clears the latch immediately before arming
-    // (ReadActivityLatched) - but a latch clear has no effect on a level.
+    // The part is therefore STOPPED while the device is deactivated and
+    // configured afresh when it is activated. The configuration routine drives
+    // AWAKE low, so there is no stale level to inherit. alc_drawer_master solves
+    // the equivalent problem differently - it uses latched activity, so it clears
+    // the latch immediately before arming (ReadActivityLatched) - but a latch
+    // clear has no effect on a level.
     if (state == ArmState::Active) {
-      m_ignore_stale_trigger = gpio_pin_get_dt(&s_adxl_int1) > 0;
-      if (m_ignore_stale_trigger) { LOG_WRN("Armed while the ADXL is still awake - suppressing until it clears!"); }
+      // Sensor first, boolean second. A device that cannot configure its
+      // accelerometer must NOT report itself armed: it would be a silent loss of
+      // function. It stays Inactive with LED A lit, so the refusal is visible.
+      if (enableAccelerometer() < 0) {
+        LOG_ERR("Arm request rejected - device stays Inactive!");
+        return;
+      }
+      m_arm_state = ArmState::Active;
     } else {
-      m_ignore_stale_trigger = false;
+      // Boolean first, sensor second - see disableAccelerometer().
+      m_arm_state = ArmState::Inactive;
+      disableAccelerometer();
     }
+
     // Deliberately says nothing about the LEDs: the main loop logs their actual
     // applied values. An earlier version asserted "LED A ON" here from the arm
     // state alone, which was wrong in any build that does not drive LED A.

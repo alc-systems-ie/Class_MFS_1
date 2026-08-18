@@ -324,6 +324,33 @@ namespace alc
 
   int Adxl367::Standby()
   {
+    // Park BOTH interrupt pins before stopping the engine, and do it here rather
+    // than relying on the reset defaults.
+    //
+    // INT2 is wired to the nPM2100 SHPHLD pin. What makes that pin safe is the
+    // active-low POLARITY bit, which forces it to idle HIGH; the INTMAP2 reset
+    // value of 0x00 does not set it. ConfigureLoopMode() writes it, but a device
+    // that boots and is never activated would then sit at the reset default
+    // indefinitely, since the part is now held in standby until it is armed. A
+    // hazard the datasheet calls out must not depend on how soon someone happens
+    // to arm the device - see docs/v1-scope.md section 2.
+    //
+    // Observed 2026-08-18: an unmapped INT1 read physically HIGH at 0x00, so the
+    // reset default may well be harmless in practice. That is an inference from
+    // the sibling pin, not a guarantee, and this costs four register writes.
+    int result { writeRegister(M_REG_INTMAP2_LOWER, M_INT_ACTIVE_LOW | M_INT_NONE) };
+
+    if (result == 0) { result = writeRegister(M_REG_INTMAP2_UPPER, M_INT_NONE); }
+
+    // INT1 gets the same treatment. Active-low with nothing mapped idles HIGH,
+    // which the GPIO_ACTIVE_LOW spec in the overlay reads back as de-asserted.
+    if (result == 0) { result = writeRegister(M_REG_INTMAP1_LOWER, M_INT_ACTIVE_LOW | M_INT_NONE); }
+    if (result == 0) { result = writeRegister(M_REG_INTMAP1_UPPER, M_INT_NONE); }
+    if (result < 0) {
+      LOG_ERR("ADXL367 interrupt park failed: %d!", result);
+      return result;
+    }
+
     return writeRegister(M_REG_POWER_CTL, M_POWER_STANDBY);
   }
 

@@ -62,6 +62,16 @@ namespace alc
 
       int initAccelerometer();
 
+      // Configures the ADXL367 and proves it is reporting inactivity. Called
+      // BEFORE m_arm_state goes Active, so the device cannot come up armed on an
+      // assertion that predates arming.
+      int enableAccelerometer();
+
+      // Takes the output to 0 through updateOutputState(), then puts the ADXL367
+      // in standby. Called AFTER m_arm_state goes Inactive, so the output is
+      // already derived low before the part is stopped.
+      int disableAccelerometer();
+
       // Writes the two LED pins. Takes the states directly so the caller can log
       // exactly what is applied, rather than each recomputing and disagreeing.
       int applyLeds(bool ledA, bool ledB);
@@ -80,9 +90,11 @@ namespace alc
       CommandScanner m_scanner;
       ArmState m_arm_state;
 
-      // True when the device was armed while the ADXL367 was already awake. That
-      // assertion belongs to motion from BEFORE arming, so it must not count as a
-      // trigger; it is suppressed until INT1 de-asserts and a fresh edge arrives.
+      // True when the ADXL367 was still awake immediately after being configured
+      // for arming. That assertion belongs to motion from BEFORE arming, so it
+      // must not count as a trigger; it is suppressed until INT1 de-asserts and a
+      // fresh edge arrives. Belt and braces - the configuration bootstrap drives
+      // AWAKE low, so this should not normally be set.
       bool m_ignore_stale_trigger;
 
       // The definitive output state. Written only by updateOutputState(), read

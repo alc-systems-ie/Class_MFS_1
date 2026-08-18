@@ -71,9 +71,41 @@ Without the guard the device would fire on nearly every activation.
 **In the product the trigger switches a voltage**, so a false fire on activation is
 dangerous rather than merely untidy.
 
-Implementation: `App::setArmState()` samples INT1 when moving to Active and sets
-`m_ignore_stale_trigger` if the part is already awake. The main loop clears that
-flag only once INT1 de-asserts, so only a **fresh** assertion after arming counts.
+**Implementation: the accelerometer is stopped while the device is deactivated and
+configured afresh when it is activated.** Rather than leave a continuously-running
+part and filter its stale level, there is no stale level to inherit — the
+datasheet's loop mode initialization routine soft-resets the part and forces one
+activity/inactivity cycle, which drives AWAKE low (§3.1). The order is what makes
+this safe, and it is deliberate in both directions:
+
+| Activate | Deactivate |
+|---|---|
+| 1. `ConfigureLoopMode()` — soft reset, bootstrap cycle, real thresholds | 1. `m_arm_state = Inactive` |
+| 2. Confirm `AWAKE == 0` from STATUS | 2. `updateOutputState()` — output derives to 0 |
+| 3. `m_arm_state = Active`, LED A off | 3. `Standby()` — loop engine stopped, INT1 de-asserts |
+
+On deactivation the boolean necessarily moves first, because **the output is
+derived from it, not stored beside it** (§1.0). The derivation runs immediately
+after and always before the sensor is touched, so there is no instant at which a
+deactivated device still reads as triggered.
+
+`Adxl367::Standby()` parks INTMAP1/INTMAP2 active-low with nothing mapped before
+dropping POWER_CTL, so both pins idle HIGH. Stopping the part between arms means
+it now sits unconfigured from boot until the first activation — potentially
+forever — and the INT2/SHPHLD polarity bit (§2) must not depend on how soon
+someone happens to arm the device.
+
+`enableAccelerometer()` **refuses to arm** if the part will not configure or its
+AWAKE state cannot be read. A device that reported itself armed with a dead sensor
+would be a silent loss of function; instead it stays Inactive with LED A lit.
+
+`m_ignore_stale_trigger` is kept as belt and braces: if the part is somehow awake
+in the moments between configuring and arming, the flag suppresses it until INT1
+de-asserts. It should not normally be set.
+
+Configuring per-arm has a second benefit: the referenced-inactivity reference is
+always captured **in the orientation the device is actually left in**, which is
+the failure the full-scale `THRESH_INACT` also guards against (§3.1).
 
 `alc_drawer_master` hits the same class of bug and solves it differently, because
 it uses **latched** activity rather than loop-mode AWAKE: it clears the latch

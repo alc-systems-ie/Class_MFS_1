@@ -62,7 +62,15 @@ namespace alc
        */
       int ReadAwake(bool& awake);
 
-      /** @brief Put the part in standby; interrupts stop. */
+      /**
+       * @brief Put the part in standby, with both interrupt pins parked safe.
+       *
+       * INTMAP1/INTMAP2 are set to active-low with nothing mapped, so both pins
+       * idle HIGH, before POWER_CTL drops to standby. That polarity is what keeps
+       * INT2 off the nPM2100 SHPHLD pin, and it is established here rather than
+       * left to the reset default — see the implementation note and the class
+       * warning above.
+       */
       int Standby();
 
       /**

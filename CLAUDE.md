@@ -72,7 +72,11 @@ is dangerous.
 Related: **arming is edge-triggered** (§1.0.1). AWAKE is a level, not a latch, so a
 naive `armed && triggered` fires the instant the device is armed on motion that
 predates arming — and an engineer handling the device to arm it *is* motion, so
-that is the common case, not an edge case.
+that is the common case, not an edge case. The device therefore **holds the ADXL367
+in standby while deactivated and configures it afresh on activation**, so there is
+no stale level to inherit. The order is load-bearing: activate is configure →
+confirm AWAKE 0 → set the boolean; deactivate is clear the boolean → re-derive the
+output → `Standby()`. Arming is **refused** if the part will not configure.
 
 **ADXL367 loop mode has a mandatory initialization routine** (`docs/v1-scope.md`
 §3.1). Referenced mode holds an internal reference that is only valid once the
@@ -82,8 +86,10 @@ routine forces one cycle with a sub-noise activity threshold and an above-1 g
 inactivity threshold, both timers zero, then installs the real values at step 9.
 AUTOSLEEP (`POWER_CTL = 0x07`) is not optional. Four bring-up attempts were lost
 to inventing a sequence instead of using the published one — **the real datasheet
-is at `../alc_help_at_hand/docs/adxl367.pdf`; the markdown summary in
-`v3.1.0/alc_mailbox_monitor/` omits the routine entirely.**
+is at `../../datasheets/adi/ADXL367_Datasheet.pdf`; the markdown summary in
+`v3.1.0/alc_mailbox_monitor/` omits the routine entirely.** (It was previously
+cited as `../alc_help_at_hand/docs/adxl367.pdf`, which does not resolve from this
+workspace — `alc_help_at_hand` lives under `v3.1.0`.)
 
 Constraints from that analysis that are easy to violate by accident:
 
