@@ -15,6 +15,18 @@ namespace alc
 
     constexpr uint32_t M_POLL_INTERVAL_MS { 100 };
 
+#if defined(CONFIG_MFS_BATTERY_TEST)
+    // Liveness blink for the battery test, at the scan period.
+    //
+    // NOTE: this is NOT phase-locked to the radio's scan window. The controller
+    // duty-cycles the scan itself from the interval/window pair and gives the
+    // application no callback at window start, so this is a software tick of the
+    // same period running independently. It shows the device is alive and running
+    // its 6 s cycle; it does not mark the exact instant the receiver opens.
+    constexpr uint32_t M_BLINK_PERIOD_TICKS { CONFIG_MFS_SCAN_PERIOD_MS / M_POLL_INTERVAL_MS };
+    constexpr uint32_t M_BLINK_ON_TICKS { CONFIG_MFS_BLINK_MS / M_POLL_INTERVAL_MS };
+#endif
+
     // ADXL367 supply rail. The part must stay on LSOUT at 1.8 V: its INT2 pin is
     // wired to the PMIC SHPHLD pin, which has a 1.9 V absolute maximum, so an ADXL
     // running from the ~3.0 V boost output would damage the PMIC.
@@ -110,6 +122,11 @@ namespace alc
     int result { 0 };
     bool triggered { false };
     bool previousTriggered { false };
+    bool ledA { false };
+#if defined(CONFIG_MFS_BATTERY_TEST)
+    uint32_t blinkTicks { 0 };
+    uint32_t blinkOnTicks { 0 };
+#endif
 
     LOG_INF("MFS_1 starting, serial %s.", CONFIG_ALC_DEVICE_SERIAL);
 
@@ -161,6 +178,15 @@ namespace alc
     while (true) {
       if (m_scanner.TakePendingCommand() == CommandScanner::Command::ToggleArm) { toggleArmState(); }
 
+#if defined(CONFIG_MFS_BATTERY_TEST)
+      if (++blinkTicks >= M_BLINK_PERIOD_TICKS) {
+        blinkTicks   = 0;
+        blinkOnTicks = M_BLINK_ON_TICKS;
+      }
+      ledA = blinkOnTicks > 0;
+      if (blinkOnTicks > 0) { --blinkOnTicks; }
+#endif
+
       // INT1 tracks the ADXL367 AWAKE bit, so the 5 s LED B timeout is the part's
       // own loop period rather than a software timer.
       triggered = gpio_pin_get_dt(&s_adxl_int1) > 0;
@@ -175,7 +201,7 @@ namespace alc
         previousTriggered = triggered;
       }
 
-      result = refreshLeds(triggered);
+      result = refreshLeds(ledA, triggered);
       if (result < 0) { LOG_ERR("LED update failed: %d!", result); }
 
       k_msleep(M_POLL_INTERVAL_MS);
@@ -366,17 +392,24 @@ namespace alc
     setArmState(m_arm_state == ArmState::Active ? ArmState::Inactive : ArmState::Active);
   }
 
-  int App::refreshLeds(bool triggered)
+  int App::refreshLeds(bool ledAState, bool triggered)
   {
     bool ledA { false };
     bool ledB { false };
     int result { 0 };
 
 #if defined(CONFIG_MFS_DEBUG_LED)
-    // LED A on while Inactive; LED B on while Active and triggered.
+#if defined(CONFIG_MFS_BATTERY_TEST)
+    // Battery test: LED A is a liveness blink driven by the caller, not an
+    // Inactive indicator. LED B is unchanged.
+    ledA = ledAState;
+#else
+    ARG_UNUSED(ledAState);
     ledA = (m_arm_state == ArmState::Inactive);
+#endif
     ledB = (m_arm_state == ArmState::Active) && triggered;
 #else
+    ARG_UNUSED(ledAState);
     ARG_UNUSED(triggered);
 #endif
 

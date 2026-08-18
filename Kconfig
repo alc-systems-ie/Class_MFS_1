@@ -55,6 +55,32 @@ config MFS_ADXL_ACTIVITY_SAMPLES
 	  alc_drawer_master uses 2 (20 ms); alc_flush_master uses 20 samples at
 	  25 Hz (800 ms) to reject cistern fill-valve transients.
 
+config MFS_BATTERY_TEST
+	bool "Battery-life test build: LED A becomes a periodic liveness blink"
+	default n
+	help
+	  Repurposes LED A from "on while Inactive" to a short blink once per scan
+	  period, so an unattended device can be seen to be alive across a long
+	  battery test. LED B is unchanged. The device still starts deactivated and
+	  is still armed by the engineer toggle.
+
+	  READ THIS BEFORE TRUSTING THE RESULT: the blink dominates the power
+	  budget. At an assumed 2 mA of LED current, 500 ms every 6000 ms is 8.3%
+	  duty, i.e. ~167 uA against a ~69 uA operating budget - so the measurement
+	  becomes mostly a measurement of the LED. See docs/battery-test.md.
+
+config MFS_BLINK_MS
+	int "Liveness blink duration (milliseconds)"
+	default 500
+	depends on MFS_BATTERY_TEST
+	help
+	  Rounded down to the 100 ms main-loop poll interval.
+
+	  500 ms is highly visible but costs ~167 uA at 2 mA LED current. 100 ms
+	  costs ~33 uA and is still clearly visible; 10 ms would cost ~3 uA but
+	  needs the loop poll shortened to resolve it. Lower this if the aim is to
+	  measure the scan rather than the LED.
+
 config MFS_DEBUG_LED
 	bool "Drive the state LEDs (bench only)"
 	default y
