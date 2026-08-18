@@ -1,5 +1,6 @@
-# Zephyr / west build output.
-build/
+# Zephyr / west build output. Note build-dongle/ (the tools/toggle_dongle build)
+# and any other build* directory, not just build/.
+build*/
 compile_commands.json
 .cache/
 

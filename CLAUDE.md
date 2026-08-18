@@ -56,6 +56,17 @@ Unmap INT2 in the ADXL config, set `shiphold-longpress = "disable"`, and keep th
 ADXL on the 1.8 V LSOUT rail. Also force LDOSW to Ultra-Low Power — in `Auto` it
 would sit in High Power forever now that the device never hibernates.
 
+**ADXL367 loop mode has a mandatory initialization routine** (`docs/v1-scope.md`
+§3.1). Referenced mode holds an internal reference that is only valid once the
+engine has cycled; configure the real thresholds up front and it never cycles, so
+gravity reads as permanent motion and **AWAKE never clears**. The datasheet's
+routine forces one cycle with a sub-noise activity threshold and an above-1 g
+inactivity threshold, both timers zero, then installs the real values at step 9.
+AUTOSLEEP (`POWER_CTL = 0x07`) is not optional. Four bring-up attempts were lost
+to inventing a sequence instead of using the published one — **the real datasheet
+is at `../alc_help_at_hand/docs/adxl367.pdf`; the markdown summary in
+`v3.1.0/alc_mailbox_monitor/` omits the routine entirely.**
+
 Constraints from that analysis that are easy to violate by accident:
 
 - **Hibernate is wrong at this cadence.** It saves ~4 µA of sleep but forces a
@@ -179,10 +190,62 @@ make clean
 
 Its flags (`-std=c++20 -Wall -Wextra -Wpedantic -Werror`) are the reference for any host-test target added here. There is no single-test filter in that harness; a single case is run by compiling only the relevant `tests/test_*.cpp`.
 
+## READ THIS BEFORE TOUCHING HARDWARE
+
+**`../alc_drawer_master/docs/superpowers/handoff_02072026.md` §5, "Lessons learned".**
+It is the accumulated hardware knowledge for *this exact board* and it is not
+obvious from the code. Copying a driver from a sibling is not enough — read how
+the sibling **calls** it, and read its hand-off notes. Two faults in this project
+cost hours because that was skipped:
+
+- **Lesson 5 — the nPM2100 boot monitor resets the host ~9 s after boot unless
+  firmware calls `TimerStop()` early.** It is sticky and survives a reflash.
+  `App::initPmic()` does this now. Presented as LEDs blinking on a ~6 s cycle, an
+  arm state that would not stick, and RTT going silent after boot.
+- **Lesson 7 — keep `CONFIG_LOG_MODE_IMMEDIATE=y` when debugging a hang or reset.**
+  Deferred logging hides the hang point. Also: `west build -- -DCONFIG_X` does not
+  reliably reach the app under sysbuild; set Kconfig in `prj.conf`.
+
+Also relevant and already handled here: lesson 2 (latched ADXL INT2 reads as
+`PowerOffButton` on SHPHLD — we leave INT2 unmapped *and* call
+`DisablePowerOffButton(true)`), and lesson 3, which independently identifies
+**ADXL autosleep/AWAKE mode** as the correct approach over raw latched activity —
+which is the design in `docs/v1-scope.md` §3.1.
+
+Lesson 1 (anti-bricking during Hibernate) does not apply to MFS_1: the device
+never hibernates, so it is always awake and flashable.
+
 ## Reference projects
 
 When adding structure, mirror the layout of the nearest sibling rather than inventing one. `../alc_flush_master/` and `../alc_drawer_master/` are the most complete examples (`src/main.cpp` + `src/app.{hpp,cpp}` holding the state machine, one class per peripheral, `boards/<board>.overlay`, all Kconfig in `prj.conf`, project-specific `CLAUDE.md` documenting hardware and register-level design decisions). Their `CLAUDE.md` files are worth reading for the house patterns in practice.
 
 ## Style
+
+**`.clang-format` is authoritative for layout — run it on every file you touch:**
+
+```sh
+/Users/andy/nrfenv/bin/clang-format -i src/<file>
+```
+
+Imported from `../alc_drawer_master/.clang-format` with two deliberate
+divergences, so trivial guard clauses collapse to one line **while keeping their
+braces**:
+
+```yaml
+AllowShortIfStatementsOnASingleLine: WithoutElse   # was: false
+AllowShortBlocksOnASingleLine: Always              # new
+```
+
+giving `if (result < 0) { return result; }`. It stays conservative — two
+statements, an `else` branch, a loop body, or a line over 150 columns all expand
+normally. `AllowShortBlocksOnASingleLine` is the setting doing the work; the
+short-if setting alone has no effect when braces are present.
+
+**Braces are never removed.** `RemoveBracesLLVM` is deliberately unset: it is
+documented as experimental, and brace-less control flow is the `goto fail;` shape.
+
+Note `ReflowComments: false` — reindenting a Doxygen block moves the opening
+`/**` but leaves the ` * ` continuation lines behind, so they need a hand pass
+after a large reformat.
 
 All code follows the ALC house style in `~/.claude/CLAUDE.md` (C++20, `.cpp`/`.hpp`, `alc` namespace, `m_`/`s_`/`M_` prefixes, PascalCase public methods vs snake_case SDK calls, RTT logging). That file is authoritative; do not restate or contradict it here. Project-specific architecture, register maps and design decisions belong in this file as they are established.

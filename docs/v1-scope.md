@@ -57,6 +57,42 @@ state on a CR123A — INT2 would present 3 V to that pin and damage the PMIC.
   which disables the power-off function of the pin outright.
 - Keep the ADXL367 on the **1.8 V LSOUT rail** regardless.
 
+### 2.0 The nPM2100 boot monitor must be stopped at boot
+
+**`App::initPmic()` calls `TimerStop()` within ~18 ms of boot. Do not remove it.**
+
+The boot monitor *is* the nPM2100 TIMER block. Per the datasheet it "power cycles
+the host System on Chip when the software fails to boot within t<sub>BOOT_TIMER</sub>",
+starts automatically when the chip enters Active mode, and is stopped by
+"activating the timer stop task in `TASKS_STOP`". Stopping it is the intended
+"the host booted successfully" handshake, not a workaround. `alc_drawer_master`
+does the same — its hand-off notes list it as lesson 5, "resets the host ~9 s
+after boot unless firmware calls `TimerStop()` early; sticky, survives reflash."
+
+Things that do **not** work, both tried:
+
+- The sticky `BOOTMONSEL` / `BOOTMONEN` bits (`ConfigureBootMonitor()`) are a
+  selector for future power cycles. They do not stop a monitor already running.
+- `SYSGDENSTATUS` (0xE2) bit 0 reports *configuration*, not running state — "boot
+  monitor is active unless SYSGDENSTATE=0". It stays set after a successful stop,
+  so it must never be used as a pass/fail check.
+
+Once stopped it **cannot be re-enabled over TWI** until the next power cycle, so
+the device currently has no ongoing watchdog. The same TIMER block in
+`WatchdogReset` / `WatchdogPwrCyc` mode, kicked from the main loop, would provide
+one — worth considering for a covert alarm sensor. **Open.**
+
+**Hardware alternative:** `SYSGDEN` is a pin, not a register. Grounded, the boot
+monitor never starts; left unconnected (as on the Drawer Master board) it is
+enabled. Worth a deliberate decision on the MFS_1 board revision.
+
+**How it presents if missed:** the device runs for ~9 s and power-cycles, forever.
+On the bench that looked like LEDs blinking on a ~6 s cycle, an arm state that
+would not stick, motion detection that "worked but not cleanly", and RTT going
+silent after boot as the viewer lost sync on every reset. The giveaway is
+`GetResetReason()` returning `BootMonitor` instead of `ColdPowerUp` — which is
+printed in the boot log on every boot.
+
 ### 2.1 LDOSW should be forced Ultra-Low Power
 
 LDOSW in `Auto` follows the device mode — Active mode gives High Power. Since MFS_1
@@ -69,22 +105,87 @@ Measure LDOSW quiescent during bring-up and correct the budget if it differs.
 
 ## 3. ADXL367 configuration traps
 
-Both inherited from `alc_flush_master`, which documents them for the ADXL362.
-**Verify each on the ADXL367 during bring-up rather than assuming they carry over.**
+**Read the real datasheet, not a summary.** The full ADXL367 datasheet and a
+register quick reference are on disk at
+`../alc_help_at_hand/docs/adxl367.pdf` and `.../ADXL367_QRGs/`. A summarised
+markdown copy exists at `../../v3.1.0/alc_mailbox_monitor/adxl367_datasheet.md`;
+it documents the registers but **omits the loop mode initialization routine**,
+which is the whole ballgame. Four failed bring-up attempts came from working off
+the summary — see §3.1.
 
 **Referenced mode, never Absolute.** The activity engine ORs all three axes. In
 Absolute mode the ~1000 mg vertical gravity component permanently exceeds any
-practical threshold, so the part latches awake at boot and never clears.
+practical threshold, so inactivity can never be satisfied.
 
-**Loop-mode boot behaviour.** In Loop mode the engine boots with `AWAKE = 1` and
-inactivity detection enabled; activity detection is gated until inactivity fires
-once. Configuring the 5 s production inactivity time at boot would therefore leave
-the engine in inactivity-detection for 5 s before any motion could register. Write a
-short inactivity time at startup so it resolves into activity-detection within a
-second, then raise it to the production value.
+**`ACT_INACT_CTL` (0x27) holds 2-bit fields, not single bits.** `[5:4]` LINKLOOP,
+`[3:2]` INACT_EN, `[1:0]` ACT_EN, where `01` = Absolute and `11` = Referenced.
+`alc_drawer_master` defines these as `M_ADXL_ACT_EN = BIT(0)` and
+`M_ADXL_ACT_REF = BIT(1)`, which ORs to the right value by coincidence rather
+than by construction.
+
+**`STATUS` reset value is 0x40 — the part powers up with AWAKE already set.** A
+reading of `0x40` therefore proves nothing about engine state; it may simply never
+have changed.
+
+**Thresholds are 13-bit**, split `H[12:6]` / `L[5:0] << 2`, at 0.25 mg/LSB on the
+±2 g range. So 150 ≈ 37.5 mg.
+
+**Write `FILTER_CTL` as `0x23`, not `0x03`.** `0x23` is the reset value: ±2 g,
+100 Hz, and `I2C_HS` (bit 5) set as it powers up. Writing a bare ODR value clears
+`I2C_HS`.
+
+### 3.1 Loop mode initialization routine — REQUIRED
+
+Referenced mode compares each sample against an internally held reference, and
+that reference is only valid once the engine has completed a cycle. Configure the
+real thresholds up front and the engine never cycles: gravity reads as a permanent
+~940 mg deviation against a ~37 mg threshold, inactivity is never satisfied, and
+**AWAKE stays asserted forever**. Observed on hardware as `STATUS` stuck at `0x40`
+indefinitely on a motionless board with a provably correct configuration.
+
+The datasheet publishes the fix. Follow it verbatim — the point is to force one
+immediate loop cycle with deliberately absurd thresholds, then install the real
+ones:
+
+| Step | Action |
+|------|--------|
+| 1 | `THRESH_ACT` **below the noise floor** — 1 LSB |
+| 2 | `TIME_ACT` = 0 |
+| 3 | `THRESH_INACT` **above 1 g** — full scale, 0x1FFF |
+| 4 | `TIME_INACT` = 0 |
+| 5 | `ACT_INACT_CTL` = 0x3F (loop, both referenced) |
+| 6 | Other settings — `FILTER_CTL`, `INTMAP1/2` |
+| 7 | `POWER_CTL` = **0x07** (measurement + autosleep) |
+| 8 | **Wait for AWAKE to go LOW** — ~100 ms + 1/ODR. Measured at 115 ms |
+| 9 | Install the real thresholds and timers, registers 0x20–0x26 |
+
+Two things worth noting about step 9. It writes those registers **in measurement
+mode**, so the datasheet's general "configure registers 0x00–0x2C in standby"
+guidance does not govern them. And **AUTOSLEEP at step 7 is not optional** — it is
+what moves the part between measurement and wake-up mode as the loop cycles, and
+AWAKE reports which of those states it is in.
 
 Using the ADXL's loop timing as the LED B timeout is deliberate — the hardware does
-the timing, so no software `k_timer` is needed. Same approach as Flush Master.
+the timing, so no software `k_timer` is needed.
+
+### 3.2 Power-up sequencing
+
+The ADXL367 sits on the PMIC's LSOUT rail, which introduces two requirements the
+firmware must honour:
+
+- **Allow ~20 ms after LSOUT rises before probing.** The part must load fuses and
+  reach standby first. Probing 0.57 ms after enabling the rail fails. This only
+  shows up on a genuine cold power-up: a warm reset leaves LSOUT already live from
+  the previous run, so the race stays hidden through any amount of `west flash`
+  testing.
+- **Bring the rail up in High Power, not Ultra-Low Power.** The datasheet requires
+  supply current above 250 µA during power-up for correct fuse loading. LDOSW drops
+  to ULP once the part is configured, so the idle saving is kept.
+
+**Power-cycle LSOUT at boot** (disable, ~50 ms discharge, enable). nPM2100
+registers survive an SoC reset, so enabling an already-live rail is a no-op that
+would leave the ADXL in whatever mode the previous run ended in. The datasheet also
+recommends a full discharge to 0 V when power cycling.
 
 ## 4. v1 needs no BLE connection at all
 

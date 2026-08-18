@@ -27,12 +27,33 @@ config MFS_ADXL_INACTIVITY_SECS
 	  no software timer.
 
 config MFS_ADXL_THRESHOLD
-	int "ADXL367 referenced-activity threshold (11-bit, 2 g range)"
-	default 150
+	int "ADXL367 referenced-activity threshold (13-bit)"
+	default 300
 	help
-	  Matches alc_drawer_master's M_ADXL_THRESHOLD. Referenced mode only —
-	  never Absolute, or the vertical gravity component latches the part awake
-	  permanently. See docs/v1-scope.md section 3.
+	  Deviation from the reference that counts as motion.
+
+	  SCALE: 0.25 mg per LSB on the +/-2 g range, so 300 = 75 mg. The register
+	  is 13-bit, giving a usable range of 1 to 8191 (0.25 mg to ~2 g).
+
+	  alc_drawer_master uses 150 (37.5 mg) for a cupboard door. 300 was chosen
+	  here as a less twitchy starting point for the anti-tamper role; tune it
+	  against real handling of the installed product.
+
+	  Referenced mode only — never Absolute, or the vertical gravity component
+	  latches the part awake permanently. See docs/v1-scope.md section 3.
+
+config MFS_ADXL_ACTIVITY_SAMPLES
+	int "ADXL367 sustained samples required to latch activity"
+	default 5
+	help
+	  TIME_ACT, in ODR samples. At the configured 100 Hz ODR, 5 samples is
+	  50 ms of sustained motion above the threshold before activity latches.
+
+	  This is the transient-rejection knob and it is cheap: it discriminates a
+	  knock, a slammed door or a passing lorry from someone actually handling
+	  the device, at the cost of the same delay in detection latency.
+	  alc_drawer_master uses 2 (20 ms); alc_flush_master uses 20 samples at
+	  25 Hz (800 ms) to reject cistern fill-valve transients.
 
 config MFS_DEBUG_LED
 	bool "Drive the state LEDs (bench only)"
@@ -43,6 +64,19 @@ config MFS_DEBUG_LED
 	  ~69 uA budget, roughly 29 days of battery life. Set n for production
 	  until a bounded indication scheme is chosen — see docs/v1-scope.md
 	  section 5.
+
+config MFS_INSECURE_TOGGLE
+	bool "Accept an unauthenticated plaintext toggle command (BENCH ONLY)"
+	default n
+	help
+	  Accepts a magic advertising payload that toggles the arm state with NO
+	  TAN and NO authentication of any kind. Anyone in radio range can arm or
+	  disarm the device.
+
+	  This exists solely to prove the scan, parse, arm-state and LED path
+	  before TAN validation and provisioner time sync are implemented. It MUST
+	  be n in any build that leaves the bench. See docs/tan-scheme.md for the
+	  scheme that replaces it.
 
 config ALC_DEVICE_SERIAL
 	string "Device serial number"

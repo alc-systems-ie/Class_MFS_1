@@ -57,11 +57,18 @@ System ON idle, 100 ms passive scan every 6 s. Duty cycle 100/6000 = 1.667%.
 | Passive scan RX | 3.8 mA × 1.667% | **63.3 µA** |
 | Scan start/stop CPU + HFXO ramp | 2.6 mA × ~5 ms / 6 s | 2.2 µA |
 | nRF54L05 System ON idle (RAM retention + RTC) | continuous | 2.5 µA |
-| ADXL367 measurement mode, 100 Hz ODR | continuous | 1.0 µA |
+| ADXL367, autosleep in wake-up mode while still | continuous | 0.2 µA |
 | nPM2100 quiescent (pass-through / ULP) | continuous | 0.3 µA |
-| **Total** | | **≈ 69 µA** |
+| **Total** | | **≈ 68 µA** |
 
-**1450 mAh ÷ 0.0693 mA = 20,900 h ≈ 872 days ≈ 2.4 years.**
+**1450 mAh ÷ 0.0685 mA = 21,170 h ≈ 882 days ≈ 2.4 years.**
+
+The ADXL367 line is 0.2 µA rather than the 0.89 µA of measurement mode because
+**AUTOSLEEP** drops the part into wake-up mode (~180 nA) whenever it is still, and
+it is still almost all the time. That is required for the loop engine to work at
+all (`docs/v1-scope.md` §3.1), so the saving is a side effect rather than a
+choice. It is worth about 0.8 µA — roughly 1%, or ten days across the service
+life — so it changes no decision.
 
 Bracket on the soft numbers:
 

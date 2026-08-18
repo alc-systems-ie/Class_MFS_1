@@ -1,0 +1,79 @@
+# ALC House Style — see ~/.claude/CLAUDE.md for the prose version.
+#
+# Imported from ../alc_drawer_master/.clang-format, which in turn came from
+# ../board_test. AlignConsecutiveDeclarations is OFF so method declarations do
+# not get a wide return-type→name gap. POD/wire-format structs that benefit from
+# column alignment are individually protected with `// clang-format off` /
+# `// clang-format on`.
+#
+# TWO DELIBERATE DIVERGENCES FROM alc_drawer_master, so trivial guard clauses
+# collapse to one line while keeping their braces:
+#
+#   AllowShortIfStatementsOnASingleLine: WithoutElse   (was: false)
+#   AllowShortBlocksOnASingleLine: Always              (new)
+#
+# giving `if (result < 0) { return result; }` instead of the three-line form.
+# The behaviour is conservative: anything with two statements, an else branch,
+# a loop body, or a line over 150 columns still expands normally.
+#
+# Braces are NEVER removed. RemoveBracesLLVM is deliberately not set — it is
+# documented as experimental, and brace-less control flow is the `goto fail;`
+# shape, which is not wanted in alarm-sensor firmware.
+---
+Language: Cpp
+Standard: c++20
+BasedOnStyle: LLVM
+
+ColumnLimit: 150
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+ContinuationIndentWidth: 4
+
+# Braces: same line for control flow, next line for functions/classes/structs/
+# namespaces; `} else {` stays on one line.
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: true
+  AfterStruct: true
+  AfterUnion: true
+  AfterEnum: false
+  AfterFunction: true
+  AfterNamespace: true
+  AfterControlStatement: Never
+  BeforeElse: false
+  BeforeCatch: false
+  BeforeWhile: false
+  SplitEmptyFunction: false
+  IndentBraces: false
+
+NamespaceIndentation: All
+IndentAccessModifiers: true
+FixNamespaceComments: false
+
+PointerAlignment: Left
+ReferenceAlignment: Left
+SpaceBeforeParens: ControlStatements
+Cpp11BracedListStyle: false
+SpaceBeforeCpp11BracedList: true
+SpacesInParentheses: false
+
+BreakConstructorInitializers: BeforeComma
+ConstructorInitializerIndentWidth: 4
+PackConstructorInitializers: Never
+
+AllowShortBlocksOnASingleLine: Always
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: false
+KeepEmptyLinesAtTheStartOfBlocks: false
+ReflowComments: false
+# Never split a string literal across lines - keeps LOG_* messages on one line.
+BreakStringLiterals: false
+SortIncludes: false
+IndentCaseLabels: true

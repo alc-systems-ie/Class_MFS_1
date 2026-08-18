@@ -1,13 +1,8 @@
 cmake_minimum_required(VERSION 3.20.0)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(class_mfs_1 LANGUAGES C CXX)
+project(toggle_dongle LANGUAGES C CXX)
 
 target_sources(app PRIVATE
   src/main.cpp
-  src/app.cpp
-  src/adxl367.cpp
-  src/command_scanner.cpp
-  src/npm2100.cpp
-  src/npm2100_zephyr.cpp
 )
