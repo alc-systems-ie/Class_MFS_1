@@ -70,6 +70,55 @@ all (`docs/v1-scope.md` §3.1), so the saving is a side effect rather than a
 choice. It is worth about 0.8 µA — roughly 1%, or ten days across the service
 life — so it changes no decision.
 
+### MEASURED 2026-08-18 — 75 µA at 3.0 V
+
+Power Profiler Kit II in Source Meter mode at 3000 mV, LED A disabled
+(`CONFIG_MFS_BLINK_MS=0`), debugger detached, 1-minute averaging window:
+
+| | Predicted | Measured | Delta |
+|---|---|---|---|
+| Average current | 69 µA | **75 µA** | +8.7% |
+| CR123A life | 2.4 years | **~2.2 years** | −8% |
+
+**The model is good to within 9%**, built from datasheets before hardware existed.
+
+A shorter averaging window earlier read 88 µA. That is believed to be settling or
+handling: any disturbance holds the ADXL367 in measurement mode (~0.89 µA) instead
+of autosleep wake-up mode (~180 nA) for 5 s, and a brief window catches it. Let
+the board sit untouched for ten minutes before trusting an average.
+
+**The fresh-cell figure is not the life figure.** See §3.1 — consumption rises as
+V<sub>BAT</sub> falls, so a single 3.0 V reading understates lifetime consumption.
+
+### 3.1 OPEN — consumption versus supply voltage
+
+**The BOOST output voltage is never configured** (`App::initPmic()` sets LDOSW only),
+so VOUT is whatever the VSET pin selects: 3.0 V unconnected, 1.8 V grounded.
+
+This matters because BOOST enters pass-through only "when battery voltage is at
+least 100 mV above the target VOUT". If VOUT is 3.0 V, a CR123A drops below 3.1 V
+almost immediately and the boost is therefore **switching for essentially the whole
+service life**, not just the tail — which contradicts the assumption in §10 that
+battery current ≈ load current.
+
+To resolve, sweep the PPK2 and record:
+
+| Supply | Emulates | Measured | Notes |
+|---|---|---|---|
+| 3.2 V | Fresh, above pass-through threshold | | If markedly lower than 3.0 V, VOUT is 3.0 V and the boost was switching |
+| 3.0 V | Fresh CR123A | **75 µA** | measured |
+| 2.5 V | Mid-life | | |
+| 2.0 V | Near end of life | | |
+
+**If it is confirmed, there is a design win available:** setting `BOOST.VOUT` to
+1.8 V via `BoostSetVoltage()` would hold pass-through down to ~1.9 V V<sub>BAT</sub>,
+i.e. nearly the whole discharge curve, and the nRF54L05 runs from 1.7 V. One call
+in `initPmic()`.
+
+A proper life estimate integrates consumption across the discharge curve rather
+than dividing capacity by the fresh-cell figure, so the 2.5 V and 2.0 V points
+matter more than the 3.0 V one.
+
 Bracket on the soft numbers:
 
 | Case | Assumptions | Average | Life |
