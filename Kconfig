@@ -42,6 +42,25 @@ config MFS_ADXL_THRESHOLD
 	  Referenced mode only — never Absolute, or the vertical gravity component
 	  latches the part awake permanently. See docs/v1-scope.md section 3.
 
+config MFS_ADXL_INACTIVITY_THRESHOLD
+	int "ADXL367 referenced-inactivity threshold (13-bit)"
+	default 8191
+	help
+	  MUST be wide enough to cover any orientation change, which is up to 2 g
+	  (an axis swinging from +1 g to -1 g). 8191 is 13-bit full scale, ~2 g.
+
+	  DO NOT set this near the activity threshold. The inactivity reference is
+	  captured when ACTIVITY fires, and the datasheet is explicit that in linked
+	  and looped mode "the inactivity threshold cannot be continuously updated
+	  ... the accelerometer does not detect inactivity until the acceleration
+	  input returns to within the inactivity threshold". Set the board down in a
+	  different orientation and it never returns: AWAKE sticks permanently and
+	  the device stops triggering, silently.
+
+	  At full scale, inactivity becomes a genuine "N seconds since the last
+	  activity" timer, which is the specified behaviour and is immune to
+	  orientation.
+
 config MFS_ADXL_ACTIVITY_SAMPLES
 	int "ADXL367 sustained samples required to latch activity"
 	default 5

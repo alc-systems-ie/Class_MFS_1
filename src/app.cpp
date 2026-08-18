@@ -15,6 +15,10 @@ namespace alc
 
     constexpr uint32_t M_POLL_INTERVAL_MS { 100 };
 
+    // Stuck-AWAKE watchdog threshold, in 100 ms loop ticks. Generous multiple of
+    // the configured inactivity period so normal sustained handling never trips it.
+    constexpr uint32_t M_AWAKE_STUCK_TICKS { (CONFIG_MFS_ADXL_INACTIVITY_SECS * 10U * 6U) };
+
 #if defined(CONFIG_MFS_BATTERY_TEST)
     // Liveness blink for the battery test, at the scan period.
     //
@@ -116,6 +120,7 @@ namespace alc
       , m_arm_state(ArmState::Inactive)
       , m_ignore_stale_trigger(false)
       , m_output_active(false)
+      , m_awake_ticks(0)
       , m_initialised(false)
   {}
 
@@ -390,7 +395,8 @@ namespace alc
     result = m_accelerometer.Init();
     if (result < 0) { return result; }
 
-    return m_accelerometer.ConfigureLoopMode(CONFIG_MFS_ADXL_THRESHOLD, CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_SECS);
+    return m_accelerometer.ConfigureLoopMode(CONFIG_MFS_ADXL_THRESHOLD, CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
+                                             CONFIG_MFS_ADXL_INACTIVITY_SECS);
   }
 
   void App::updateOutputState()
@@ -419,6 +425,26 @@ namespace alc
     }
 
     m_output_active = (m_arm_state == ArmState::Active) && awake && !m_ignore_stale_trigger;
+
+    // Stuck-AWAKE watchdog. Defence in depth: if the accelerometer somehow holds
+    // AWAKE far beyond its configured inactivity period, the device stops
+    // triggering and - worse - does so SILENTLY, with no LED and no log. That is
+    // an unacceptable failure mode for an alarm sensor, so recover rather than
+    // sit dead. Re-running the loop configuration includes the bootstrap that
+    // guarantees AWAKE clears.
+    if (awake) {
+      if (++m_awake_ticks >= M_AWAKE_STUCK_TICKS) {
+        m_awake_ticks = 0;
+        LOG_ERR("ADXL stuck AWAKE for %u s - re-arming the loop engine!", M_AWAKE_STUCK_TICKS / 10U);
+        if (m_accelerometer.ConfigureLoopMode(CONFIG_MFS_ADXL_THRESHOLD, CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
+                                              CONFIG_MFS_ADXL_INACTIVITY_SECS) < 0) {
+          LOG_ERR("ADXL re-arm failed!");
+        }
+        m_ignore_stale_trigger = false;
+      }
+    } else {
+      m_awake_ticks = 0;
+    }
   }
 
   void App::setArmState(ArmState state)

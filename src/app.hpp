@@ -89,6 +89,9 @@ namespace alc
       // only via IsOutputActive().
       bool m_output_active;
 
+      // Consecutive loop ticks with the ADXL awake, for the stuck-AWAKE watchdog.
+      uint32_t m_awake_ticks;
+
       bool m_initialised;
   };
 
