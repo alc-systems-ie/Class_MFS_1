@@ -61,6 +61,12 @@ namespace alc
       Adxl367 m_accelerometer;
       CommandScanner m_scanner;
       ArmState m_arm_state;
+
+      // True when the device was armed while the ADXL367 was already awake. That
+      // assertion belongs to motion from BEFORE arming, so it must not count as a
+      // trigger; it is suppressed until INT1 de-asserts and a fresh edge arrives.
+      bool m_ignore_stale_trigger;
+
       bool m_initialised;
   };
 

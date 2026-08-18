@@ -24,6 +24,35 @@ design toward so that later work does not require rework.
 Also required, because it is how the toggle arrives: the 100 ms / 6 s passive scan
 loop and TAN validation (`docs/tan-scheme.md`).
 
+### 1.0 Arming is EDGE-TRIGGERED — safety critical
+
+**A trigger that was already asserted when the device was armed must never fire.**
+
+The ADXL367 AWAKE bit is a **level, not a latch**. Once motion occurs it stays
+asserted for the whole inactivity period (5 s) and **cannot be cleared by reading
+STATUS**. So a naive `armed && triggered` test fires the instant the device is
+armed, in response to motion that happened *before* arming.
+
+**This is the common case, not an edge case.** An engineer handling the device in
+order to arm it is itself motion, so AWAKE is very often asserted at that moment.
+Without the guard the device would fire on nearly every activation.
+
+**In the product the trigger switches a voltage**, so a false fire on activation is
+dangerous rather than merely untidy.
+
+Implementation: `App::setArmState()` samples INT1 when moving to Active and sets
+`m_ignore_stale_trigger` if the part is already awake. The main loop clears that
+flag only once INT1 de-asserts, so only a **fresh** assertion after arming counts.
+
+`alc_drawer_master` hits the same class of bug and solves it differently, because
+it uses **latched** activity rather than loop-mode AWAKE: it clears the latch
+immediately before arming, `adxl.ReadActivityLatched(discardLatch)`, with the
+comment "a stale latch holds SHPHLD low -> instant false wake". **That fix does not
+transfer** — clearing a latch has no effect on a level.
+
+Any future consumer of this signal (alarm report, voltage switch, event counter)
+must use the gated `triggered`, never the raw INT1 level.
+
 ### 1.1 Explicitly deferred
 
 No alarm transmission, no nightly status, no fuel gauge reporting, no FEM, no

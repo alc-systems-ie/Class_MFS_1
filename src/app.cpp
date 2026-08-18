@@ -114,12 +114,14 @@ namespace alc
       , m_accelerometer(DEVICE_DT_GET(DT_NODELABEL(i2c21)))
       , m_scanner()
       , m_arm_state(ArmState::Inactive)
+      , m_ignore_stale_trigger(false)
       , m_initialised(false)
   {}
 
   int App::Run()
   {
     int result { 0 };
+    bool awake { false };
     bool triggered { false };
     bool previousTriggered { false };
     bool ledA { false };
@@ -189,7 +191,16 @@ namespace alc
 
       // INT1 tracks the ADXL367 AWAKE bit, so the 5 s LED B timeout is the part's
       // own loop period rather than a software timer.
-      triggered = gpio_pin_get_dt(&s_adxl_int1) > 0;
+      awake = gpio_pin_get_dt(&s_adxl_int1) > 0;
+
+      // Release the stale-trigger suppression only once the part has actually gone
+      // back to sleep. See setArmState() - this is what makes arming edge-triggered.
+      if (m_ignore_stale_trigger && !awake) {
+        m_ignore_stale_trigger = false;
+        LOG_INF("ADXL cleared after arming - device is now live.");
+      }
+
+      triggered = awake && !m_ignore_stale_trigger;
 
       // Log only on transitions. A periodic dump floods the 4 KB RTT buffer in
       // LOG_MODE_IMMEDIATE and silently drops the events that actually matter —
@@ -383,6 +394,30 @@ namespace alc
   void App::setArmState(ArmState state)
   {
     m_arm_state = state;
+
+    // EDGE-TRIGGERED ARMING - SAFETY CRITICAL.
+    //
+    // The ADXL367 AWAKE bit is a LEVEL, not a latch: once motion has occurred it
+    // stays asserted for the whole inactivity period (5 s) and cannot be cleared
+    // by reading STATUS. So arming while the part is still awake would take that
+    // assertion - which belongs to motion from BEFORE arming - as an immediate
+    // trigger, and the device would fire the instant it was armed.
+    //
+    // This is the common case, not an edge case: an engineer handling the device
+    // in order to arm it IS motion, so AWAKE is very often asserted at that
+    // moment. In the product the trigger switches a voltage, so a false fire on
+    // activation is dangerous, not merely untidy.
+    //
+    // Suppress until INT1 de-asserts, so only a FRESH assertion after arming
+    // counts. alc_drawer_master solves the equivalent problem differently -
+    // it uses latched activity, so it clears the latch immediately before arming
+    // (ReadActivityLatched) - but a latch clear has no effect on a level.
+    if (state == ArmState::Active) {
+      m_ignore_stale_trigger = gpio_pin_get_dt(&s_adxl_int1) > 0;
+      if (m_ignore_stale_trigger) { LOG_WRN("Armed while the ADXL is still awake - suppressing until it clears!"); }
+    } else {
+      m_ignore_stale_trigger = false;
+    }
     LOG_INF("Arm state: %s (uptime %lld ms). LED A %s.", state == ArmState::Active ? "Active" : "Inactive", k_uptime_get(),
             state == ArmState::Inactive ? "ON" : "off");
   }
