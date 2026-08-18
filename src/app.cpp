@@ -429,8 +429,10 @@ namespace alc
     } else {
       m_ignore_stale_trigger = false;
     }
-    LOG_INF("Arm state: %s (uptime %lld ms). LED A %s.", state == ArmState::Active ? "Active" : "Inactive", k_uptime_get(),
-            state == ArmState::Inactive ? "ON" : "off");
+    // Deliberately says nothing about the LEDs: the main loop logs their actual
+    // applied values. An earlier version asserted "LED A ON" here from the arm
+    // state alone, which was wrong in any build that does not drive LED A.
+    LOG_INF("Arm state: %s (uptime %lld ms).", state == ArmState::Active ? "Active" : "Inactive", k_uptime_get());
   }
 
   void App::toggleArmState()
