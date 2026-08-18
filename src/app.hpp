@@ -26,6 +26,20 @@ namespace alc
       /** @brief Brings up the peripherals and enters the main loop. Does not return. */
       int Run();
 
+      /**
+       * @brief The device output state — the ONLY sanctioned trigger source.
+       *
+       * True only when the device is Active AND the ADXL367 is reporting motion
+       * that began after arming. **m_arm_state is definitive**; the accelerometer
+       * is only ever ANDed with it.
+       *
+       * Every consumer must use this. Nothing may read INT1, the AWAKE bit or the
+       * ADXL367 directly and act on it: in the product this output switches a
+       * voltage, so a device that fires while deactivated is dangerous. See
+       * App::updateOutputState() and docs/v1-scope.md section 1.0.
+       */
+      bool IsOutputActive() const { return m_output_active; }
+
     private:
       /** @brief Whether the sensor is armed. Cold start defaults to Inactive. */
       enum class ArmState : uint8_t { Inactive = 0, Active = 1 };
@@ -52,6 +66,10 @@ namespace alc
       // exactly what is applied, rather than each recomputing and disagreeing.
       int applyLeds(bool ledA, bool ledB);
 
+      // Derives m_output_active. The single place the arm state and the
+      // accelerometer are combined — see IsOutputActive().
+      void updateOutputState();
+
       void setArmState(ArmState state);
 
       void toggleArmState();
@@ -66,6 +84,10 @@ namespace alc
       // assertion belongs to motion from BEFORE arming, so it must not count as a
       // trigger; it is suppressed until INT1 de-asserts and a fresh edge arrives.
       bool m_ignore_stale_trigger;
+
+      // The definitive output state. Written only by updateOutputState(), read
+      // only via IsOutputActive().
+      bool m_output_active;
 
       bool m_initialised;
   };

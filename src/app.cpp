@@ -115,14 +115,13 @@ namespace alc
       , m_scanner()
       , m_arm_state(ArmState::Inactive)
       , m_ignore_stale_trigger(false)
+      , m_output_active(false)
       , m_initialised(false)
   {}
 
   int App::Run()
   {
     int result { 0 };
-    bool awake { false };
-    bool triggered { false };
     bool previousTriggered { false };
     bool ledA { false };
     bool ledB { false };
@@ -190,18 +189,8 @@ namespace alc
       if (blinkOnTicks > 0) { --blinkOnTicks; }
 #endif
 
-      // INT1 tracks the ADXL367 AWAKE bit, so the 5 s LED B timeout is the part's
-      // own loop period rather than a software timer.
-      awake = gpio_pin_get_dt(&s_adxl_int1) > 0;
-
-      // Release the stale-trigger suppression only once the part has actually gone
-      // back to sleep. See setArmState() - this is what makes arming edge-triggered.
-      if (m_ignore_stale_trigger && !awake) {
-        m_ignore_stale_trigger = false;
-        LOG_INF("ADXL cleared after arming - device is now live.");
-      }
-
-      triggered = awake && !m_ignore_stale_trigger;
+      // The ONE place the output state is derived. See updateOutputState().
+      updateOutputState();
 
       // Compute the LED states HERE, once, so the log below reports what is
       // actually written to the pins. Recomputing them inside the log statement
@@ -211,16 +200,18 @@ namespace alc
 #if !defined(CONFIG_MFS_BATTERY_TEST)
       ledA = (m_arm_state == ArmState::Inactive);
 #endif
-      ledB = (m_arm_state == ArmState::Active) && triggered;
+      // LED B is a CONSUMER of the output state, exactly like the future voltage
+      // switch will be. It does not re-derive the condition.
+      ledB = IsOutputActive();
 #endif
 
       // Log only on transitions. A periodic dump floods the 4 KB RTT buffer in
       // LOG_MODE_IMMEDIATE and silently drops the events that actually matter —
       // which is how the LED behaviour went unexplained for a whole test cycle.
-      if (triggered != previousTriggered) {
-        LOG_INF("Motion %s. Arm %s, LED A %s, LED B %s.", triggered ? "detected" : "timed out",
+      if (IsOutputActive() != previousTriggered) {
+        previousTriggered = IsOutputActive();
+        LOG_INF("Output %s. Arm %s, LED A %s, LED B %s.", previousTriggered ? "ASSERTED" : "cleared",
                 m_arm_state == ArmState::Active ? "Active" : "Inactive", ledA ? "ON" : "off", ledB ? "ON" : "off");
-        previousTriggered = triggered;
       }
 
       result = applyLeds(ledA, ledB);
@@ -400,6 +391,34 @@ namespace alc
     if (result < 0) { return result; }
 
     return m_accelerometer.ConfigureLoopMode(CONFIG_MFS_ADXL_THRESHOLD, CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_SECS);
+  }
+
+  void App::updateOutputState()
+  {
+    // ================================================================
+    //  THE SINGLE SOURCE OF TRUTH FOR THE DEVICE OUTPUT.
+    //
+    //  m_arm_state IS DEFINITIVE. The accelerometer is only ever ANDed
+    //  with it. Nothing downstream may read INT1, the AWAKE bit, or the
+    //  ADXL367 in any form and act on it directly - in the product this
+    //  output switches a voltage, and a device that fires while
+    //  deactivated is dangerous.
+    //
+    //  Every consumer (LED B today; the voltage switch, alarm report and
+    //  event counter later) must call IsOutputActive(). If a future
+    //  change needs a different condition, change it HERE so every
+    //  consumer moves together.
+    // ================================================================
+    bool awake { gpio_pin_get_dt(&s_adxl_int1) > 0 };
+
+    // Release the stale-trigger suppression only once the part has actually gone
+    // back to sleep. See setArmState() - this is what makes arming edge-triggered.
+    if (m_ignore_stale_trigger && !awake) {
+      m_ignore_stale_trigger = false;
+      LOG_INF("ADXL cleared after arming - device is now live.");
+    }
+
+    m_output_active = (m_arm_state == ArmState::Active) && awake && !m_ignore_stale_trigger;
   }
 
   void App::setArmState(ArmState state)

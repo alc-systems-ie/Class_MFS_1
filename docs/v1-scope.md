@@ -24,7 +24,38 @@ design toward so that later work does not require rework.
 Also required, because it is how the toggle arrives: the 100 ms / 6 s passive scan
 loop and TAN validation (`docs/tan-scheme.md`).
 
-### 1.0 Arming is EDGE-TRIGGERED — safety critical
+### 1.0 THE ARM BOOLEAN IS DEFINITIVE — architectural invariant
+
+**The device tracks `m_arm_state`. The accelerometer is only ever ANDed with it.**
+
+This is not a style preference. In the product the output switches a voltage, so a
+device that fires while deactivated is dangerous. The invariant must hold as
+further hardware is added.
+
+Enforced in code by a single derivation point:
+
+```cpp
+// App::updateOutputState() — the only place the two are combined.
+m_output_active = (m_arm_state == ArmState::Active) && awake && !m_ignore_stale_trigger;
+```
+
+and a single sanctioned read, `App::IsOutputActive()`.
+
+**Rules for anything added later** — voltage switch, alarm report, event counter,
+BLE notification:
+
+- **Call `IsOutputActive()`.** Never read INT1, the AWAKE bit, `Adxl367::ReadAwake()`
+  or any accelerometer state and act on it directly.
+- **Never re-derive the condition** at the consumer. LED B is deliberately written
+  as `ledB = IsOutputActive();` — a consumer, not a second implementation — so a
+  future voltage-switch consumer has an example to copy.
+- **If the condition must change, change `updateOutputState()`**, so every consumer
+  moves together and none is left behind.
+
+The accelerometer GPIO spec `s_adxl_int1` is file-scope `static` in `app.cpp`
+precisely so no other translation unit can reach it.
+
+### 1.0.1 Arming is EDGE-TRIGGERED — safety critical
 
 **A trigger that was already asserted when the device was armed must never fire.**
 
