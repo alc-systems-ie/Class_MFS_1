@@ -90,34 +90,37 @@ the board sit untouched for ten minutes before trusting an average.
 **The fresh-cell figure is not the life figure.** See §3.1 — consumption rises as
 V<sub>BAT</sub> falls, so a single 3.0 V reading understates lifetime consumption.
 
-### 3.1 OPEN — consumption versus supply voltage
+### 3.1 RESOLVED — the boost is in pass-through across the range
 
-**The BOOST output voltage is never configured** (`App::initPmic()` sets LDOSW only),
-so VOUT is whatever the VSET pin selects: 3.0 V unconnected, 1.8 V grounded.
+| Supply | Emulates | Measured |
+|---|---|---|
+| 3.0 V | Fresh CR123A | 75 µA |
+| **2.5 V** | **Mid-life** | **68 µA** |
 
-This matters because BOOST enters pass-through only "when battery voltage is at
-least 100 mV above the target VOUT". If VOUT is 3.0 V, a CR123A drops below 3.1 V
-almost immediately and the boost is therefore **switching for essentially the whole
-service life**, not just the tail — which contradicts the assumption in §10 that
-battery current ≈ load current.
+**Consumption FALLS as the supply falls.** That settles what the boost is doing.
 
-To resolve, sweep the PPK2 and record:
+Had VOUT been 3.0 V (VSET unconnected), then at V<sub>BAT</sub> = 2.5 V the boost
+would step up, drawing roughly (3.0/2.5) / 0.9 ≈ **1.33×** the load — about
+100 µA. The measurement is 68 µA, so the boost is **in pass-through, not
+switching**. VSET is grounded, VOUT is 1.8 V, and pass-through therefore holds from
+a fresh cell down to ~1.9 V V<sub>BAT</sub>.
 
-| Supply | Emulates | Measured | Notes |
-|---|---|---|---|
-| 3.2 V | Fresh, above pass-through threshold | | If markedly lower than 3.0 V, VOUT is 3.0 V and the boost was switching |
-| 3.0 V | Fresh CR123A | **75 µA** | measured |
-| 2.5 V | Mid-life | | |
-| 2.0 V | Near end of life | | |
+**The §10 assumption that battery current ≈ load current is correct, and no
+`BoostSetVoltage()` call is needed.**
 
-**If it is confirmed, there is a design win available:** setting `BOOST.VOUT` to
-1.8 V via `BoostSetVoltage()` would hold pass-through down to ~1.9 V V<sub>BAT</sub>,
-i.e. nearly the whole discharge curve, and the nRF54L05 runs from 1.7 V. One call
-in `initPmic()`.
+The downward slope is expected once pass-through is established: the SoC runs
+directly at V<sub>BAT</sub>, and CMOS dynamic current scales with supply. A 9% current
+drop for a 17% voltage drop is consistent with a partly voltage-scaling, partly
+fixed load.
 
-A proper life estimate integrates consumption across the discharge curve rather
-than dividing capacity by the fresh-cell figure, so the 2.5 V and 2.0 V points
-matter more than the 3.0 V one.
+**This improves the life estimate rather than degrading it.** Dividing capacity by
+the fresh-cell figure is conservative, because average consumption across the
+discharge sits below 75 µA — roughly 72 µA weighted toward the plateau, giving
+**~2.3 years**, which is essentially the 2.4 years predicted.
+
+Still worth measuring: **2.0 V**, which sits just above the ~1.9 V pass-through
+boundary. Below that the boost engages and consumption should turn upward — that
+is the end-of-life knee, and it bounds the last of the capacity.
 
 Bracket on the soft numbers:
 
