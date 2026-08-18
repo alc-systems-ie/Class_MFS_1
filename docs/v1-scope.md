@@ -24,6 +24,98 @@ design toward so that later work does not require rework.
 Also required, because it is how the toggle arrives: the 100 ms / 6 s passive scan
 loop and TAN validation (`docs/tan-scheme.md`).
 
+### 1.0 THE ARM BOOLEAN IS DEFINITIVE — architectural invariant
+
+**The device tracks `m_arm_state`. The accelerometer is only ever ANDed with it.**
+
+This is not a style preference. In the product the output switches a voltage, so a
+device that fires while deactivated is dangerous. The invariant must hold as
+further hardware is added.
+
+Enforced in code by a single derivation point:
+
+```cpp
+// App::updateOutputState() — the only place the two are combined.
+m_output_active = (m_arm_state == ArmState::Active) && awake && !m_ignore_stale_trigger;
+```
+
+and a single sanctioned read, `App::IsOutputActive()`.
+
+**Rules for anything added later** — voltage switch, alarm report, event counter,
+BLE notification:
+
+- **Call `IsOutputActive()`.** Never read INT1, the AWAKE bit, `Adxl367::ReadAwake()`
+  or any accelerometer state and act on it directly.
+- **Never re-derive the condition** at the consumer. LED B is deliberately written
+  as `ledB = IsOutputActive();` — a consumer, not a second implementation — so a
+  future voltage-switch consumer has an example to copy.
+- **If the condition must change, change `updateOutputState()`**, so every consumer
+  moves together and none is left behind.
+
+The accelerometer GPIO spec `s_adxl_int1` is file-scope `static` in `app.cpp`
+precisely so no other translation unit can reach it.
+
+### 1.0.1 Arming is EDGE-TRIGGERED — safety critical
+
+**A trigger that was already asserted when the device was armed must never fire.**
+
+The ADXL367 AWAKE bit is a **level, not a latch**. Once motion occurs it stays
+asserted for the whole inactivity period (5 s) and **cannot be cleared by reading
+STATUS**. So a naive `armed && triggered` test fires the instant the device is
+armed, in response to motion that happened *before* arming.
+
+**This is the common case, not an edge case.** An engineer handling the device in
+order to arm it is itself motion, so AWAKE is very often asserted at that moment.
+Without the guard the device would fire on nearly every activation.
+
+**In the product the trigger switches a voltage**, so a false fire on activation is
+dangerous rather than merely untidy.
+
+**Implementation: the accelerometer is stopped while the device is deactivated and
+configured afresh when it is activated.** Rather than leave a continuously-running
+part and filter its stale level, there is no stale level to inherit — the
+datasheet's loop mode initialization routine soft-resets the part and forces one
+activity/inactivity cycle, which drives AWAKE low (§3.1). The order is what makes
+this safe, and it is deliberate in both directions:
+
+| Activate | Deactivate |
+|---|---|
+| 1. `ConfigureLoopMode()` — soft reset, bootstrap cycle, real thresholds | 1. `m_arm_state = Inactive` |
+| 2. Confirm `AWAKE == 0` from STATUS | 2. `updateOutputState()` — output derives to 0 |
+| 3. `m_arm_state = Active`, LED A off | 3. `Standby()` — loop engine stopped, INT1 de-asserts |
+
+On deactivation the boolean necessarily moves first, because **the output is
+derived from it, not stored beside it** (§1.0). The derivation runs immediately
+after and always before the sensor is touched, so there is no instant at which a
+deactivated device still reads as triggered.
+
+`Adxl367::Standby()` parks INTMAP1/INTMAP2 active-low with nothing mapped before
+dropping POWER_CTL, so both pins idle HIGH. Stopping the part between arms means
+it now sits unconfigured from boot until the first activation — potentially
+forever — and the INT2/SHPHLD polarity bit (§2) must not depend on how soon
+someone happens to arm the device.
+
+`enableAccelerometer()` **refuses to arm** if the part will not configure or its
+AWAKE state cannot be read. A device that reported itself armed with a dead sensor
+would be a silent loss of function; instead it stays Inactive with LED A lit.
+
+`m_ignore_stale_trigger` is kept as belt and braces: if the part is somehow awake
+in the moments between configuring and arming, the flag suppresses it until INT1
+de-asserts. It should not normally be set.
+
+Configuring per-arm has a second benefit: the referenced-inactivity reference is
+always captured **in the orientation the device is actually left in**, which is
+the failure the full-scale `THRESH_INACT` also guards against (§3.1).
+
+`alc_drawer_master` hits the same class of bug and solves it differently, because
+it uses **latched** activity rather than loop-mode AWAKE: it clears the latch
+immediately before arming, `adxl.ReadActivityLatched(discardLatch)`, with the
+comment "a stale latch holds SHPHLD low -> instant false wake". **That fix does not
+transfer** — clearing a latch has no effect on a level.
+
+Any future consumer of this signal (alarm report, voltage switch, event counter)
+must use the gated `triggered`, never the raw INT1 level.
+
 ### 1.1 Explicitly deferred
 
 No alarm transmission, no nightly status, no fuel gauge reporting, no FEM, no

@@ -56,6 +56,28 @@ Unmap INT2 in the ADXL config, set `shiphold-longpress = "disable"`, and keep th
 ADXL on the 1.8 V LSOUT rail. Also force LDOSW to Ultra-Low Power — in `Auto` it
 would sit in High Power forever now that the device never hibernates.
 
+**ARCHITECTURAL INVARIANT — the arm boolean is definitive** (`docs/v1-scope.md`
+§1.0). The device tracks `m_arm_state`; the accelerometer is only ever **ANDed**
+with it. In the product the output switches a voltage, so firing while deactivated
+is dangerous.
+
+- `App::updateOutputState()` is the **only** place the two are combined.
+- `App::IsOutputActive()` is the **only** sanctioned read.
+- Anything added later — voltage switch, alarm report, event counter, BLE
+  notification — calls `IsOutputActive()` and **never** reads INT1, the AWAKE bit
+  or `Adxl367::ReadAwake()` directly, and never re-derives the condition.
+- LED B is written as `ledB = IsOutputActive();` deliberately, as the example for
+  future consumers to copy.
+
+Related: **arming is edge-triggered** (§1.0.1). AWAKE is a level, not a latch, so a
+naive `armed && triggered` fires the instant the device is armed on motion that
+predates arming — and an engineer handling the device to arm it *is* motion, so
+that is the common case, not an edge case. The device therefore **holds the ADXL367
+in standby while deactivated and configures it afresh on activation**, so there is
+no stale level to inherit. The order is load-bearing: activate is configure →
+confirm AWAKE 0 → set the boolean; deactivate is clear the boolean → re-derive the
+output → `Standby()`. Arming is **refused** if the part will not configure.
+
 **ADXL367 loop mode has a mandatory initialization routine** (`docs/v1-scope.md`
 §3.1). Referenced mode holds an internal reference that is only valid once the
 engine has cycled; configure the real thresholds up front and it never cycles, so
@@ -64,8 +86,10 @@ routine forces one cycle with a sub-noise activity threshold and an above-1 g
 inactivity threshold, both timers zero, then installs the real values at step 9.
 AUTOSLEEP (`POWER_CTL = 0x07`) is not optional. Four bring-up attempts were lost
 to inventing a sequence instead of using the published one — **the real datasheet
-is at `../alc_help_at_hand/docs/adxl367.pdf`; the markdown summary in
-`v3.1.0/alc_mailbox_monitor/` omits the routine entirely.**
+is at `../../datasheets/adi/ADXL367_Datasheet.pdf`; the markdown summary in
+`v3.1.0/alc_mailbox_monitor/` omits the routine entirely.** (It was previously
+cited as `../alc_help_at_hand/docs/adxl367.pdf`, which does not resolve from this
+workspace — `alc_help_at_hand` lives under `v3.1.0`.)
 
 Constraints from that analysis that are easy to violate by accident:
 

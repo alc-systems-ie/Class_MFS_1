@@ -42,6 +42,25 @@ config MFS_ADXL_THRESHOLD
 	  Referenced mode only — never Absolute, or the vertical gravity component
 	  latches the part awake permanently. See docs/v1-scope.md section 3.
 
+config MFS_ADXL_INACTIVITY_THRESHOLD
+	int "ADXL367 referenced-inactivity threshold (13-bit)"
+	default 8191
+	help
+	  MUST be wide enough to cover any orientation change, which is up to 2 g
+	  (an axis swinging from +1 g to -1 g). 8191 is 13-bit full scale, ~2 g.
+
+	  DO NOT set this near the activity threshold. The inactivity reference is
+	  captured when ACTIVITY fires, and the datasheet is explicit that in linked
+	  and looped mode "the inactivity threshold cannot be continuously updated
+	  ... the accelerometer does not detect inactivity until the acceleration
+	  input returns to within the inactivity threshold". Set the board down in a
+	  different orientation and it never returns: AWAKE sticks permanently and
+	  the device stops triggering, silently.
+
+	  At full scale, inactivity becomes a genuine "N seconds since the last
+	  activity" timer, which is the specified behaviour and is immune to
+	  orientation.
+
 config MFS_ADXL_ACTIVITY_SAMPLES
 	int "ADXL367 sustained samples required to latch activity"
 	default 5
@@ -54,6 +73,37 @@ config MFS_ADXL_ACTIVITY_SAMPLES
 	  the device, at the cost of the same delay in detection latency.
 	  alc_drawer_master uses 2 (20 ms); alc_flush_master uses 20 samples at
 	  25 Hz (800 ms) to reject cistern fill-valve transients.
+
+config MFS_BATTERY_TEST
+	bool "Battery-life test build: LED A becomes a periodic liveness blink"
+	default n
+	help
+	  Repurposes LED A from "on while Inactive" to a short blink once per scan
+	  period, so an unattended device can be seen to be alive across a long
+	  battery test. LED B is unchanged. The device still starts deactivated and
+	  is still armed by the engineer toggle.
+
+	  READ THIS BEFORE TRUSTING THE RESULT: the blink dominates the power
+	  budget. At an assumed 2 mA of LED current, 500 ms every 6000 ms is 8.3%
+	  duty, i.e. ~167 uA against a ~69 uA operating budget - so the measurement
+	  becomes mostly a measurement of the LED. See docs/battery-test.md.
+
+config MFS_BLINK_MS
+	int "Liveness blink duration (milliseconds)"
+	default 500
+	depends on MFS_BATTERY_TEST
+	help
+	  Rounded down to the 100 ms main-loop poll interval.
+
+	  SET TO 0 TO DISABLE LED A ENTIRELY - not blinking, and not lit as an
+	  Inactive indicator either. That is the setting for a true measurement.
+	  LED B still works, so arming the device and nudging it is the liveness
+	  check.
+
+	  500 ms is highly visible but costs ~167 uA at 2 mA LED current. 100 ms
+	  costs ~33 uA and is still clearly visible; 10 ms would cost ~3 uA but
+	  needs the loop poll shortened to resolve it. Lower this if the aim is to
+	  measure the scan rather than the LED.
 
 config MFS_DEBUG_LED
 	bool "Drive the state LEDs (bench only)"

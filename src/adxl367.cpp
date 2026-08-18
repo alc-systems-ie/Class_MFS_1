@@ -76,6 +76,22 @@ namespace
   // noise floor (1 LSB) and inactivity threshold at full scale (13-bit max, well
   // over 1 g), both with zero timers, so the engine cycles immediately and
   // captures a valid reference.
+  // THRESH_INACT MUST cover the largest possible orientation change, which is 2 g
+  // (an axis swinging from +1 g to -1 g). Setting it near the activity threshold
+  // permanently sticks the part awake, because the inactivity reference is captured
+  // when ACTIVITY fires and, per the datasheet, "in linked and looped mode ... the
+  // inactivity threshold cannot be continuously updated ... the accelerometer does
+  // not detect inactivity until the acceleration input returns to within the
+  // inactivity threshold". Put the board down in a different orientation and it
+  // never returns, so AWAKE never clears.
+  //
+  // Diagnosed on hardware 2026-08-18 with THRESH_INACT = THRESH_ACT = 300 (75 mg):
+  // AWAKE held for 50 s and then indefinitely after the board was re-oriented.
+  //
+  // At full scale inactivity becomes a genuine "5 s since the last activity" timer,
+  // which is exactly the specified behaviour and is immune to orientation.
+  constexpr uint16_t M_THRESH_INACT_MIN_SAFE { 8191 }; // 13-bit full scale, ~2 g.
+
   constexpr uint16_t M_THRESH_ACT_BOOTSTRAP { 1 };
   constexpr uint16_t M_THRESH_INACT_BOOTSTRAP { 0x1FFF };
   constexpr uint8_t M_TIME_BOOTSTRAP { 0 };
@@ -172,7 +188,7 @@ namespace alc
     return writeRegister(M_REG_TIME_INACT_L, static_cast<uint8_t>(samples & 0xFF));
   }
 
-  int Adxl367::ConfigureLoopMode(uint16_t threshold, uint8_t activitySamples, uint8_t inactivitySecs)
+  int Adxl367::ConfigureLoopMode(uint16_t threshold, uint8_t activitySamples, uint16_t inactivityThreshold, uint8_t inactivitySecs)
   {
     int result { 0 };
     uint8_t threshHigh { 0 };
@@ -269,9 +285,11 @@ namespace alc
     threshLow         = static_cast<uint8_t>((threshold & M_THRESH_L_MASK) << M_THRESH_L_SHIFT);
     inactivitySamples = static_cast<uint16_t>(inactivitySecs * M_ODR_HZ);
 
+    // THRESH_INACT is deliberately NOT the activity threshold. See the note above
+    // M_THRESH_INACT_MIN_SAFE.
     result = writeThreshold(M_REG_THRESH_ACT_H, M_REG_THRESH_ACT_L, threshold);
     if (result == 0) { result = writeRegister(M_REG_TIME_ACT, activitySamples); }
-    if (result == 0) { result = writeThreshold(M_REG_THRESH_INACT_H, M_REG_THRESH_INACT_L, threshold); }
+    if (result == 0) { result = writeThreshold(M_REG_THRESH_INACT_H, M_REG_THRESH_INACT_L, inactivityThreshold); }
     if (result == 0) { result = writeInactivityTime(inactivitySamples); }
     if (result < 0) {
       LOG_ERR("ADXL367 threshold install failed: %d!", result);
@@ -306,6 +324,33 @@ namespace alc
 
   int Adxl367::Standby()
   {
+    // Park BOTH interrupt pins before stopping the engine, and do it here rather
+    // than relying on the reset defaults.
+    //
+    // INT2 is wired to the nPM2100 SHPHLD pin. What makes that pin safe is the
+    // active-low POLARITY bit, which forces it to idle HIGH; the INTMAP2 reset
+    // value of 0x00 does not set it. ConfigureLoopMode() writes it, but a device
+    // that boots and is never activated would then sit at the reset default
+    // indefinitely, since the part is now held in standby until it is armed. A
+    // hazard the datasheet calls out must not depend on how soon someone happens
+    // to arm the device - see docs/v1-scope.md section 2.
+    //
+    // Observed 2026-08-18: an unmapped INT1 read physically HIGH at 0x00, so the
+    // reset default may well be harmless in practice. That is an inference from
+    // the sibling pin, not a guarantee, and this costs four register writes.
+    int result { writeRegister(M_REG_INTMAP2_LOWER, M_INT_ACTIVE_LOW | M_INT_NONE) };
+
+    if (result == 0) { result = writeRegister(M_REG_INTMAP2_UPPER, M_INT_NONE); }
+
+    // INT1 gets the same treatment. Active-low with nothing mapped idles HIGH,
+    // which the GPIO_ACTIVE_LOW spec in the overlay reads back as de-asserted.
+    if (result == 0) { result = writeRegister(M_REG_INTMAP1_LOWER, M_INT_ACTIVE_LOW | M_INT_NONE); }
+    if (result == 0) { result = writeRegister(M_REG_INTMAP1_UPPER, M_INT_NONE); }
+    if (result < 0) {
+      LOG_ERR("ADXL367 interrupt park failed: %d!", result);
+      return result;
+    }
+
     return writeRegister(M_REG_POWER_CTL, M_POWER_STANDBY);
   }
 

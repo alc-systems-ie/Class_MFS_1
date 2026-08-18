@@ -70,6 +70,59 @@ all (`docs/v1-scope.md` §3.1), so the saving is a side effect rather than a
 choice. It is worth about 0.8 µA — roughly 1%, or ten days across the service
 life — so it changes no decision.
 
+### MEASURED 2026-08-18 — 75 µA at 3.0 V
+
+Power Profiler Kit II in Source Meter mode at 3000 mV, LED A disabled
+(`CONFIG_MFS_BLINK_MS=0`), debugger detached, 1-minute averaging window:
+
+| | Predicted | Measured | Delta |
+|---|---|---|---|
+| Average current | 69 µA | **75 µA** | +8.7% |
+| CR123A life | 2.4 years | **~2.2 years** | −8% |
+
+**The model is good to within 9%**, built from datasheets before hardware existed.
+
+A shorter averaging window earlier read 88 µA. That is believed to be settling or
+handling: any disturbance holds the ADXL367 in measurement mode (~0.89 µA) instead
+of autosleep wake-up mode (~180 nA) for 5 s, and a brief window catches it. Let
+the board sit untouched for ten minutes before trusting an average.
+
+**The fresh-cell figure is not the life figure** — but it errs the safe way here.
+Consumption *falls* as V<sub>BAT</sub> falls (§3.1), so dividing capacity by the
+3.0 V reading is conservative.
+
+### 3.1 RESOLVED — the boost is in pass-through across the range
+
+| Supply | Emulates | Measured |
+|---|---|---|
+| 3.0 V | Fresh CR123A | 75 µA |
+| **2.5 V** | **Mid-life** | **68 µA** |
+
+**Consumption FALLS as the supply falls.** That settles what the boost is doing.
+
+Had VOUT been 3.0 V (VSET unconnected), then at V<sub>BAT</sub> = 2.5 V the boost
+would step up, drawing roughly (3.0/2.5) / 0.9 ≈ **1.33×** the load — about
+100 µA. The measurement is 68 µA, so the boost is **in pass-through, not
+switching**. VSET is grounded, VOUT is 1.8 V, and pass-through therefore holds from
+a fresh cell down to ~1.9 V V<sub>BAT</sub>.
+
+**The §10 assumption that battery current ≈ load current is correct, and no
+`BoostSetVoltage()` call is needed.**
+
+The downward slope is expected once pass-through is established: the SoC runs
+directly at V<sub>BAT</sub>, and CMOS dynamic current scales with supply. A 9% current
+drop for a 17% voltage drop is consistent with a partly voltage-scaling, partly
+fixed load.
+
+**This improves the life estimate rather than degrading it.** Dividing capacity by
+the fresh-cell figure is conservative, because average consumption across the
+discharge sits below 75 µA — roughly 72 µA weighted toward the plateau, giving
+**~2.3 years**, which is essentially the 2.4 years predicted.
+
+Still worth measuring: **2.0 V**, which sits just above the ~1.9 V pass-through
+boundary. Below that the boost engages and consumption should turn upward — that
+is the end-of-life knee, and it bounds the last of the capacity.
+
 Bracket on the soft numbers:
 
 | Case | Assumptions | Average | Life |

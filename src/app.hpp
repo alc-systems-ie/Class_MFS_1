@@ -26,6 +26,20 @@ namespace alc
       /** @brief Brings up the peripherals and enters the main loop. Does not return. */
       int Run();
 
+      /**
+       * @brief The device output state — the ONLY sanctioned trigger source.
+       *
+       * True only when the device is Active AND the ADXL367 is reporting motion
+       * that began after arming. **m_arm_state is definitive**; the accelerometer
+       * is only ever ANDed with it.
+       *
+       * Every consumer must use this. Nothing may read INT1, the AWAKE bit or the
+       * ADXL367 directly and act on it: in the product this output switches a
+       * voltage, so a device that fires while deactivated is dangerous. See
+       * App::updateOutputState() and docs/v1-scope.md section 1.0.
+       */
+      bool IsOutputActive() const { return m_output_active; }
+
     private:
       /** @brief Whether the sensor is armed. Cold start defaults to Inactive. */
       enum class ArmState : uint8_t { Inactive = 0, Active = 1 };
@@ -48,8 +62,23 @@ namespace alc
 
       int initAccelerometer();
 
-      // Applies the LED pair to the current arm state and trigger state.
-      int refreshLeds(bool triggered);
+      // Configures the ADXL367 and proves it is reporting inactivity. Called
+      // BEFORE m_arm_state goes Active, so the device cannot come up armed on an
+      // assertion that predates arming.
+      int enableAccelerometer();
+
+      // Takes the output to 0 through updateOutputState(), then puts the ADXL367
+      // in standby. Called AFTER m_arm_state goes Inactive, so the output is
+      // already derived low before the part is stopped.
+      int disableAccelerometer();
+
+      // Writes the two LED pins. Takes the states directly so the caller can log
+      // exactly what is applied, rather than each recomputing and disagreeing.
+      int applyLeds(bool ledA, bool ledB);
+
+      // Derives m_output_active. The single place the arm state and the
+      // accelerometer are combined — see IsOutputActive().
+      void updateOutputState();
 
       void setArmState(ArmState state);
 
@@ -60,6 +89,21 @@ namespace alc
       Adxl367 m_accelerometer;
       CommandScanner m_scanner;
       ArmState m_arm_state;
+
+      // True when the ADXL367 was still awake immediately after being configured
+      // for arming. That assertion belongs to motion from BEFORE arming, so it
+      // must not count as a trigger; it is suppressed until INT1 de-asserts and a
+      // fresh edge arrives. Belt and braces - the configuration bootstrap drives
+      // AWAKE low, so this should not normally be set.
+      bool m_ignore_stale_trigger;
+
+      // The definitive output state. Written only by updateOutputState(), read
+      // only via IsOutputActive().
+      bool m_output_active;
+
+      // Consecutive loop ticks with the ADXL awake, for the stuck-AWAKE watchdog.
+      uint32_t m_awake_ticks;
+
       bool m_initialised;
   };
 

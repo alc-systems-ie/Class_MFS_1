@@ -39,14 +39,17 @@ namespace alc
       /**
        * @brief Soft-reset and configure loop-mode referenced activity/inactivity.
        *
-       * @param threshold        Activity threshold, 11-bit, 2 g range.
-       * @param activitySamples  Sustained samples required to latch activity.
-       * @param inactivitySecs   Stillness before the part returns to activity
-       *                         detection. This is the AWAKE de-assert delay, and
-       *                         hence the LED B timeout.
+       * @param threshold           Activity threshold, 13-bit, 0.25 mg/LSB at 2 g.
+       * @param activitySamples     Sustained samples required to latch activity.
+       * @param inactivityThreshold Inactivity threshold. MUST be wide enough to
+       *                            cover any orientation change, or the part
+       *                            sticks awake permanently — see the
+       *                            implementation note.
+       * @param inactivitySecs      Stillness before the part returns to activity
+       *                            detection. This is the AWAKE de-assert delay.
        * @return 0 on success; negative errno on transport failure.
        */
-      int ConfigureLoopMode(uint16_t threshold, uint8_t activitySamples, uint8_t inactivitySecs);
+      int ConfigureLoopMode(uint16_t threshold, uint8_t activitySamples, uint16_t inactivityThreshold, uint8_t inactivitySecs);
 
       /**
        * @brief Read the live AWAKE state from STATUS.
@@ -59,7 +62,15 @@ namespace alc
        */
       int ReadAwake(bool& awake);
 
-      /** @brief Put the part in standby; interrupts stop. */
+      /**
+       * @brief Put the part in standby, with both interrupt pins parked safe.
+       *
+       * INTMAP1/INTMAP2 are set to active-low with nothing mapped, so both pins
+       * idle HIGH, before POWER_CTL drops to standby. That polarity is what keeps
+       * INT2 off the nPM2100 SHPHLD pin, and it is established here rather than
+       * left to the reset default — see the implementation note and the class
+       * warning above.
+       */
       int Standby();
 
       /**
