@@ -48,9 +48,9 @@ namespace alc
 
       int initAccelerometer();
 
-      // Applies the LED pair. ledAState drives LED A only in a battery-test build,
-      // where it is a liveness blink; otherwise LED A follows the arm state.
-      int refreshLeds(bool ledAState, bool triggered);
+      // Writes the two LED pins. Takes the states directly so the caller can log
+      // exactly what is applied, rather than each recomputing and disagreeing.
+      int applyLeds(bool ledA, bool ledB);
 
       void setArmState(ArmState state);
 

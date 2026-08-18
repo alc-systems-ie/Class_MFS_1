@@ -125,6 +125,7 @@ namespace alc
     bool triggered { false };
     bool previousTriggered { false };
     bool ledA { false };
+    bool ledB { false };
 #if defined(CONFIG_MFS_BATTERY_TEST)
     uint32_t blinkTicks { 0 };
     uint32_t blinkOnTicks { 0 };
@@ -202,17 +203,27 @@ namespace alc
 
       triggered = awake && !m_ignore_stale_trigger;
 
+      // Compute the LED states HERE, once, so the log below reports what is
+      // actually written to the pins. Recomputing them inside the log statement
+      // from the arm state produced messages that contradicted the build - a
+      // battery-test build never drives LED A, but the log still claimed "LED A ON".
+#if defined(CONFIG_MFS_DEBUG_LED)
+#if !defined(CONFIG_MFS_BATTERY_TEST)
+      ledA = (m_arm_state == ArmState::Inactive);
+#endif
+      ledB = (m_arm_state == ArmState::Active) && triggered;
+#endif
+
       // Log only on transitions. A periodic dump floods the 4 KB RTT buffer in
       // LOG_MODE_IMMEDIATE and silently drops the events that actually matter —
       // which is how the LED behaviour went unexplained for a whole test cycle.
       if (triggered != previousTriggered) {
-        LOG_INF("Motion %s. Arm state %s, LED A %s, LED B %s.", triggered ? "detected" : "timed out",
-                m_arm_state == ArmState::Active ? "Active" : "Inactive", (m_arm_state == ArmState::Inactive) ? "ON" : "off",
-                ((m_arm_state == ArmState::Active) && triggered) ? "ON" : "off");
+        LOG_INF("Motion %s. Arm %s, LED A %s, LED B %s.", triggered ? "detected" : "timed out",
+                m_arm_state == ArmState::Active ? "Active" : "Inactive", ledA ? "ON" : "off", ledB ? "ON" : "off");
         previousTriggered = triggered;
       }
 
-      result = refreshLeds(ledA, triggered);
+      result = applyLeds(ledA, ledB);
       if (result < 0) { LOG_ERR("LED update failed: %d!", result); }
 
       k_msleep(M_POLL_INTERVAL_MS);
@@ -427,28 +438,10 @@ namespace alc
     setArmState(m_arm_state == ArmState::Active ? ArmState::Inactive : ArmState::Active);
   }
 
-  int App::refreshLeds(bool ledAState, bool triggered)
+  int App::applyLeds(bool ledA, bool ledB)
   {
-    bool ledA { false };
-    bool ledB { false };
-    int result { 0 };
+    int result { gpio_pin_set_dt(&s_led_a, ledA ? 1 : 0) };
 
-#if defined(CONFIG_MFS_DEBUG_LED)
-#if defined(CONFIG_MFS_BATTERY_TEST)
-    // Battery test: LED A is a liveness blink driven by the caller, not an
-    // Inactive indicator. LED B is unchanged.
-    ledA = ledAState;
-#else
-    ARG_UNUSED(ledAState);
-    ledA = (m_arm_state == ArmState::Inactive);
-#endif
-    ledB = (m_arm_state == ArmState::Active) && triggered;
-#else
-    ARG_UNUSED(ledAState);
-    ARG_UNUSED(triggered);
-#endif
-
-    result = gpio_pin_set_dt(&s_led_a, ledA ? 1 : 0);
     if (result < 0) { return result; }
     return gpio_pin_set_dt(&s_led_b, ledB ? 1 : 0);
   }
