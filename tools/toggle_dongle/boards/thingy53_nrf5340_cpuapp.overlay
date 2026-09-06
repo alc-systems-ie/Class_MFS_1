@@ -1,0 +1,44 @@
+/*
+ * Thingy:53 - button and LED selection for the MFS_1 toggle tool.
+ *
+ * BUTTON - the default is the deliberate choice, recorded here.
+ *
+ * The enclosure exposes ONE pushbutton and it is button0 (P1.14), which the
+ * board already aliases as sw0. Nordic's own Thingy:53 applications treat
+ * button0 as the single user button.
+ *
+ * The devicetree also declares button1 (P1.13), and that one MUST NOT be used:
+ * the board aliases it as mcuboot-button0, so holding it while the device
+ * resets is the MCUboot DFU-entry gesture. A demo whose button sometimes drops
+ * the device into the bootloader instead of sending a toggle is worse than no
+ * demo. No override is needed - the tool reads sw0 - but the trap is worth
+ * writing down.
+ *
+ * LED - overridden below.
+ *
+ * The Thingy:53 has a single RGB LED exposed as three GPIO channels:
+ * led0 = red (P1.08), led1 = green (P1.06), led2 = blue (P1.07). The tool
+ * lights one LED for the duration of the advertising burst, so on this board
+ * the channel it picks IS the colour:
+ *
+ *   red   - the board's only LED showing red is what a demo audience reads as a
+ *           fault, and this indication means the opposite: the burst is going
+ *           out.
+ *   blue  - aliased as mcuboot-led0, so MCUboot blinks it during DFU. Reusing
+ *           it at run time makes the two states indistinguishable.
+ *   green - unambiguously "transmitting", and claimed by nothing else. Chosen.
+ *
+ * The application stays board-agnostic and keeps reading led0; the alias is
+ * remapped here so that led0 means green on this board. Every other target
+ * keeps its own led0.
+ *
+ * The same three pins are also wired to pwm0 through the board's pwmleds node,
+ * but CONFIG_PWM is not enabled by this tool, so the PWM driver never
+ * initialises and never applies its pinctrl. The pins stay under GPIO control.
+ */
+
+/ {
+    aliases {
+        led0 = &green_led;
+    };
+};
