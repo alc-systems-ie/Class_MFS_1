@@ -8,6 +8,7 @@
 #include "adxl367.hpp"
 #include "command_scanner.hpp"
 #include "npm2100.hpp"
+#include "output_switch.hpp"
 
 namespace alc
 {
@@ -88,6 +89,12 @@ namespace alc
       Npm2100 m_pmic;
       Adxl367 m_accelerometer;
       CommandScanner m_scanner;
+
+      // The device's actual output. Driven ONLY from updateOutputState(), which
+      // is the single derivation point - see IsOutputActive(). This class owns
+      // its pins privately; nothing else can reach them.
+      OutputSwitch m_output_switch;
+
       ArmState m_arm_state;
 
       // True when the ADXL367 was still awake immediately after being configured

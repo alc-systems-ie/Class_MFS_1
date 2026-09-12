@@ -117,6 +117,7 @@ namespace alc
       , m_pmic(npm2100_zephyr::MakeZephyrTransport(DEVICE_DT_GET(DT_NODELABEL(i2c21))))
       , m_accelerometer(DEVICE_DT_GET(DT_NODELABEL(i2c21)))
       , m_scanner()
+      , m_output_switch()
       , m_arm_state(ArmState::Inactive)
       , m_ignore_stale_trigger(false)
       , m_output_active(false)
@@ -136,6 +137,18 @@ namespace alc
 #endif
 
     LOG_INF("MFS_1 starting, serial %s.", CONFIG_ALC_DEVICE_SERIAL);
+
+    // THE FIRE OUTPUT IS BROUGHT UP FIRST, before the I2C bus, the FEM or the
+    // LEDs. The external 10k pull-downs hold both lines de-energised from reset,
+    // and this takes active ownership of them at the earliest opportunity so the
+    // window in which they depend on the pull-downs alone is as short as
+    // possible. If it fails, the device refuses to run: a sensor that cannot
+    // prove its output is safe has no business continuing to boot.
+    result = m_output_switch.Init();
+    if (result < 0) {
+      LOG_ERR("Failed to initialise the fire output: %d!", result);
+      return result;
+    }
 
     if (!device_is_ready(m_i2c_bus)) {
       LOG_ERR("i2c21 not ready!");
@@ -505,6 +518,12 @@ namespace alc
     }
 
     m_output_active = (m_arm_state == ArmState::Active) && awake && !m_ignore_stale_trigger;
+
+    // The fire output is driven HERE, in the same breath as the condition is
+    // derived, rather than from the main loop. A consumer that lives at the
+    // derivation point cannot be forgotten by a future edit to the loop, and
+    // there is no second call site that could disagree with this one.
+    m_output_switch.Set(m_output_active);
 
     // Stuck-AWAKE watchdog. Defence in depth: if the accelerometer somehow holds
     // AWAKE far beyond its configured inactivity period, the device stops

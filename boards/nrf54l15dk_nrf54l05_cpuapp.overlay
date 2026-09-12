@@ -83,6 +83,39 @@
         pmic-gpio1-gpios = <&gpio2 1 GPIO_ACTIVE_HIGH>;
         adxl-int1-gpios  = <&gpio2 2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 
+        /* ─── FIRE OUTPUT — THE DEVICE'S ACTUAL OUTPUT ───
+         *
+         * Fire1 and Fire2 assert TOGETHER as one logical channel. They are not a
+         * set/reset pair and must never be driven independently. In the product
+         * this output switches a voltage, so only alc::OutputSwitch may touch
+         * these pins — it owns them privately and exposes Set() alone. Nothing
+         * else may take a handle to them.
+         *
+         * ACTIVE_HIGH because both lines carry external 10k pull-downs. That
+         * makes the hardware fail-safe through reset: the nRF54L brings GPIOs up
+         * high-Z, so the pull-downs hold the output de-energised until firmware
+         * configures the pins, and a reset or brownout loop cannot fire it.
+         * Firmware must not undo that — GPIO_OUTPUT_INACTIVE only, never
+         * GPIO_OUTPUT_ACTIVE, driven low early in boot.
+         *
+         * !!! BOTH PINS ARE CLAIMED BY THE DK BOARD FILES AND ARE ONLY FREE HERE
+         * !!! BECAUSE OF TWO OVERRIDES MADE FOR UNRELATED REASONS:
+         *
+         *   P2.05 is spi00's cs-gpios (external-flash chip select). It is free
+         *         only because &spi00 is disabled below — a change made to
+         *         silence a spurious spi_nor probe error, not for this.
+         *         RE-ENABLING spi00 WOULD HAND FIRE1 TO THE SPI DRIVER AS A CHIP
+         *         SELECT AND TOGGLE IT ON EVERY TRANSACTION.
+         *
+         *   P2.09 is the DK's led0 ("Green LED 0"). It is free only because
+         *         &led0 is remapped to P1.02 below to match the bespoke board.
+         *
+         * Do not re-enable spi00 or remove the led0 override without moving
+         * these pins first.
+         */
+        fire1-gpios = <&gpio2 5 GPIO_ACTIVE_HIGH>;
+        fire2-gpios = <&gpio2 9 GPIO_ACTIVE_HIGH>;
+
         /* nRF21540 control pins — fitted but unused. Parked low at boot so the
          * FEM sits in power-down (~0.4 uA) rather than floating. */
         fem-pdn-gpios    = <&gpio0  4 GPIO_ACTIVE_HIGH>;
