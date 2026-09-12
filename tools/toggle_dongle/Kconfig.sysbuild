@@ -1,0 +1,28 @@
+# Network-core image selection, for dual-core targets (Thingy:53 / nRF5340).
+#
+# The nRF5340's radio is on the NETWORK core, so a cpuapp image with CONFIG_BT=y
+# is only half a Bluetooth build. Without an HCI image on the network core,
+# bt_enable() fails at boot and the tool advertises nothing - the button would
+# simply do nothing, with no console to say why.
+#
+# Without this file the Thingy:53 selects an EMPTY network core: its own
+# Kconfig.sysbuild sets SECURE_BOOT_NETCORE=y, which sets NRF_DEFAULT_EMPTY=y,
+# and NETCORE_EMPTY then wins the NETCORE choice. An empty network core has no
+# radio at all.
+#
+# These are DEFAULTS, not hard assignments, so the file is safe to carry for
+# every board the tool builds for. Single-core targets (nRF54L15 DK, nRF52840
+# Dongle) leave SUPPORT_NETCORE unset, the NETCORE choice is unavailable there,
+# and both symbols simply do not apply.
+#
+# The ipc_radio image needs no configuration from us: nrf/sysbuild/netcore.cmake
+# applies its overlay-bt_hci_ipc.conf whenever NETCORE_IPC_RADIO_BT_HCI_IPC is
+# set.
+
+source "share/sysbuild/Kconfig"
+
+config NRF_DEFAULT_IPC_RADIO
+	default y
+
+config NETCORE_IPC_RADIO_BT_HCI_IPC
+	default y

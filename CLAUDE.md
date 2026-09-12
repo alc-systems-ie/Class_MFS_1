@@ -214,6 +214,75 @@ make clean
 
 Its flags (`-std=c++20 -Wall -Wextra -Wpedantic -Werror`) are the reference for any host-test target added here. There is no single-test filter in that harness; a single case is run by compiling only the relevant `tests/test_*.cpp`.
 
+## Bench tool — `tools/toggle_dongle`
+
+The engineer toggle advertiser. Board-agnostic by construction: it reads `sw0` and
+`led0`, so it builds unchanged for the **Thingy:53**, the **nRF54L15 DK** and the
+**nRF52840 Dongle**. Per-board choices live in `boards/<board>.overlay`, and the
+full detail is in its own `README.md`. The directory name is historical — it is no
+longer Dongle-specific.
+
+Lessons from the Thingy:53 port (2026-09-06), all of which cost time or would have:
+
+- **An nRF5340 app with `CONFIG_BT=y` is only half a Bluetooth build**, and the
+  Thingy:53 defaults the other half to *nothing*. The radio is on the network
+  core; the board's own `Kconfig.sysbuild` sets `SECURE_BOOT_NETCORE=y`, which
+  sets `NRF_DEFAULT_EMPTY=y`, so `NETCORE_EMPTY` wins the `NETCORE` choice. The
+  build then **succeeds**, `bt_enable()` fails at boot, and on a tool with no
+  console the button simply does nothing. The fix is a `Kconfig.sysbuild` in the
+  application directory:
+
+  ```
+  source "share/sysbuild/Kconfig"
+
+  config NRF_DEFAULT_IPC_RADIO
+  	default y
+
+  config NETCORE_IPC_RADIO_BT_HCI_IPC
+  	default y
+  ```
+
+  These are *defaults*, not assignments, so the same file is inert on single-core
+  targets — `SUPPORT_NETCORE` is unset there and the choice never appears. One
+  file serves every board. `nrf/sysbuild/netcore.cmake` then applies ipc_radio's
+  `overlay-bt_hci_ipc.conf` itself, so the netcore image needs no config from us.
+  Pattern copied from `nrf/samples/bluetooth/peripheral_uart`.
+
+- **Never bind a demo button to a board's `mcuboot-button0`.** On the Thingy:53
+  that alias is `button1` (P1.13); holding it through a reset enters MCUboot
+  serial recovery. The single enclosure pushbutton is `button0` (P1.14), already
+  aliased `sw0`. Nordic's own Thingy:53 applications treat `button0` as *the* user
+  button. (On the nRF52840 Dongle the two are unavoidably the same button — it has
+  only one — which is harmless, but it is why the distinction is worth keeping
+  where a board offers a choice.)
+
+- **`SW1` on the Thingy:53 is the power slide switch, not a pushbutton.** It must
+  be ON before anything works. The silkscreen name collides with the Dongle's,
+  where SW1 *is* the pushbutton.
+
+- **On a board with one RGB LED, the alias picks the colour.** Thingy:53 `led0` is
+  **red** (P1.08), `led1` green (P1.06), `led2` blue (P1.07). Red reads as a fault
+  on a demo, and blue is `mcuboot-led0` and blinks during DFU. Remap the alias in
+  the board overlay rather than changing application code:
+
+  ```dts
+  / { aliases { led0 = &green_led; }; };
+  ```
+
+- **Verify the alias actually moved.** `build-<dir>/<image>/zephyr/zephyr.dts`
+  lists every alias with the file and line that set it, so an override that did
+  not take is visible without flashing anything.
+
+- **Check what a movable probe is attached to before flashing.** See the
+  probe-identity note in the session memory: `nrfutil device device-info
+  --serial-number <sn>` reports the device family, which distinguishes an nRF5340
+  (Thingy:53) from an nRF54L (bespoke board or DK). The standalone J-Link gets
+  moved between targets, so its serial identifies the probe, never the board.
+
+Not a trap, but worth knowing: `CONFIG_PWM` is off in this tool, so the Thingy:53's
+`pwmleds` node never initialises and never applies its pinctrl. The RGB pins stay
+under GPIO control. Enabling PWM for any reason would take them back.
+
 ## READ THIS BEFORE TOUCHING HARDWARE
 
 **`../alc_drawer_master/docs/superpowers/handoff_02072026.md` §5, "Lessons learned".**
