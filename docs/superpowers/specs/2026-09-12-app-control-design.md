@@ -355,9 +355,7 @@ The device is radio-silent by design, so:
 1. ~~**PMIC GPIO0 has never been driven on this project.**~~ **RESOLVED 2026-09-12
    on hardware — see §9.1.**
 2. **Re-measure the advertising interval on the iPhone.** 187 ms is a macOS figure.
-3. **Confirm the two `OutputSwitch` GPIOs** — pins, active levels, and whether they
-   assert together as one channel or are a set/reset pair. Assumed here: one
-   channel, active-high, pins declared under `zephyr,user`.
+3. ~~**Confirm the two `OutputSwitch` GPIOs.**~~ **RESOLVED 2026-09-12 — see §9.2.**
 
 ### 9.1 PMIC GPIO0 / TIMER — proven on hardware, 2026-09-12
 
@@ -387,6 +385,43 @@ resolution bounds it no tighter — comfortably inside the ±3 % (25 °C) spec.
 
 Probe source kept in the session scratchpad as `pmic_probe/`. It reuses
 `src/npm2100.cpp` and the board overlay in place rather than copying either.
+
+### 9.2 OutputSwitch pins — specified 2026-09-12
+
+**Fire1 = P2.05, Fire2 = P2.09. Both assert together on activation** — one logical
+channel, two lines, not a set/reset pair. **Both are pulled down by external 10 kΩ
+resistors**, so active-high.
+
+```dts
+fire1-gpios = <&gpio2 5 GPIO_ACTIVE_HIGH>;
+fire2-gpios = <&gpio2 9 GPIO_ACTIVE_HIGH>;
+```
+
+**The hardware is fail-safe at boot and the firmware must not undo it.** The
+nRF54L brings GPIOs up as high-Z inputs, so for the first milliseconds of every
+boot the fire lines are undriven — and the 10 kΩ pull-downs hold them
+de-energised. A reset loop or a brownout therefore cannot fire the output. Two
+rules follow:
+
+- Configure with `GPIO_OUTPUT_INACTIVE`, **never** `GPIO_OUTPUT_ACTIVE`.
+- Drive them low **early in boot**, alongside `parkFrontEndModule()`, so the pins
+  spend as little time as possible relying on the pull-downs alone.
+
+#### Latent hazard — both pins are claimed by the DK board files
+
+Both are free in this build, but only through two overrides made for unrelated
+reasons:
+
+| Pin | DK board files assign it to | Freed here by |
+|---|---|---|
+| P2.05 | `spi00` `cs-gpios`, the external-flash chip select | `&spi00 { status = "disabled"; }` |
+| P2.09 | `led0`, "Green LED 0" | `&led0` remapped to `<&gpio1 2>` |
+
+**Re-enabling `spi00` would hand Fire1 to the SPI driver as a chip select**, which
+would toggle a fire line on every transaction. The `spi00` disable was originally
+added only to silence a spurious `spi_nor` probe error, so nothing in the overlay
+currently records that a safety-relevant output now depends on it. **Both
+dependencies must be stated in a comment beside the fire-pin declarations.**
 
 ## 10. Documents this invalidates
 
