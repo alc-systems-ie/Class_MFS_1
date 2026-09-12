@@ -352,14 +352,41 @@ The device is radio-silent by design, so:
 
 ## 9. Verification required before this can work
 
-1. **PMIC GPIO0 has never been driven on this project.** The overlay says, verbatim,
-   that the PMIC GPIO active levels are *"inherited assumptions from
-   alc_drawer_master; confirm against the PMIC / ADXL pin configuration once
-   driven."* The whole cooldown path hangs off that pin. **First task, not a detail.**
+1. ~~**PMIC GPIO0 has never been driven on this project.**~~ **RESOLVED 2026-09-12
+   on hardware — see §9.1.**
 2. **Re-measure the advertising interval on the iPhone.** 187 ms is a macOS figure.
 3. **Confirm the two `OutputSwitch` GPIOs** — pins, active levels, and whether they
    assert together as one channel or are a set/reset pair. Assumed here: one
    channel, active-high, pins declared under `zephyr,user`.
+
+### 9.1 PMIC GPIO0 / TIMER — proven on hardware, 2026-09-12
+
+Probed on the bespoke MFS_1 board (J-Link 853003346). The TIMER was set to
+`GeneralPurpose` with a 3000 ms target and PMIC GPIO0 watched with
+`gpio_pin_get_raw()`, alongside an I²C poll of `TimerIsExpired()` so a failure
+would separate into "timer did not fire" versus "pin did not move".
+
+| Usage | Pin config | Idle | After expiry | Timer |
+|---|---|---|---|---|
+| `InterruptLo` | default | 1 | 0 | fired |
+| `InterruptLo` | output enabled | 1 | 0 | fired |
+| `InterruptHi` | default | 0 | 1 | fired |
+| `InterruptHi` | output enabled | 0 | 1 | fired |
+
+**Use `GpioUsage::InterruptHi`.** It idles low and asserts high, which makes the
+overlay's inherited `pmic-gpio0-gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>` **correct as
+written**. The overlay's "confirm against the PMIC / ADXL pin configuration once
+driven" caveat is discharged for this pin; it still stands for `pmic-reset-gpios`
+and `pmic-gpio1-gpios`, which remain undriven.
+
+**`GpioSetUsage()` alone is sufficient.** The output-enabled variants behaved
+identically, so `GpioConfigure()` is not needed on this path.
+
+**Timing.** A 3000 ms target fired between 3000 and 3100 ms — the 100 ms poll
+resolution bounds it no tighter — comfortably inside the ±3 % (25 °C) spec.
+
+Probe source kept in the session scratchpad as `pmic_probe/`. It reuses
+`src/npm2100.cpp` and the board overlay in place rather than copying either.
 
 ## 10. Documents this invalidates
 
