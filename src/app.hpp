@@ -181,6 +181,15 @@ namespace alc
       // keeps failing logs once rather than every 100 ms tick.
       bool m_cooldown_rearm_failed;
 
+      // The cooldown window itself is over and only the re-arm remains. Once set,
+      // serviceCooldown() stops consulting the PMIC - it already cleared the
+      // timer's expiry event on the transition - and just retries the re-arm.
+      bool m_cooldown_expired;
+
+      // Earliest uptime at which the next re-arm attempt may run, so a failing
+      // re-arm retries at M_COOLDOWN_RETRY_MS rather than every 100 ms tick.
+      int64_t m_cooldown_next_retry_ms;
+
       bool m_initialised;
   };
 

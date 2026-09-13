@@ -42,6 +42,11 @@ namespace alc
     // 100 ms poll loop itself.
     constexpr int64_t M_COOLDOWN_GRACE_MS { 2000 };
 
+    // Minimum spacing between re-arm retries once the cooldown has expired but
+    // enableAccelerometer() keeps failing. One attempt per second bounds the
+    // driver's own error logging to 1 Hz instead of the 10 Hz poll rate.
+    constexpr int64_t M_COOLDOWN_RETRY_MS { 1000 };
+
 #if defined(CONFIG_MFS_BATTERY_TEST)
     // Liveness blink for the battery test, at the scan period.
     //
@@ -187,6 +192,8 @@ namespace alc
       , m_previous_awake(false)
       , m_cooldown_deadline_ms(0)
       , m_cooldown_rearm_failed(false)
+      , m_cooldown_expired(false)
+      , m_cooldown_next_retry_ms(0)
       , m_initialised(false)
   {}
 
@@ -704,7 +711,8 @@ namespace alc
       m_detection_met    = false;
       m_previous_awake   = false;
       if (m_in_cooldown) {
-        m_in_cooldown = false;
+        m_in_cooldown      = false;
+        m_cooldown_expired = false;
         if (m_pmic.TimerStop() < 0) { LOG_ERR("Failed to stop the cooldown timer on deactivation!"); }
       }
     }
@@ -742,13 +750,15 @@ namespace alc
 
       // Fail TOWARD detecting - no blanking this time - rather than leave the
       // part standing down with nothing left to bring it back up.
-      m_pmic.TimerStop();
+      if (m_pmic.TimerStop() < 0) { LOG_WRN("Could not stop the cooldown timer after a failure."); }
       if (enableAccelerometer() < 0) { LOG_ERR("Could not restore detection after the cooldown timer failed!"); }
       return result;
     }
 
-    m_in_cooldown           = true;
-    m_cooldown_rearm_failed = false;
+    m_in_cooldown            = true;
+    m_cooldown_rearm_failed  = false;
+    m_cooldown_expired       = false;
+    m_cooldown_next_retry_ms = 0;
 
     // Forced over regardless of the PMIC - see m_cooldown_deadline_ms. The TIMER
     // block is +-10%, plus a fixed grace for loop scheduling jitter.
@@ -766,30 +776,45 @@ namespace alc
 
     if (!m_in_cooldown) { return; }
 
-    // A TimerIsExpired() error counts as not-expired from the PMIC, but the
-    // deadline below still applies - it is the fallback for exactly this case.
-    pmicExpired = (m_pmic.TimerIsExpired(expired) == 0) && expired;
-    expired     = pmicExpired || (k_uptime_get() >= m_cooldown_deadline_ms);
-    if (!expired) { return; }
+    // Only consult the PMIC until the cooldown is confirmed over. Once
+    // m_cooldown_expired is set the window itself has already ended - the timer's
+    // expiry event is already cleared - and everything left is the re-arm retry,
+    // which has nothing to do with the PMIC timer.
+    if (!m_cooldown_expired) {
+      // A TimerIsExpired() error counts as not-expired from the PMIC, but the
+      // deadline below still applies - it is the fallback for exactly this case.
+      pmicExpired = (m_pmic.TimerIsExpired(expired) == 0) && expired;
+      expired     = pmicExpired || (k_uptime_get() >= m_cooldown_deadline_ms);
+      if (!expired) { return; }
 
-    if (!pmicExpired) { LOG_WRN("Cooldown forced over by the deadline - the PMIC timer did not report expiry!"); }
+      // Logged only on this transition, not on every later retry tick.
+      if (!pmicExpired) { LOG_WRN("Cooldown forced over by the deadline - the PMIC timer did not report expiry!"); }
+      if (m_pmic.TimerClearExpiredEvent() < 0) { LOG_WRN("Failed to clear the cooldown timer expiry event!"); }
 
-    if (m_pmic.TimerClearExpiredEvent() < 0) { LOG_WRN("Failed to clear the cooldown timer expiry event!"); }
+      m_cooldown_expired = true;
+    }
+
+    // Rate-limited: one attempt per M_COOLDOWN_RETRY_MS rather than every 100 ms
+    // poll tick, so a persistently failing re-arm cannot flood RTT via the
+    // driver's own logging in enableAccelerometer() / ConfigureLoopMode().
+    if (k_uptime_get() < m_cooldown_next_retry_ms) { return; }
 
     // Full bootstrap, not a bare restart. Re-arming must confirm AWAKE is clear
     // so the engine cannot inherit an assertion from during the blanking window.
-    // m_in_cooldown is left set on failure so the re-arm is retried next tick,
-    // rather than stranding the ADXL in standby forever.
+    // m_in_cooldown is left set on failure so the re-arm is retried, rather than
+    // stranding the ADXL in standby forever.
     if (enableAccelerometer() < 0) {
       if (!m_cooldown_rearm_failed) {
         LOG_ERR("Failed to re-arm the ADXL after cooldown - retrying!");
         m_cooldown_rearm_failed = true;
       }
+      m_cooldown_next_retry_ms = k_uptime_get() + M_COOLDOWN_RETRY_MS;
       return;
     }
 
-    m_in_cooldown    = false;
-    m_previous_awake = false;
+    m_in_cooldown      = false;
+    m_cooldown_expired = false;
+    m_previous_awake   = false;
     LOG_INF("Cooldown elapsed - detection re-armed.");
   }
 
