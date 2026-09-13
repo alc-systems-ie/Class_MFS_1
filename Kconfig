@@ -13,10 +13,12 @@ config MFS_SCAN_WINDOW_MS
 	int "Passive scan window (milliseconds)"
 	default 100
 	help
-	  How long each scan listens. 100 ms captures a 20 ms advertiser with
-	  near-certainty. Do not confuse this with the counterpart's 20-50 ms
-	  advertising interval. Shortening it trades detection reliability, not
-	  latency — see docs/v1-scope.md section 7.3.
+	  How long each scan listens. The counterpart is not a single 20-50 ms
+	  advertising interval: the phone repeats the SAME command advert roughly
+	  every 187 ms for a 30 s burst per Send (~160 repeats - see
+	  docs/tan-scheme.md section 6, design spec section 3), so a 100 ms window
+	  has many scan wakes across that burst to catch it, not just one.
+	  Shortening this window trades detection reliability, not latency.
 
 config MFS_ADXL_INACTIVITY_SECS
 	int "ADXL367 loop inactivity time (seconds)"
@@ -27,9 +29,16 @@ config MFS_ADXL_INACTIVITY_SECS
 	  no software timer.
 
 config MFS_ADXL_THRESHOLD
-	int "ADXL367 referenced-activity threshold (13-bit)"
+	int "ADXL367 referenced-activity threshold (13-bit) - UNUSED"
 	default 300
 	help
+	  UNUSED. Grepping src/ and boards/ finds no reference to
+	  CONFIG_MFS_ADXL_THRESHOLD at all - the threshold is entirely superseded
+	  by the engineer-settable sensitivity byte (Settings::ThresholdLsb(),
+	  default 143 -> 302 LSB, see src/settings.cpp), which every
+	  ConfigureLoopMode() call now uses instead. This option is dead and kept
+	  only for reference pending removal.
+
 	  Deviation from the reference that counts as motion.
 
 	  SCALE: 0.25 mg per LSB on the +/-2 g range, so 300 = 75 mg. The register
@@ -106,14 +115,21 @@ config MFS_BLINK_MS
 	  measure the scan rather than the LED.
 
 config MFS_DEBUG_LED
-	bool "Drive the state LEDs (bench only)"
+	bool "Drive the idle/detection indication on the LEDs (bench only)"
 	default y
 	help
-	  LED A on while Inactive, LED B on while Active and triggered. NOT
-	  VIABLE IN PRODUCTION: a continuously lit LED draws ~2 mA against a
-	  ~69 uA budget, roughly 29 days of battery life. Set n for production
-	  until a bounded indication scheme is chosen — see docs/v1-scope.md
-	  section 5.
+	  Between acknowledgement patterns: LED A on while Inactive, LED B shows
+	  DETECTION (the ADXL367 loop engine's 5 s period) rather than the fire
+	  output - in EITHER arm state, so it simulates triggers while tuning
+	  Inactive and confirms one while Active. NOT VIABLE IN PRODUCTION for
+	  LED A: a continuously lit LED draws ~2 mA against a ~69 uA budget,
+	  roughly 29 days of battery life. Set n for production until a bounded
+	  indication scheme is chosen — see docs/v1-scope.md section 5.
+
+	  Independent of this option, in EVERY build including production: LED A
+	  still plays the acknowledgement pattern for an accepted command (Armed,
+	  Disarmed, Settings applied, Mode changed, Arm refused, ...). Setting n
+	  only removes the idle "on while Inactive" level between patterns.
 
 config ALC_DEVICE_SERIAL
 	string "Device serial number"

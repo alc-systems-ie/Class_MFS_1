@@ -250,6 +250,12 @@ device at 20 ms lands ~5 guesses per 6 s wake, ~72,000 (≈ 2¹⁶) a day — **
 day**. Brute force is not a
 threat, with or without the lockout.
 
+**A captured, unaccepted ID is a better target than blind guessing**, because
+resending it matches the ID filter every time instead of needing a fresh hit. The
+per-ID failure cap (§6.4) bounds that: at most **8 tag guesses per captured ID**
+before it burns, about **2⁻²⁹ per captured ID** — still far short of useful, and
+worse than blind guessing only by the cost of capturing the ID in the first place.
+
 ### 6.4 Lockout
 
 - **Only an ID match followed by a failed tag counts, and each expected ID counts at most
@@ -258,6 +264,15 @@ threat, with or without the lockout.
   counts once however often it is sent, so a lockout needs 20 distinct unaccepted commands.
   (Corrected 2026-09-13: without the count-once rule, one captured advert resent 20 times
   would lock out disarm.)
+- **Independently, each expected ID also carries its own wrong-tag counter**
+  (`M_MAX_ID_FAILURES = 8`): once one ID has failed 8 times it burns — treated
+  exactly like no match at all, not even decrypted — so resending one captured ID
+  cannot be used to guess its tag indefinitely, however many times it is sent. This
+  is separate from the count-once lockout bit above: that bit counts an ID once
+  towards the lockout regardless of how many times it is retried; this cap keeps
+  counting every retry against that one ID until it burns. (Added 2026-09-13, final
+  review: without it, the count-once rule left one captured, unaccepted ID guessable
+  forever, since later failures on it were silently free.)
 - 20 consecutive failures → locked for 10 min, doubling per lockout to a 4 h cap.
 - Any authentic command clears the count and resets the duration.
 - Timed on uptime, not UTC, so a clock trim cannot shorten or extend it.
@@ -334,10 +349,12 @@ The device accepts it only when **all** hold:
 
 A first-ever boot has no floor, which is correct: that is the factory case.
 
-Residual, accepted: an attacker who cuts power (physical access), then jams and
-captures the provisioner's sync, can release it later within the same day, pulling
-the clock back by hours. Physical access already defeats the product more directly
-(`docs/power-budget.md` §8.6).
+Residual, accepted, stated generally: an authentic captured sync for any day at or
+above the floor and within floor + 400 can be replayed later, while the clock is
+invalid, and pins the clock to that captured day until the next reset. Capturing a
+sync and getting the clock back to invalid both need physical access — the usual
+route is cutting power, which also invalidates the clock itself (§7.1) — and physical
+access already defeats the product more directly (`docs/power-budget.md` §8.6).
 
 ### 7.3 Trimming drift from commands
 
@@ -408,7 +425,7 @@ which is another route to the secret.
 |---|---|---|
 | 1 | **Jam the arming**; nobody notices | **Mitigated** by LED A acknowledgement (§6.6). No flash means not armed — send again |
 | 2 | Two phones share a key and **reuse nonces** | **Fixed** by slots (§5) and save-before-advertise (§3.1) |
-| 3 | Copy a static ID and **lock the engineer out** | **Fixed** by rotating IDs; only an ID match counts (§6.4) |
+| 3 | Copy a static ID and **lock the engineer out** | **Fixed** by rotating IDs; an ID match counts at most once towards the lockout, and repeated tag guesses against one captured ID burn after 8 tries (§6.4) |
 | 4 | Capture, jam, **release a command later** | **Bounded to 10 min** by freshness (§6.2) |
 | 5 | Stolen or malware-infected phone | **Bounded to today, assigned devices.** Mode changes need slot 0, so the phone cannot switch on reporting to locate sensors. An armed device accepts only a disarm, so the phone cannot retune it, lengthen its delay or desensitise it without first disarming it — which the Disarmed pattern shows |
 | 6 | Compromise the Network Manager | **Out of the device's hands.** HSM (§8) |

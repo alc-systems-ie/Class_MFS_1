@@ -1267,7 +1267,7 @@ namespace alc
         setArmState(ArmState::Active);
         pattern = (m_arm_state == ArmState::Active) ? LedPattern::Armed : LedPattern::ArmRefused;
         if (pattern == LedPattern::ArmRefused) {
-          LOG_ERR("Arming refused - command slot %u n %u is spent; send again.", evaluation.slot, evaluation.n);
+          LOG_ERR("Arming refused - command slot %u n %u is spent; send again!", evaluation.slot, evaluation.n);
         }
         break;
 

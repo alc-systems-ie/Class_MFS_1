@@ -238,6 +238,14 @@ with no counter. It is the Drawer Master behaviour reduced to a beacon.
 constraint here: a burst of a few seconds costs a fraction of one 6 s scan wake and
 triggers are rare. Covertness is the constraint.
 
+**Refused until Task 18 (final fix wave, 2026-09-13).** The firmware does not yet
+implement reporting. `applyCommand()` refuses any slot-0 command asking for Report
+or Report-and-trigger — it applies the rest of the command with the mode change
+disallowed, logs a warning, and the device stays Trigger only — and
+`Settings::Load()` coerces a previously stored non-default mode back to Trigger
+only on boot. The table above is the target behaviour once Task 18 lands; until
+then only `00` (Trigger only) is ever actually honoured.
+
 ## 5. Parameter encodings
 
 Defined by formula in one shared header that generates the Dart constants, so the
@@ -470,6 +478,24 @@ A flag left set with a dead timer blocks firing; a running timer with a cleared
 flag also blocks firing. **Both failure directions are safe**, which is the point
 of choosing these two particular witnesses.
 
+**Expiry is driven by a recorded deadline, not a live poll of the timer alone.**
+`k_timer_remaining_ticks()` reads 0 both when a timer has genuinely expired and
+when it was never armed, so `updateOutputState()` also tracks `m_delay_deadline_ms`
+— the uptime at which the delay is considered genuinely over. A flag left set with
+a dead timer therefore now waits for that recorded deadline rather than blocking
+firing forever: once `k_uptime_get() >= m_delay_deadline_ms`, the expiry commit
+clears the flag (`cancelDelay()`), releases the PM lock, and lets detection
+proceed.
+
+**Owner ruling, 2026-09-13: a trigger still fires even if the scanner was lost
+during the delay.** `serviceScanHealth()` tracks whether the scanner was confirmed
+running for the whole delay (`m_delay_scan_lost`); if it was not, the expiry commit
+logs a warning ("a disarm may have been missed") but does **not** suppress the
+trigger. Andy's decision: the alarm is prioritised over the risk of a missed
+disarm — a scanner outage already makes a disarm unlikely to be heard, so
+suppressing the trigger on top of that would trade a real alarm for a precaution
+that, by the time it matters, cannot protect anyone.
+
 **`OutputSwitch` does not learn about delays.** Coupling it to one feature would
 destroy its value as a general containment. Instead it gains an **interlock** it
 consults immediately before driving the gates:
@@ -523,6 +549,14 @@ so the hub knows which sensor fired, and a stable identifier in a repeated
 broadcast is a tracking beacon for anyone listening. That is a covertness decision,
 not a formatting one, and it is deferred rather than guessed. Report modes cannot
 ship until it is answered.
+
+**Refused, not merely unspecified, as of the final fix wave (2026-09-13).** Until
+the report payload is specified and Task 18 implements it, the firmware refuses
+the mode field itself at the point of application (§4.3): a Network Manager
+command asking for `ReportOnly` or `ReportAndTrigger` is applied with the mode
+change disallowed, and the device stays `TriggerOnly`. The sequence above is the
+target behaviour; the device does not yet reach `ReportOnly` or `ReportAndTrigger`
+at all.
 
 ### 6.6 Failures are silent
 

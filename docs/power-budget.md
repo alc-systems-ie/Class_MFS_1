@@ -17,8 +17,8 @@ them.
 | ADXL367 | Continuous measurement mode | Always-on motion detect, 100 Hz ODR |
 | nRF21540 FEM | **Not fitted in this version** | Costs 3 dB TX; saves BOM and risk — see §5 |
 | Battery | CR123A (3.0 V Li-MnO2) | ~1450 mAh usable behind the nPM2100 |
-| TANs | **Day-indexed, 10/day, expire at day end** | Per-day paper sheet; lost sheet compromises one day only — §8.1 |
-| TAN persistent state | **4 bytes** | Horizon is unbounded, not 1 or 3 years — §8.2 |
+| Access scheme | **Day keys**, derived on demand, expire at day end | Rewritten 2026-09-13 from per-day paper TAN sheets - a lost key compromises one day only, `docs/tan-scheme.md` §1-2, superseding §8.1 below |
+| Access persistent state | **`day` (2 bytes) + `next[8]` (32 bytes)** | Sequence number per slot, not a consumed bitmap; horizon is unbounded, not 1 or 3 years — `docs/tan-scheme.md` §6.2, superseding §8.2 below |
 | Day boundary | **04:00 UTC**, no multi-day window | Keeps clock error out of working hours — §8.5 |
 | Timekeeping | **LFXO** — Abracon ABS06N, CL 9 pF | ±20–50 ppm; load cap set, trim pending — §8.5.3 |
 | Expected life | **~2.4 years** | Bracket 2.2–2.7 years, §3 |
