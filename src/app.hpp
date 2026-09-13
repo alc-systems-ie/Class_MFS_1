@@ -5,8 +5,10 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 
+#include "access_control.hpp"
 #include "adxl367.hpp"
 #include "command_scanner.hpp"
+#include "device_clock.hpp"
 #include "npm2100.hpp"
 #include "output_switch.hpp"
 
@@ -83,17 +85,29 @@ namespace alc
 
       void setArmState(ArmState state);
 
-      void toggleArmState();
-
-      // Parses the bench credentials from Kconfig, initialises PSA and runs the
-      // crypto self-test. A failure leaves commands disabled for the whole boot -
-      // see m_access_ready.
+      // Parses the bench credentials from Kconfig, initialises PSA, runs the crypto
+      // self-test and restores the access state. A failure leaves commands
+      // disabled for the whole boot - see m_access_ready.
       int initAccess();
+
+      // Drains the scanner queue. While the clock is invalid a candidate is offered
+      // ONLY to the time-sync check; once valid, ONLY to AccessControl.
+      void serviceCandidates();
+
+      void handleTimeSyncCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs);
+
+      void handleCommandCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs);
 
       const struct device* m_i2c_bus;
       Npm2100 m_pmic;
       Adxl367 m_accelerometer;
       CommandScanner m_scanner;
+
+      // UTC for the access scheme. Invalid on every boot until a provisioner sync.
+      DeviceClock m_clock;
+
+      // The only judge of whether a candidate is an authentic, fresh command.
+      AccessControl m_access;
 
       // False if credentials, PSA or the self-test failed. Commands and syncs are
       // then ignored for the whole boot: a backend that disagrees with the app

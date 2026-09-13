@@ -4,7 +4,10 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include <zephyr/settings/settings.h>
+
 #include "access_keys.hpp"
+#include "access_store.hpp"
 #include "app.hpp"
 #include "credentials.hpp"
 #include "crypto.hpp"
@@ -86,6 +89,32 @@ namespace alc
     uint8_t s_device_secret[access::M_SECRET_BYTES] {};
     uint8_t s_provision_key[access::M_SECRET_BYTES] {};
 
+    const char* verdictName(AccessControl::Verdict verdict)
+    {
+      switch (verdict) {
+        case AccessControl::Verdict::Accepted:
+          return "Accepted";
+        case AccessControl::Verdict::NotForUs:
+          return "NotForUs";
+        case AccessControl::Verdict::ClockInvalid:
+          return "ClockInvalid";
+        case AccessControl::Verdict::LockedOut:
+          return "LockedOut";
+        case AccessControl::Verdict::AuthFailed:
+          return "AuthFailed";
+        case AccessControl::Verdict::Malformed:
+          return "Malformed";
+        case AccessControl::Verdict::Stale:
+          return "Stale";
+        case AccessControl::Verdict::PersistFailed:
+          return "PersistFailed";
+        case AccessControl::Verdict::CryptoError:
+          return "CryptoError";
+        default:
+          return "Unknown";
+      }
+    }
+
     const char* resetReasonName(Npm2100::ResetReason reason)
     {
       switch (reason) {
@@ -129,6 +158,8 @@ namespace alc
       , m_pmic(npm2100_zephyr::MakeZephyrTransport(DEVICE_DT_GET(DT_NODELABEL(i2c21))))
       , m_accelerometer(DEVICE_DT_GET(DT_NODELABEL(i2c21)))
       , m_scanner()
+      , m_clock()
+      , m_access(0, s_device_secret, &access_store::Persist, nullptr)
       , m_access_ready(false)
       , m_output_switch()
       , m_arm_state(ArmState::Inactive)
@@ -214,7 +245,7 @@ namespace alc
     LOG_INF("INT1 raw %d (physical), dt %d (logical).", gpio_pin_get_raw(s_adxl_int1.port, s_adxl_int1.pin), gpio_pin_get_dt(&s_adxl_int1));
 
     while (true) {
-      if (m_scanner.TakePendingCommand() == CommandScanner::Command::ToggleArm) { toggleArmState(); }
+      serviceCandidates();
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
       if (++blinkTicks >= M_BLINK_PERIOD_TICKS) {
@@ -611,6 +642,7 @@ namespace alc
   int App::initAccess()
   {
     int result { 0 };
+    AccessState restored {};
 
     if (!credentials::ParseDeviceId(CONFIG_MFS_DEVICE_ID, s_device_id) ||
         !credentials::ParseHexBytes(CONFIG_MFS_DEVICE_SECRET, s_device_secret, sizeof(s_device_secret)) ||
@@ -633,14 +665,91 @@ namespace alc
     result = crypto::RunSelfTest();
     if (result < 0) { return result; }
 
+    result = settings_subsys_init();
+    if (result < 0) {
+      LOG_ERR("settings_subsys_init failed: %d!", result);
+      return result;
+    }
+
+    result = access_store::Load(restored);
+    if (result < 0) { return result; }
+
+    // The device ID is known only now, so AccessControl is rebuilt with it. The
+    // restored day is the floor a provisioner sync may not go below; the clock
+    // itself stays INVALID - there is no resume from NVS.
+    m_access = AccessControl(s_device_id, s_device_secret, &access_store::Persist, nullptr);
+    if (result > 0) {
+      m_access.Restore(restored);
+      m_clock.RaiseFloorDay(restored.day);
+      LOG_INF("Access state restored: day floor %u.", restored.day);
+    } else {
+      LOG_INF("No access state stored - first boot, no day floor.");
+    }
+
     m_access_ready = true;
-    LOG_INF("Device 0x%08X: credentials loaded, crypto proven.", s_device_id);
+    LOG_INF("Device 0x%08X ready. Clock INVALID until a provisioner time sync.", s_device_id);
     return 0;
   }
 
-  void App::toggleArmState()
+  void App::serviceCandidates()
   {
-    setArmState(m_arm_state == ArmState::Active ? ArmState::Inactive : ArmState::Active);
+    CommandScanner::Candidate candidate {};
+    int64_t uptimeSecs { k_uptime_get() / MSEC_PER_SEC };
+
+    while (m_scanner.TakeCandidate(candidate)) {
+      if (!m_access_ready) { continue; }
+
+      if (!m_clock.IsValid()) {
+        handleTimeSyncCandidate(candidate, uptimeSecs);
+      } else {
+        handleCommandCandidate(candidate, uptimeSecs);
+      }
+    }
+  }
+
+  void App::handleTimeSyncCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs)
+  {
+    uint32_t unixSeconds { 0 };
+    DeviceClock::SyncResult syncResult { DeviceClock::SyncResult::BeforeEpoch };
+
+    // Almost every advert in range lands here and fails the tag. That is routine
+    // and is not logged, or the RTT buffer would fill with other people's phones.
+    if (!access::OpenTimeSync(s_provision_key, s_device_id, candidate.bytes, unixSeconds)) { return; }
+
+    syncResult = m_clock.ApplyProvisionerSync(unixSeconds, uptimeSecs);
+    if (syncResult != DeviceClock::SyncResult::Applied) {
+      LOG_WRN("Authentic time sync refused: result %u, unix %u, floor %u!", static_cast<unsigned>(syncResult), unixSeconds, m_clock.FloorDay());
+      return;
+    }
+
+    LOG_INF("Clock set by provisioner: unix %u, day %u, %02u:%02u UTC.", unixSeconds, m_clock.DayIndex(uptimeSecs),
+            m_clock.MinuteOfDay(uptimeSecs) / 60U, m_clock.MinuteOfDay(uptimeSecs) % 60U);
+  }
+
+  void App::handleCommandCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs)
+  {
+    AccessControl::Evaluation evaluation { m_access.Evaluate(candidate.bytes, sizeof(candidate.bytes), m_clock, uptimeSecs) };
+
+    if (evaluation.verdict == AccessControl::Verdict::NotForUs) { return; }
+
+    if (evaluation.verdict != AccessControl::Verdict::Accepted) {
+      // RTT only. Nothing on the radio, nothing on the LEDs.
+      LOG_WRN("Command rejected: %s (failures %u).", verdictName(evaluation.verdict), m_access.ConsecutiveFailures());
+      return;
+    }
+
+    // Decoded field by field on purpose: when a slider produces the wrong byte
+    // this is where you see it, rather than inferring it from an LED.
+    LOG_INF("Command slot %u n %u: arm %s, delay %u s, activations %u, mode %u, cooldown %u s, threshold %u LSB, minute %u.", evaluation.slot,
+            evaluation.n, evaluation.command.armActive ? "ACTIVE" : "INACTIVE", protocol::DelayToSeconds(evaluation.command.delayCode),
+            evaluation.command.activations, static_cast<unsigned>(evaluation.command.mode),
+            protocol::CooldownToSeconds(evaluation.command.cooldownByte), protocol::SensitivityToThresholdLsb(evaluation.command.sensitivityByte),
+            evaluation.command.minuteOfDay);
+
+    // PHASE 2 SHIM. Applies only the arm bit so the device stays usable while the
+    // app is built against it. Settings, the clock trim and the LED patterns
+    // arrive in Task 16, which replaces this.
+    setArmState(evaluation.command.armActive ? ArmState::Active : ArmState::Inactive);
   }
 
   int App::applyLeds(bool ledA, bool ledB)

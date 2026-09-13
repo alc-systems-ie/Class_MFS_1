@@ -16,4 +16,7 @@ target_sources(app PRIVATE
   src/credentials.cpp
   src/crypto_psa.cpp
   src/crypto_selftest.cpp
+  src/access_store.cpp
+  src/access_control.cpp
+  src/device_clock.cpp
 )

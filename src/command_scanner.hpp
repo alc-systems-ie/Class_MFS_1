@@ -2,26 +2,34 @@
 
 #include <cstdint>
 
+#include "mfs_protocol.hpp"
+
 namespace alc
 {
 
   /**
-   * @brief BLE observer that receives engineer commands from advertisements.
+   * @brief BLE observer that hands candidate command bytes to the main loop.
    *
-   * MFS_1 never advertises and never connects (docs/v1-scope.md section 4). The
-   * engineer's tool advertises; this scans passively for it. Scan duty cycling is
-   * handled by the controller via the interval/window pair, so the SoC sleeps in
-   * System ON idle between windows.
+   * MFS_1 never advertises and never connects. The engineer's phone advertises a
+   * 128-bit service UUID; this scans passively for 16-byte UUIDs and queues them.
    *
-   * v1 accepts a single plaintext toggle command, gated behind
-   * CONFIG_MFS_INSECURE_TOGGLE. TAN validation and provisioner time sync replace
-   * it later — see docs/tan-scheme.md.
+   * **It validates nothing.** It cannot: a command is only recognisable with the
+   * day keys, and a time sync only with the provisioning key. Every decision is
+   * made by the main loop through AccessControl and DeviceClock, so no security
+   * logic runs on the Bluetooth RX thread.
+   *
+   * It suppresses repeats of the UUIDs it queued most recently. A phone advertises
+   * each command ~160 times in 30 s; without this the queue would fill with copies
+   * and a distinct command arriving alongside them could be dropped.
    */
   class CommandScanner
   {
     public:
-      /** @brief Commands carried in the advertising payload. */
-      enum class Command : uint8_t { None = 0x00, ToggleArm = 0x01 };
+      /** @brief One queued 128-bit service UUID, on-air byte order. */
+      struct Candidate
+      {
+          uint8_t bytes[protocol::M_UUID_BYTES];
+      };
 
       CommandScanner();
 
@@ -32,14 +40,10 @@ namespace alc
       int Start();
 
       /**
-       * @brief Consume the pending command, if any.
-       *
-       * Commands arrive on the Bluetooth RX thread; this hands them to the main loop
-       * so no application work happens in that context.
-       *
-       * @return The pending command, or Command::None. Clears the pending slot.
+       * @brief Take the oldest queued candidate, if any. Never blocks.
+       * @return True if `out` was written.
        */
-      Command TakePendingCommand();
+      bool TakeCandidate(Candidate& out);
 
     private:
       bool m_started;

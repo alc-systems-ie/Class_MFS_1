@@ -3,8 +3,6 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/sys/atomic.h>
-#include <zephyr/sys/byteorder.h>
 
 #include "command_scanner.hpp"
 
@@ -23,75 +21,69 @@ namespace alc
     constexpr uint16_t M_SCAN_INTERVAL_UNITS { CONFIG_MFS_SCAN_PERIOD_MS * M_UNITS_PER_MS_NUM / M_UNITS_PER_MS_DEN };
     constexpr uint16_t M_SCAN_WINDOW_UNITS { CONFIG_MFS_SCAN_WINDOW_MS * M_UNITS_PER_MS_NUM / M_UNITS_PER_MS_DEN };
 
-    // 0xFFFF is the reserved-for-test company identifier. A production build must use
-    // an assigned Bluetooth SIG company ID.
-    constexpr uint16_t M_COMPANY_ID_TEST { 0xFFFF };
-    constexpr uint8_t M_MAGIC_0 { 'M' };
-    constexpr uint8_t M_MAGIC_1 { 'F' };
-    constexpr uint8_t M_PROTOCOL_VERSION { 0x01 };
+    // Complete list of 128-bit service UUIDs. iOS cannot send manufacturer data at
+    // all, so the payload travels as a service UUID - see the design spec section 3.
+    constexpr uint8_t M_AD_UUID128_ALL { 0x07 };
 
-    // One command per cooldown. The engineer's tool must advertise for longer than a
-    // full scan period to be seen at all, which means a single press can otherwise
-    // span two scan windows and toggle twice. The cooldown must therefore exceed the
-    // tool's advertising burst — see tools/toggle_dongle.
-    constexpr int64_t M_COMMAND_COOLDOWN_MS { 12000 };
+    // The main loop drains this every 100 ms. Eight distinct UUIDs in 100 ms is far
+    // beyond any real radio environment around a covert sensor.
+    constexpr size_t M_QUEUE_DEPTH { 8 };
 
-    /** @brief Advertising payload, immediately following the AD type byte. */
-    struct __packed CommandPayload
+    // How many recently queued UUIDs are remembered for repeat suppression.
+    constexpr uint8_t M_RECENT_COUNT { 4 };
+
+    K_MSGQ_DEFINE(s_candidates, sizeof(CommandScanner::Candidate), M_QUEUE_DEPTH, 1);
+
+    // Touched only from the Bluetooth RX thread, so no lock is needed.
+    uint8_t s_recent[M_RECENT_COUNT][protocol::M_UUID_BYTES] {};
+    uint8_t s_recent_next { 0 };
+    uint8_t s_recent_filled { 0 };
+
+    bool seenRecently(const uint8_t* bytes)
     {
-        uint16_t companyId; // Little-endian on the wire.
-        uint8_t magic[2];
-        uint8_t version;
-        uint8_t command;
-    };
+      for (uint8_t index = 0; index < s_recent_filled; index++) {
+        if (memcmp(s_recent[index], bytes, protocol::M_UUID_BYTES) == 0) { return true; }
+      }
+      return false;
+    }
 
-    atomic_t s_pending_command { 0 };
-    int64_t s_last_accepted_ms { 0 };
+    void remember(const uint8_t* bytes)
+    {
+      memcpy(s_recent[s_recent_next], bytes, protocol::M_UUID_BYTES);
+      s_recent_next = static_cast<uint8_t>((s_recent_next + 1) % M_RECENT_COUNT);
+      if (s_recent_filled < M_RECENT_COUNT) { s_recent_filled++; }
+    }
 
     bool parseAdStructure(struct bt_data* data, void* userData)
     {
-      CommandPayload payload {};
+      CommandScanner::Candidate candidate {};
 
       ARG_UNUSED(userData);
 
-      if (data->type != BT_DATA_MANUFACTURER_DATA || data->data_len < sizeof(CommandPayload)) {
-        return true; // Keep walking the remaining AD structures.
-      }
+      // Exactly one 128-bit UUID. A list of several is not our phone, which never
+      // advertises anything else.
+      if (data->type != M_AD_UUID128_ALL || data->data_len != protocol::M_UUID_BYTES) { return true; }
+      if (seenRecently(data->data)) { return false; }
 
-      memcpy(&payload, data->data, sizeof(payload));
-
-      if (sys_le16_to_cpu(payload.companyId) != M_COMPANY_ID_TEST) { return true; }
-      if (payload.magic[0] != M_MAGIC_0 || payload.magic[1] != M_MAGIC_1) { return true; }
-      if (payload.version != M_PROTOCOL_VERSION) {
-        LOG_WRN("Command payload version %u unsupported!", payload.version);
+      memcpy(candidate.bytes, data->data, protocol::M_UUID_BYTES);
+      if (k_msgq_put(&s_candidates, &candidate, K_NO_WAIT) != 0) {
+        // Dropped, not remembered - so a later copy of the same advert can still
+        // get in once the loop has drained the queue.
+        LOG_WRN("Candidate queue full - advert dropped!");
         return false;
       }
 
-#if defined(CONFIG_MFS_INSECURE_TOGGLE)
-      atomic_set(&s_pending_command, payload.command);
-#else
-      // No TAN validation is implemented yet, so without the bench gate a command
-      // carries no authority and must be discarded rather than obeyed.
-      LOG_WRN("Command 0x%02X discarded: CONFIG_MFS_INSECURE_TOGGLE is not enabled!", payload.command);
-#endif
-      return false; // Match found; stop walking.
+      remember(data->data);
+      return false;
     }
 
     void scanRecvCallback(const bt_addr_le_t* addr, int8_t rssi, uint8_t advType, struct net_buf_simple* buf)
     {
-      int64_t now { k_uptime_get() };
-
       ARG_UNUSED(addr);
+      ARG_UNUSED(rssi);
       ARG_UNUSED(advType);
 
-      if (s_last_accepted_ms != 0 && (now - s_last_accepted_ms) < M_COMMAND_COOLDOWN_MS) { return; }
-
       bt_data_parse(buf, &parseAdStructure, nullptr);
-
-      if (atomic_get(&s_pending_command) != 0) {
-        s_last_accepted_ms = now;
-        LOG_INF("Command received, RSSI %d dBm.", rssi);
-      }
     }
 
   }
@@ -127,13 +119,9 @@ namespace alc
     return 0;
   }
 
-  CommandScanner::Command CommandScanner::TakePendingCommand()
+  bool CommandScanner::TakeCandidate(Candidate& out)
   {
-    atomic_val_t raw { atomic_set(&s_pending_command, 0) };
-
-    if (raw == static_cast<atomic_val_t>(Command::ToggleArm)) { return Command::ToggleArm; }
-    if (raw != 0) { LOG_WRN("Unknown command 0x%02X ignored!", static_cast<unsigned int>(raw)); }
-    return Command::None;
+    return k_msgq_get(&s_candidates, &out, K_NO_WAIT) == 0;
   }
 
 }

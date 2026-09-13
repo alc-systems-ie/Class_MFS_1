@@ -115,19 +115,6 @@ config MFS_DEBUG_LED
 	  until a bounded indication scheme is chosen — see docs/v1-scope.md
 	  section 5.
 
-config MFS_INSECURE_TOGGLE
-	bool "Accept an unauthenticated plaintext toggle command (BENCH ONLY)"
-	default n
-	help
-	  Accepts a magic advertising payload that toggles the arm state with NO
-	  TAN and NO authentication of any kind. Anyone in radio range can arm or
-	  disarm the device.
-
-	  This exists solely to prove the scan, parse, arm-state and LED path
-	  before TAN validation and provisioner time sync are implemented. It MUST
-	  be n in any build that leaves the bench. See docs/tan-scheme.md for the
-	  scheme that replaces it.
-
 config ALC_DEVICE_SERIAL
 	string "Device serial number"
 	default "MFS-0000-0000"
