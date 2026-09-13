@@ -1,7 +1,7 @@
 CXX      ?= g++
 CXXFLAGS ?= -std=c++20 -Wall -Wextra -Wpedantic -Werror -O0 -g -Isrc -Itests
 
-HOST_SRCS =
+HOST_SRCS = src/mfs_protocol.cpp
 TEST_SRCS = $(wildcard tests/test_*.cpp)
 SRCS      = $(HOST_SRCS) $(TEST_SRCS)
 

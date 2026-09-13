@@ -53,3 +53,76 @@ void run_protocol_tests()
 
   printf("protocol tables: OK\n");
 }
+
+void run_command_codec_tests()
+{
+  using namespace alc::protocol;
+  uint8_t plaintext[M_PLAINTEXT_BYTES] {};
+  Command command;
+  Command decoded;
+
+  // The on-air layout must fill exactly one 128-bit UUID.
+  assert(M_ROTATING_ID_BYTES + M_PLAINTEXT_BYTES + M_TAG_BYTES == M_UUID_BYTES);
+  assert(M_OFFSET_CIPHERTEXT == M_ROTATING_ID_BYTES);
+  assert(M_OFFSET_TAG == M_OFFSET_CIPHERTEXT + M_PLAINTEXT_BYTES);
+
+  // Round trip, every field away from its default.
+  command.armActive       = true;
+  command.delayCode       = 119; // 1 h
+  command.activations     = 16;  // the 4-bit maximum, stored as 15
+  command.mode            = Mode::ReportAndTrigger;
+  command.cooldownByte    = 128;
+  command.sensitivityByte = 143;
+  command.minuteOfDay     = 1439; // 23:59, the largest legal minute
+  EncodeCommand(command, plaintext);
+  assert(DecodeCommand(plaintext, decoded));
+  assert(decoded.armActive);
+  assert(decoded.delayCode == 119);
+  assert(decoded.activations == 16);
+  assert(decoded.mode == Mode::ReportAndTrigger);
+  assert(decoded.cooldownByte == 128);
+  assert(decoded.sensitivityByte == 143);
+  assert(decoded.minuteOfDay == 1439);
+
+  // Byte 0 is shared: arm bit and delay code must not bleed into each other.
+  assert(plaintext[M_PT_ARM_DELAY] == ((119 << 1) | 0x01));
+
+  // Byte 1 is shared: activations - 1 in the low nibble, mode in bits 4-5.
+  assert(plaintext[M_PT_ACTIVATIONS_MODE] == (0x0F | (1 << 4)));
+
+  // Activations 1 encodes as zero, so an all-zero plaintext is a legal command:
+  // Inactive, no delay, one activation, Trigger only, minute 0.
+  for (uint8_t& byte : plaintext) {
+    byte = 0;
+  }
+  assert(DecodeCommand(plaintext, decoded));
+  assert(decoded.activations == 1);
+  assert(!decoded.armActive);
+
+  // Mode 3 is reserved and refused rather than treated as one of the others.
+  EncodeCommand(command, plaintext);
+  plaintext[M_PT_ACTIVATIONS_MODE] = static_cast<uint8_t>(plaintext[M_PT_ACTIVATIONS_MODE] | (3 << M_MODE_SHIFT));
+  assert(!DecodeCommand(plaintext, decoded));
+
+  // Minute 1440 fits in eleven bits but is not a minute of any day.
+  command.mode        = Mode::TriggerOnly;
+  command.minuteOfDay = 1439;
+  EncodeCommand(command, plaintext);
+  plaintext[M_PT_MINUTE]     = static_cast<uint8_t>(1440 & 0xFF);
+  plaintext[M_PT_MINUTE + 1] = static_cast<uint8_t>(1440 >> 8);
+  assert(!DecodeCommand(plaintext, decoded));
+
+  // PLAINTEXT BYTES 6-7 AND THE RESERVED BITS BELONG TO OTHER VARIANTS. Anything
+  // there must still decode - validating them would make MFS_1 reject a future
+  // app build the moment another variant starts using that space.
+  EncodeCommand(command, plaintext);
+  plaintext[6]                     = 0xAA;
+  plaintext[7]                     = 0xBB;
+  plaintext[M_PT_ACTIVATIONS_MODE] = static_cast<uint8_t>(plaintext[M_PT_ACTIVATIONS_MODE] | 0xC0);
+  plaintext[M_PT_MINUTE + 1]       = static_cast<uint8_t>(plaintext[M_PT_MINUTE + 1] | 0xF8);
+  assert(DecodeCommand(plaintext, decoded));
+  assert(decoded.minuteOfDay == 1439);
+  assert(decoded.mode == Mode::TriggerOnly);
+
+  printf("command codec: OK\n");
+}
