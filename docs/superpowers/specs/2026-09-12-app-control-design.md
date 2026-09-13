@@ -373,7 +373,9 @@ AWAKE rising edge
         // NO blanking here - the trigger's own AWAKE must run to completion
   -> else if N > 1 and cooldown > 0:
         Standby(); PMIC TimerSetDurationMs(cooldown); TimerStart()
-        on GPIO0 interrupt: TimerClearExpiredEvent(); enableAccelerometer()
+        poll each loop tick: TimerIsExpired() OR uptime >= deadline (timer duration
+          + 10% PMIC tolerance + fixed grace, in case the PMIC event is missed)
+        -> TimerClearExpiredEvent(); enableAccelerometer(), retried every 1 s on failure
 
 AWAKE de-asserts (5 s ADXL loop period)  ->  m_detection_met = false
 ```

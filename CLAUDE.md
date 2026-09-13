@@ -4,16 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state of this repository
 
-This project is a **fresh skeleton**. It currently contains only:
-
-- `README.md` — title only (`# Class_MFS_1`)
-- `src/main.cpp` — empty file
-- `.clangd` — clangd tuning for the arm-none-eabi flags emitted into `compile_commands.json`
-- `docs/power-budget.md` — energy budget and sleep architecture (see below)
-- `docs/tan-scheme.md` — TAN derivation, engineer sheet issue, BLE exchange
-- `docs/v1-scope.md` — what the first build does, and the config/preset roadmap
-
-There is **no `CMakeLists.txt`, `prj.conf`, `Kconfig`, `boards/` overlay or `sysbuild.conf` yet**, so the app cannot be built until those are added. Nothing under `src/` is implemented. The hardware and duty cycle are settled (below); the firmware is not.
+v1 app control is implemented and host-tested. `src/app.{hpp,cpp}` holds the state
+machine (boot sequence, PMIC/ADXL/LED bring-up, the detection engine, the delay
+interlock and the command path); one class per peripheral; `boards/` overlays for
+the nRF54L15 DK target; all Kconfig in `prj.conf` plus `credentials.conf` (gitignored,
+templated by `credentials.conf.template`) for the device secret and provisioning
+key. Units for every on-air and NVS field are in
+`docs/superpowers/specs/2026-09-12-app-control-design.md` §6.1. Run the host suite
+with `make test` (see **Host-side unit tests** below) before trusting a change to
+`AccessControl`, `DeviceClock`, `arm_policy.hpp` or `command_scanner.hpp`. Hardware
+verification not yet covered by host tests is tracked in
+`docs/superpowers/plans/2026-09-13-bench-checklist.md`.
 
 ## Settled design decisions
 
@@ -100,8 +101,12 @@ Constraints from that analysis that are easy to violate by accident:
   the PMIC registers. Only plain Hibernate can hold LSOUT up in ULP mode.
 - **Never enable an nRF21540 LNA for scanning** in any future FEM-equipped
   variant — +5 mA at 1.667% duty is +83 µA, more than doubling the whole budget.
-- **The counterpart must advertise at 20–50 ms.** A 100 ms passive window catches a
-  20 ms advertiser with certainty; at 152.5 ms detection drops to ~65% per wake.
+- **The counterpart's advertising interval is not ours to set.** Measured from a
+  Mac (`CoreBluetooth`) at ~187 ms — well outside the 20–50 ms this project
+  originally assumed, and iOS/macOS do not expose the interval as a setting. The
+  app compensates with a 30 s advertising window rather than a fast interval; an
+  iPhone re-measure is still pending
+  (`docs/superpowers/plans/2026-09-13-bench-checklist.md` §7).
 
 Full access design — derivation, key issue, wire format, acceptance, time, threat
 review: **`docs/tan-scheme.md`**. The wire format and firmware units are in
@@ -137,6 +142,15 @@ next 04:00 UTC only — `docs/power-budget.md` §8.1):
   acknowledges only *accepted* commands, never a failed authentication.
 - **The device never advertises to solicit contact.** It scans. Report modes are
   documented exceptions (design spec §4.3). Advertising forfeits covertness.
+- **A corrupt `access/v1` record refuses commands every boot** (`access_store.cpp`
+  logs "Stored access state is invalid"). There is no in-field recovery — the fix
+  is a wired erase of the settings partition followed by re-provisioning, never an
+  attempt to parse around the corruption.
+
+Hardware and end-to-end verification this workspace's agents are barred from
+running (no flashing, no J-Link, no RTT) is tracked as a single ordered checklist:
+**`docs/superpowers/plans/2026-09-13-bench-checklist.md`**. Work through it on the
+bench before trusting any claim that a change "works" beyond the host test suite.
 
 Battery-change recovery is by **trusted-provisioner time sync**
 (`docs/tan-scheme.md` §7.2): a provisioning key distinct from the device secret is
@@ -186,6 +200,7 @@ This is a Zephyr/nRF Connect SDK **application inside an existing west workspace
 /Users/andy/nordic/ncs/v3.2.4/     <- west topdir (.west/config, manifest = ncs-serial-modem/west.yml)
 ├── zephyr/  nrf/  nrfxlib/  modules/  bootloader/   <- SDK trees (NCS v3.2.4)
 ├── class_mfs_1/                   <- THIS repo (its own git repo, tracked separately)
+├── class_app/                     <- Flutter provisioner/engineer app, its own git repo
 ├── class_templates/npm2100/       <- host-tested driver-class template
 └── alc_flush_master/  alc_drawer_master/  alc_hub/ ... <- sibling ALC applications
 ```
@@ -194,23 +209,23 @@ Each application directory is its own git repository; the SDK trees are managed 
 
 ## Build commands
 
-Run west from this directory once a `CMakeLists.txt` and `prj.conf` exist. Board target must be chosen for the actual hardware — the two in use across sibling projects are:
+Board target is the nRF54L15 DK running the nRF54L05 target. **Every normal build
+needs the bench credentials** (the device secret and provisioning key), kept out of
+`prj.conf` in gitignored `credentials.conf`:
 
 ```sh
-# Thingy:53 / nRF5340 (dual core — flash both).
-west build -b thingy53/nrf5340/cpuapp
-west flash --recover
-
-# nRF54L15 DK running the nRF54L05 target.
-west build -b nrf54l15dk/nrf54l05/cpuapp -p always
+west build -b nrf54l15dk/nrf54l05/cpuapp -p always -- -DEXTRA_CONF_FILE=credentials.conf
 west flash --recover
 ```
+
+**Always flash this board with `--recover`** — `west flash` alone has reported
+success while the old image kept running (see **West flash needs `--recover`** in
+session memory).
 
 Useful variations used in this workspace:
 
 ```sh
-west build -b <board> -p always                                  # pristine rebuild
-west build -b <board> -- -DEXTRA_CONF_FILE=credentials.conf      # extra Kconfig fragment (secrets kept out of prj.conf)
+west build -b <board> -p always                                  # pristine rebuild, no credentials — boots Inactive, access control unavailable
 west build -t menuconfig                                         # inspect resolved Kconfig
 ```
 
@@ -227,15 +242,12 @@ make clean
 
 Its flags (`-std=c++20 -Wall -Wextra -Wpedantic -Werror`) are the reference for any host-test target added here. There is no single-test filter in that harness; a single case is run by compiling only the relevant `tests/test_*.cpp`.
 
-## Bench tool — `tools/toggle_dongle`
+## Bench tool — `tools/toggle_dongle` (retired)
 
-The engineer toggle advertiser. Board-agnostic by construction: it reads `sw0` and
-`led0`, so it builds unchanged for the **Thingy:53**, the **nRF54L15 DK** and the
-**nRF52840 Dongle**. Per-board choices live in `boards/<board>.overlay`, and the
-full detail is in its own `README.md`. The directory name is historical — it is no
-longer Dongle-specific.
-
-Lessons from the Thingy:53 port (2026-09-06), all of which cost time or would have:
+**Retired 2026-09-13.** MFS_1 no longer accepts this tool's payload — commands are
+encrypted under day keys (`docs/tan-scheme.md`), not an unauthenticated toggle byte.
+Superseded by `../class_app`. The directory is kept, not deleted, for its
+Thingy:53 build notes, three of which stay valid for any future Thingy:53 work:
 
 - **An nRF5340 app with `CONFIG_BT=y` is only half a Bluetooth build**, and the
   Thingy:53 defaults the other half to *nothing*. The radio is on the network
@@ -269,10 +281,6 @@ Lessons from the Thingy:53 port (2026-09-06), all of which cost time or would ha
   only one — which is harmless, but it is why the distinction is worth keeping
   where a board offers a choice.)
 
-- **`SW1` on the Thingy:53 is the power slide switch, not a pushbutton.** It must
-  be ON before anything works. The silkscreen name collides with the Dongle's,
-  where SW1 *is* the pushbutton.
-
 - **On a board with one RGB LED, the alias picks the colour.** Thingy:53 `led0` is
   **red** (P1.08), `led1` green (P1.06), `led2` blue (P1.07). Red reads as a fault
   on a demo, and blue is `mcuboot-led0` and blinks during DFU. Remap the alias in
@@ -281,20 +289,6 @@ Lessons from the Thingy:53 port (2026-09-06), all of which cost time or would ha
   ```dts
   / { aliases { led0 = &green_led; }; };
   ```
-
-- **Verify the alias actually moved.** `build-<dir>/<image>/zephyr/zephyr.dts`
-  lists every alias with the file and line that set it, so an override that did
-  not take is visible without flashing anything.
-
-- **Check what a movable probe is attached to before flashing.** See the
-  probe-identity note in the session memory: `nrfutil device device-info
-  --serial-number <sn>` reports the device family, which distinguishes an nRF5340
-  (Thingy:53) from an nRF54L (bespoke board or DK). The standalone J-Link gets
-  moved between targets, so its serial identifies the probe, never the board.
-
-Not a trap, but worth knowing: `CONFIG_PWM` is off in this tool, so the Thingy:53's
-`pwmleds` node never initialises and never applies its pinctrl. The RGB pins stay
-under GPIO control. Enabling PWM for any reason would take them back.
 
 ## READ THIS BEFORE TOUCHING HARDWARE
 

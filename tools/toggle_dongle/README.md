@@ -1,5 +1,9 @@
 # MFS_1 Toggle Tool
 
+> **RETIRED 2026-09-13.** MFS_1 no longer accepts this payload — commands are
+> encrypted under day keys (`docs/tan-scheme.md`). Use `../class_app`. Kept for its
+> Thingy:53 build notes only.
+
 Bench advertiser for the MFS_1 engineer toggle. Press the button and it advertises
 a toggle command for 8 s; MFS_1 catches it in a scan window and flips its arm
 state — so the same button both activates and deactivates the sensor.

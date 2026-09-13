@@ -9,20 +9,27 @@ design toward so that later work does not require rework.
 ## 1. v1 functional requirement
 
 1. **Start up.** Cold start detected via nPM2100 reset reason (`ColdPowerUp`).
-2. **Set date/time on first start** from a trusted provisioner
-   (`docs/power-budget.md` §8.7). Monotonic floor and bounded-forward-jump rules
-   apply.
+2. **Set date/time on every boot** from a trusted provisioner — the clock is
+   invalid on every boot and is never resumed from NVS (`docs/tan-scheme.md` §7).
+   Monotonic floor and bounded-forward-jump rules apply.
 3. **ADXL367 wakes the SoC, not the PMIC** — INT1 → SoC GPIO. **INT2 must be
    left undriven; see §2.** Referenced activity, loop mode, 5 s inactivity time.
 4. **Track arm state:** Active or Inactive. **Cold start defaults to Inactive.**
-5. **Engineer's only action:** toggle Active/Inactive.
+5. **Engineer's action is an authenticated command, not a toggle** — a single
+   16-byte encrypted service UUID that asserts arm state and settings together
+   (§4, `docs/tan-scheme.md`).
 6. **LEDs:**
-   - LED A on while **Inactive**.
-   - LED B on while **Active and triggered**; extinguishes 5 s after the trigger,
-     that 5 s being the ADXL367 loop period rather than a software timer.
+   - LED A **acknowledges accepted commands**
+     (`docs/superpowers/specs/2026-09-12-app-control-design.md` §6.7) — a bounded
+     pattern plays once per accepted command, rather than marking Inactive as a
+     standing state.
+   - LED B **shows detection in both arm states** — lit for about 5 s on every
+     detection, confirming a real trigger while Active or simulating one during
+     tuning while Inactive, that 5 s being the ADXL367 loop period rather than a
+     software timer.
 
-Also required, because it is how the toggle arrives: the 100 ms / 6 s passive scan
-loop and TAN validation (`docs/tan-scheme.md`).
+Also required, because it is how commands arrive: the 100 ms / 6 s passive scan
+loop and day-key command validation (`docs/tan-scheme.md`).
 
 ### 1.0 THE ARM BOOLEAN IS DEFINITIVE — architectural invariant
 
@@ -36,7 +43,7 @@ Enforced in code by a single derivation point:
 
 ```cpp
 // App::updateOutputState() — the only place the two are combined.
-m_output_active = (m_arm_state == ArmState::Active) && awake && !m_ignore_stale_trigger;
+m_output_active = (m_arm_state == ArmState::Active) && m_detection_met && delayPermitsFiring();
 ```
 
 and a single sanctioned read, `App::IsOutputActive()`.
@@ -46,9 +53,12 @@ BLE notification:
 
 - **Call `IsOutputActive()`.** Never read INT1, the AWAKE bit, `Adxl367::ReadAwake()`
   or any accelerometer state and act on it directly.
-- **Never re-derive the condition** at the consumer. LED B is deliberately written
-  as `ledB = IsOutputActive();` — a consumer, not a second implementation — so a
-  future voltage-switch consumer has an example to copy.
+- **Never re-derive the condition** at the consumer. `OutputSwitch` is the worked
+  example: it is driven as `m_output_switch.Set(m_output_active);` from the
+  derivation point itself, never from a second call site that could disagree with
+  it. LED B is **not** this example — it is a bench-only detection indicator
+  (`ledB = m_detection_met;`), lit in both arm states for tuning, and is gated out
+  of production builds.
 - **If the condition must change, change `updateOutputState()`**, so every consumer
   moves together and none is left behind.
 
@@ -119,8 +129,7 @@ must use the gated `triggered`, never the raw INT1 level.
 ### 1.1 Explicitly deferred
 
 No alarm transmission, no nightly status, no fuel gauge reporting, no FEM, no
-Coded PHY fallback, no configuration beyond the single toggle. The BLE **connection**
-is also deferred — see §4.
+Coded PHY fallback. The BLE **connection** is also deferred — see §4.
 
 ## 2. Hardware hazard — ADXL367 INT2 and PMIC SHPHLD
 
@@ -281,27 +290,23 @@ recommends a full discharge to 0 V when power cycling.
 
 ## 4. v1 needs no BLE connection at all
 
-The eventual configuration flow is a command string preceded by a TAN, which needs a
-GATT connection. **v1's only command is a single toggle bit**, and it fits in the
-advertising payload alongside the TAN:
+The command is a single authenticated assertion of arm state and settings together
+(§4 of `docs/superpowers/specs/2026-09-12-app-control-design.md`), carried in one
+128-bit service UUID — no GATT, no connection, no central role needed. It is
+**16 bytes**: rotating ID (4) + ciphertext (8) + tag (4), the same payload size as
+the provisioner time sync (`docs/tan-scheme.md` §6.1).
 
-| Field | Bytes |
-|---|---|
-| Version | 1 |
-| TAN (6 digits) | 3 |
-| Command (toggle) | 1 |
-| **Total** | **5** — inside the 12-byte ceiling (`docs/power-budget.md` §8.7.4) |
+So v1 is **advert-only**: the device scans, authenticates the command, applies it,
+and never transmits. This removes the entire connection stack from the first build.
 
-So v1 is **advert-only**: no GATT, no connection, no central role. The device scans,
-validates a TAN, applies the command, and never transmits. This removes the entire
-connection stack from the first build.
+**Trade-off:** no acknowledgement to the phone over the radio — **LED A is the
+acknowledgement**. It plays a bounded pattern once an accepted command has taken
+effect (`docs/superpowers/specs/2026-09-12-app-control-design.md` §6.7), which is
+adequate on the bench and arguably preferable there. An outward connection, if ever
+needed, remains a later addition rather than something v1 is missing.
 
-**Trade-off:** no acknowledgement to the phone. The LEDs are the feedback channel,
-which is adequate on the bench and arguably preferable there. The outward connection
-arrives in v2 with the configuration string.
-
-Security is unaffected — the TAN authenticates the command, and single-use means a
-captured advert cannot be replayed.
+Security is unaffected — the command is authenticated under the day key, and the
+rotating sequence number means a captured advert cannot be replayed.
 
 ## 5. LED power — bench only as specified
 
@@ -321,14 +326,24 @@ For v1 bench work this is accepted. Gate it behind a Kconfig as
 | Blink 10 ms every 5 s | ~4 µA |
 | Continuous (as specified for v1) | ~2 mA — not viable |
 
-## 6. Arm-state persistence — decision needed
+**Answered for LED A** (`docs/superpowers/specs/2026-09-12-app-control-design.md`
+§6.7): bounded patterns only, a few seconds per command — the first row above,
+generalised from "after a toggle" to "after any accepted command". A production
+build (`CONFIG_MFS_DEBUG_LED=n`) leaves LED A dark between patterns rather than
+lighting it while Inactive, so the standing cost is zero. LED B remains a bench-only
+detection indicator, never a production consumer, and is not addressed by this
+answer.
 
-**As specified, cold start defaults to Inactive.** This is fail-safe in the sense
-that a serviced device does not come up armed.
+## 6. Arm-state persistence — decided
 
-The consequence to be aware of: a **brown-out would silently disarm** the device.
-For a covert alarm sensor that is a silent loss of function, with no indication to
-the operator. Options:
+**Arm state is not persisted.** Cold start always defaults to Inactive, including
+after a brown-out — the fail-safe option below, as implemented.
+
+The consequence is sharper than originally scoped: **a reset also invalidates the
+clock** (`docs/tan-scheme.md` §7), so the device comes up not merely Inactive but
+**unresponsive to commands** until a provisioner next syncs it. For a covert alarm
+sensor that is a silent double loss of function, with no indication to the
+operator until someone visits the device with the app. Options considered:
 
 - **As specified** — cold start always Inactive. Simple; accepts silent disarm.
 - **Persist arm state to NVS** and restore it, treating only a first-ever boot as
@@ -336,7 +351,16 @@ the operator. Options:
 - Persist, restore, **and log the cold start** so the operator sees an unexplained
   power interruption as a tamper/fault signal.
 
-Implemented as specified for v1. The third option is the likely production answer.
+**Decided: none of these for v1 — the intended refinement is the nPM2100's
+SCRATCHA register**
+(`docs/superpowers/specs/2026-09-12-app-control-design.md` §7.1). SCRATCHA survives
+exactly the resets NVS should not survive (brownout, watchdog, SoC reset) and
+clears on the one event it should (battery removal), which none of the three
+options above can express with NVS alone. It cannot hold the access state, and
+restoring arm state from it while the clock stays invalid on every boot still
+leaves the device waiting on a provisioner sync before it will obey a disarm — the
+correct failure direction for an output that switches a voltage. Open for a later
+task; both the arm-state and clock-offset uses are unimplemented.
 
 ## 7. Configuration roadmap
 
