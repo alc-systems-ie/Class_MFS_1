@@ -7,5 +7,12 @@ compile_commands.json
 # Secrets — TAN seed and provisioning key. Never commit.
 credentials.conf
 
+# Host test artifacts.
+test_runner
+test_runner.dSYM/
+
+# Python cache.
+__pycache__/
+
 # macOS.
 .DS_Store
