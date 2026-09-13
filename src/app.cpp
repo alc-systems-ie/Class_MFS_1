@@ -766,10 +766,20 @@ namespace alc
         LOG_ERR("ADXL stuck AWAKE for %u s - re-arming the loop engine!", M_AWAKE_STUCK_TICKS / 10U);
 
         // enableAccelerometer(), not a bare ConfigureLoopMode() call - the
-        // watchdog's re-arm must reset the latch, the previous-awake edge
-        // witness and the stale-trigger hold exactly like every other
-        // (re)configure, or a fresh motion edge right after recovery could be
-        // lost or miscounted.
+        // watchdog's re-arm must reset the previous-awake edge witness and
+        // the stale-trigger hold exactly like every other (re)configure, or
+        // a fresh motion edge right after recovery could be lost or
+        // miscounted.
+        //
+        // enableAccelerometer() itself sets m_ignore_stale_trigger = awake on
+        // success - if AWAKE is still asserted immediately after
+        // reconfiguring, that assertion predates this recovery and must be
+        // suppressed until INT1 de-asserts, exactly as for every other arm.
+        // DO NOT clear it again below: an earlier version did, which
+        // discarded that suppression and let a level still stuck right after
+        // the re-arm read as a rising edge on the very next tick - counting a
+        // spurious activation once per watchdog period until the configured
+        // count was reached and the device fired on a stale level.
         if (enableAccelerometer() < 0) {
           LOG_ERR("ADXL re-arm failed!");
 
@@ -777,14 +787,16 @@ namespace alc
           // than leave the part unconfigured and the watchdog silent until it
           // next trips M_AWAKE_STUCK_TICKS later - that would leave the device
           // deaf for the whole watchdog period again. serviceCooldown() now
-          // retries the re-arm at 1 Hz until detection is restored.
+          // retries the re-arm at 1 Hz until detection is restored - its own
+          // enableAccelerometer() call sets m_ignore_stale_trigger correctly
+          // on whichever retry eventually succeeds, so nothing more is
+          // needed here.
           m_in_cooldown            = true;
           m_cooldown_expired       = true;
           m_cooldown_next_retry_ms = 0;
           m_cooldown_rearm_failed  = false;
         }
 
-        m_ignore_stale_trigger = false;
         // A stuck level must not hold a detection - and so the output - open.
         m_detection_met = false;
       }
