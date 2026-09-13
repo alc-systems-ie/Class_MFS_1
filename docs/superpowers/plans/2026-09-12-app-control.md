@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **Re-cut 2026-09-13** for the day-key access scheme. No task of the 2026-09-12 plan had started. The mapping from old to new tasks is at the end. The host-side C++ and Dart in Tasks 1–7 and 10–12 was prototyped and run before this plan was written: 8 host C++ suites pass, 14 Dart tests pass, and both reproduce the Python vectors byte for byte. Tasks 8, 9 and 14–16 were built for `nrf54l15dk/nrf54l05/cpuapp` with no warnings. **None of it has run on hardware.**
+> **Re-cut 2026-09-13** for the day-key access scheme. No task of the 2026-09-12 plan had started. The mapping from old to new tasks is at the end. The host-side C++ and Dart in Tasks 1–7 and 10–12 was prototyped and run before this plan was written: 9 host C++ suites pass, 14 Dart tests pass, and both reproduce the Python vectors byte for byte. Tasks 8, 9 and 14–16 were built for `nrf54l15dk/nrf54l05/cpuapp` with no warnings. **None of it has run on hardware.**
 
 **Goal:** Replace the Thingy:53 toggle tool with a Flutter app that tunes, arms and disarms MFS_1 under encrypted, day-keyed commands, with LED A acknowledging every accepted command.
 
@@ -30,6 +30,7 @@
 - **The arm invariant** (`docs/v1-scope.md` §1.0): `App::updateOutputState()` is the only place the arm state and detection are combined; `App::IsOutputActive()` is the only sanctioned read.
 - **`OutputSwitch` already exists** and owns the fire pins privately. Do not add an accessor or a second handle to P2.05/P2.09.
 - **Failures emit nothing** — no advert, no LED. LED A plays a pattern only for an *accepted* command.
+- **Armed, the device does one thing on command: disarm.** Everything else is ignored, and a disarm applies nothing else. **Triggers are one-shot** — the device latches Inactive after firing. `DecideCommand()` is the only place this is decided.
 
 ---
 
@@ -54,6 +55,7 @@
 | `src/led_sequencer.{hpp,cpp}` (new) | LED A patterns | yes |
 | `src/settings.{hpp,cpp}` (new) | parameters, NVS, mode gated on slot 0 | yes |
 | `src/credentials.{hpp,cpp}` (new) | strict hex parsing of the bench credentials | yes |
+| `src/arm_policy.hpp` (new) | **the single armed path**: what an accepted command may do | yes |
 | `src/crypto_selftest.{hpp,cpp}` (new) | proves PSA against the vectors at boot | — |
 | `src/access_store.{hpp,cpp}` (new) | NVS record for `AccessState` | — |
 | `src/command_scanner.{hpp,cpp}` (modify) | AD 0x07 → queue of raw UUIDs; fast scan | — |
@@ -6678,31 +6680,173 @@ Verified on hardware: <results of steps 1-5, in particular step 3>."
 
 ---
 
-## Task 16: Command handling, arm transitions and LED A
+## Task 16: Command handling, the single armed path, and LED A
+
+**Decided 2026-09-13: an armed device does exactly one thing on command — disarm.** There is one path out of the armed state on command, and only two ways out at all: **disarm** or **trigger**. A trigger is **one-shot**: once the output period ends the device latches Inactive, and re-arming needs an engineer. (Power loss also leaves it Inactive, because cold start is Inactive.)
+
+The rule lives in one pure, host-tested function, `DecideCommand()`, and `App::applyCommand()` acts on its decision and nothing else.
 
 **Files:**
-- Modify: `src/app.hpp`, `src/app.cpp`, `CMakeLists.txt`
+- Create: `src/arm_policy.hpp`, `tests/test_arm_policy.cpp`
+- Modify: `src/app.hpp`, `src/app.cpp`, `CMakeLists.txt`, `tests/test_main.cpp`
 
 **Interfaces:**
 - Consumes: `LedSequencer` (Task 6), `AccessControl::Evaluation`, `DeviceClock::ApplyMinuteHint`, the Task 14–15 engine and delay.
-- Produces: `App::applyCommand(const AccessControl::Evaluation&, int64_t)`, `App::playLedPattern(LedPattern)`, `App::ledTimerHandler(struct k_timer*)`. The complete behaviour.
+- Produces: `enum class ArmAction { Ignore, Disarm, Arm, Tune }`, `struct ArmDecision { action; applySettings; applyMode; trimClock; }`, `ArmDecision DecideCommand(bool armed, bool fromNetworkManager, const protocol::Command&)`; `App::applyCommand(...)`, `App::playLedPattern(LedPattern)`, `App::ledTimerHandler(struct k_timer*)`, `App::m_trigger_fired`, `App::m_trigger_complete`.
 
-Behaviour, from spec §6.4 and §6.7:
+| Device is | Command | Action | Settings | Mode | Clock trim | LED A |
+|---|---|---|---|---|---|---|
+| **Active** | arm bit set | **Ignore — nothing at all** | no | no | no | none |
+| **Active** | arm bit clear | **Disarm only** (cancels any delay) | **no** | **no** | yes | Disarmed, or Delay Cancelled |
+| Inactive | arm bit set | Arm: configure, confirm AWAKE clear, Active | yes | slot 0 only | yes | Armed, or Arm Refused |
+| Inactive | arm bit clear | Tune: (re)start the engine | yes | slot 0 only | yes | Settings Applied, or Mode Changed |
+| **Active** | — (output period ends) | **Latch Inactive** | — | — | — | none |
 
-| Command | Device was | Result | LED A |
-|---|---|---|---|
-| arm | Inactive | apply settings, configure, confirm AWAKE clear, Active | Armed, or Arm Refused |
-| arm | Active | **disarm first** (cancels any delay), then as above | Armed, or Arm Refused |
-| disarm | Active | Inactive, cancel delay, apply settings | Disarmed, or Delay Cancelled |
-| disarm | Inactive | apply settings, (re)start the engine for tuning | Settings Applied, or Mode Changed |
+An ignored command has still consumed its sequence number (AccessControl persisted it before App saw it), which is harmless. **LED B simulates triggers while Inactive only after a Tune Send**, because disarming stands the ADXL367 down as the arming invariant requires.
 
-The clock is trimmed from every accepted command's minute. The mode changes only from slot 0. **LED B simulates triggers while Inactive only after a settings Send** — disarming stands the ADXL367 down, as the arming invariant requires, and a settings command starts it again.
+- [ ] **Step 1: Write the failing policy test**
 
-- [ ] **Step 1: Add the sequencer source to the build**
+Create `tests/test_arm_policy.cpp`:
+
+```cpp
+#include <cassert>
+#include <cstdio>
+
+#include "arm_policy.hpp"
+
+void run_arm_policy_tests()
+{
+  using namespace alc;
+
+  protocol::Command armCommand;
+  protocol::Command disarmCommand;
+  ArmDecision decision;
+  const bool M_BOTH_SLOT_KINDS[] { false, true };
+
+  armCommand.armActive    = true;
+  armCommand.activations  = 5;
+  armCommand.delayCode    = 127;
+  armCommand.mode         = protocol::Mode::ReportOnly;
+  disarmCommand           = armCommand;
+  disarmCommand.armActive = false;
+
+  // ARMED + anything but disarm: NOTHING. Not even from the Network Manager, not
+  // even a clock trim. There is one path out of the armed state on command.
+  for (bool fromNetworkManager : M_BOTH_SLOT_KINDS) {
+    decision = DecideCommand(true, fromNetworkManager, armCommand);
+    assert(decision.action == ArmAction::Ignore);
+    assert(!decision.applySettings && !decision.applyMode && !decision.trimClock);
+  }
+
+  // ARMED + disarm: disarm, and nothing else. The settings, delay and mode the
+  // command carries are not applied - from any slot.
+  for (bool fromNetworkManager : M_BOTH_SLOT_KINDS) {
+    decision = DecideCommand(true, fromNetworkManager, disarmCommand);
+    assert(decision.action == ArmAction::Disarm);
+    assert(!decision.applySettings && !decision.applyMode);
+    assert(decision.trimClock);
+  }
+
+  // INACTIVE + arm: arm with the command's settings; mode only from slot 0.
+  decision = DecideCommand(false, false, armCommand);
+  assert(decision.action == ArmAction::Arm && decision.applySettings && !decision.applyMode && decision.trimClock);
+  decision = DecideCommand(false, true, armCommand);
+  assert(decision.action == ArmAction::Arm && decision.applyMode);
+
+  // INACTIVE + disarm bit: tune.
+  decision = DecideCommand(false, false, disarmCommand);
+  assert(decision.action == ArmAction::Tune && decision.applySettings && !decision.applyMode);
+  decision = DecideCommand(false, true, disarmCommand);
+  assert(decision.action == ArmAction::Tune && decision.applyMode);
+
+  printf("arm policy: OK\n");
+}
+```
+
+Declare and call `run_arm_policy_tests();` in `tests/test_main.cpp`.
+
+Run: `make test`
+Expected: FAIL — `'arm_policy.hpp' file not found`.
+
+- [ ] **Step 2: Implement the policy**
+
+Create `src/arm_policy.hpp`:
+
+```cpp
+#pragma once
+
+#include <cstdint>
+
+#include "mfs_protocol.hpp"
+
+namespace alc
+{
+
+  /** @brief What an accepted command is allowed to do. */
+  enum class ArmAction : uint8_t {
+    Ignore, ///< Armed, and the command does not disarm. NOTHING happens.
+    Disarm, ///< Armed -> Inactive. The only thing an armed device will do on command.
+    Arm,    ///< Inactive -> Active with the command's settings.
+    Tune,   ///< Inactive stays Inactive; settings applied for tuning.
+  };
+
+  struct ArmDecision
+  {
+      ArmAction action { ArmAction::Ignore };
+      bool applySettings { false };
+      bool applyMode { false };
+      bool trimClock { false };
+  };
+
+  /**
+   * @brief THE SINGLE PATH. Decides what an accepted command may do. Pure.
+   *
+   * **An armed device does exactly one thing on command: disarm.** A command with
+   * the arm bit set is ignored outright - no settings, no mode, no clock trim,
+   * no re-arm. A disarm applies nothing but the disarm: the settings, delay and
+   * mode it carries are ignored, and the engineer sends settings once Inactive.
+   *
+   * An armed device therefore leaves the armed state only two ways: a disarm
+   * command, or firing (App latches Inactive when the output period ends). Power
+   * loss also leaves it Inactive, because cold start is Inactive.
+   *
+   * App::applyCommand() must act on this decision and on nothing else.
+   *
+   * @param armed              Whether the device is Active now.
+   * @param fromNetworkManager Whether the command came from slot 0.
+   */
+  inline ArmDecision DecideCommand(bool armed, bool fromNetworkManager, const protocol::Command& command)
+  {
+    ArmDecision decision {};
+
+    if (armed) {
+      if (command.armActive) { return decision; }
+
+      // The clock trim is the only side effect a disarm keeps. It changes no
+      // device behaviour, and the command is authentic and fresh.
+      decision.action    = ArmAction::Disarm;
+      decision.trimClock = true;
+      return decision;
+    }
+
+    decision.action        = command.armActive ? ArmAction::Arm : ArmAction::Tune;
+    decision.applySettings = true;
+    decision.applyMode     = fromNetworkManager;
+    decision.trimClock     = true;
+    return decision;
+  }
+
+}
+```
+
+Run: `make test`
+Expected: `arm policy: OK` and `ALL TESTS PASSED`.
+
+- [ ] **Step 3: Add the sequencer source to the build**
 
 In `CMakeLists.txt`, add `src/led_sequencer.cpp` after `src/settings.cpp`.
 
-- [ ] **Step 2: Replace the shim with the real handling**
+- [ ] **Step 4: Replace the shim with the real handling and the one-shot latch**
 
 1. In `src/app.hpp`, replace:
 
@@ -6713,6 +6857,7 @@ In `CMakeLists.txt`, add `src/led_sequencer.cpp` after `src/settings.cpp`.
    with:
 
 ```cpp
+#include "arm_policy.hpp"
 #include "device_clock.hpp"
 #include "led_sequencer.hpp"
 ```
@@ -6842,53 +6987,63 @@ In `CMakeLists.txt`, add `src/led_sequencer.cpp` after `src/settings.cpp`.
   {
     const protocol::Command& command { evaluation.command };
     bool fromNetworkManager { evaluation.slot == access::M_SLOT_NETWORK_MANAGER };
+    ArmDecision decision { DecideCommand(m_arm_state == ArmState::Active, fromNetworkManager, command) };
     protocol::Mode previousMode { m_settings.OperatingMode() };
     bool delayWasPending { m_delay_pending };
     LedPattern pattern { LedPattern::None };
-    DeviceClock::TrimResult trim { m_clock.ApplyMinuteHint(command.minuteOfDay, uptimeSecs) };
 
-    if (trim == DeviceClock::TrimResult::Trimmed) { LOG_INF("Clock trimmed from slot %u: now minute %u.", evaluation.slot, m_clock.MinuteOfDay(uptimeSecs)); }
-
-    if (command.mode != protocol::Mode::TriggerOnly && !fromNetworkManager) {
-      LOG_WRN("Mode field from slot %u ignored - only the Network Manager may change the mode.", evaluation.slot);
+    // THE SINGLE PATH. Everything below acts on `decision` and on nothing else -
+    // see DecideCommand(). On command, an armed device only ever disarms.
+    if (decision.action == ArmAction::Ignore) {
+      LOG_WRN("Armed: command slot %u n %u ignored - only a disarm is accepted while armed.", evaluation.slot, evaluation.n);
+      return;
     }
 
-    if (command.armActive) {
-      // Re-arm from scratch even if already Active: disarm first, cancelling any
-      // pending delay (the fail-safe direction), so arming always configures the
-      // part afresh with the settings that travelled in this command.
-      if (m_arm_state == ArmState::Active) { setArmState(ArmState::Inactive); }
-
-      m_settings.ApplyFrom(command, fromNetworkManager);
-      m_activation_count = 0;
-      m_detection_met    = false;
-
-      // setArmState() performs the standby -> configure -> confirm-AWAKE-clear
-      // sequence that makes arming edge-triggered, and refuses if it cannot.
-      setArmState(ArmState::Active);
-      pattern = (m_arm_state == ArmState::Active) ? LedPattern::Armed : LedPattern::ArmRefused;
-      if (pattern == LedPattern::ArmRefused) { LOG_ERR("Arming refused - command slot %u n %u is spent; send again.", evaluation.slot, evaluation.n); }
-    } else if (m_arm_state == ArmState::Active) {
-      setArmState(ArmState::Inactive);
-      m_settings.ApplyFrom(command, fromNetworkManager);
-      pattern = delayWasPending ? LedPattern::DisarmedDelayCancelled : LedPattern::Disarmed;
-      if (delayWasPending) { LOG_WRN("Disarmed with a trigger PENDING - the trigger is cancelled."); }
-    } else {
-      m_settings.ApplyFrom(command, fromNetworkManager);
-
-      // Tuning: (re)start the engine at the new threshold so LED B simulates
-      // triggers straight away. Always, not only on change - the engineer may be
-      // restarting the simulation after a disarm stood the part down.
-      m_activation_count = 0;
-      m_detection_met    = false;
-      m_in_cooldown      = false;
-      if (enableAccelerometer() < 0) { LOG_ERR("Could not start the engine for tuning!"); }
-      pattern = LedPattern::SettingsApplied;
+    if (decision.trimClock && m_clock.ApplyMinuteHint(command.minuteOfDay, uptimeSecs) == DeviceClock::TrimResult::Trimmed) {
+      LOG_INF("Clock trimmed from slot %u: now minute %u.", evaluation.slot, m_clock.MinuteOfDay(uptimeSecs));
     }
 
-    // Mode Changed only when the arm result is the quiet one; an arm or disarm
-    // pattern matters more to the engineer standing at the device.
-    if (pattern == LedPattern::SettingsApplied && m_settings.OperatingMode() != previousMode) { pattern = LedPattern::ModeChanged; }
+    if (decision.applySettings) {
+      if (command.mode != protocol::Mode::TriggerOnly && !decision.applyMode) {
+        LOG_WRN("Mode field from slot %u ignored - only the Network Manager may change the mode.", evaluation.slot);
+      }
+      m_settings.ApplyFrom(command, decision.applyMode);
+    }
+
+    switch (decision.action) {
+      case ArmAction::Disarm:
+        // Nothing but the disarm. The settings this command carries were not
+        // applied above; the engineer sends them once the device is Inactive.
+        setArmState(ArmState::Inactive);
+        pattern = delayWasPending ? LedPattern::DisarmedDelayCancelled : LedPattern::Disarmed;
+        if (delayWasPending) { LOG_WRN("Disarmed with a trigger PENDING - the trigger is cancelled."); }
+        break;
+
+      case ArmAction::Arm:
+        m_activation_count = 0;
+        m_detection_met    = false;
+
+        // setArmState() performs the standby -> configure -> confirm-AWAKE-clear
+        // sequence that makes arming edge-triggered, and refuses if it cannot.
+        setArmState(ArmState::Active);
+        pattern = (m_arm_state == ArmState::Active) ? LedPattern::Armed : LedPattern::ArmRefused;
+        if (pattern == LedPattern::ArmRefused) { LOG_ERR("Arming refused - command slot %u n %u is spent; send again.", evaluation.slot, evaluation.n); }
+        break;
+
+      case ArmAction::Tune:
+        // (Re)start the engine at the new threshold so LED B simulates triggers
+        // straight away. Always, not only on change - the engineer may be
+        // restarting the simulation after a disarm stood the part down.
+        m_activation_count = 0;
+        m_detection_met    = false;
+        m_in_cooldown      = false;
+        if (enableAccelerometer() < 0) { LOG_ERR("Could not start the engine for tuning!"); }
+        pattern = (m_settings.OperatingMode() != previousMode) ? LedPattern::ModeChanged : LedPattern::SettingsApplied;
+        break;
+
+      default:
+        return;
+    }
 
     if (m_settings.OperatingMode() != protocol::Mode::TriggerOnly) {
       LOG_WRN("Mode %u stored but reporting is not implemented - behaving as Trigger only!", static_cast<unsigned>(m_settings.OperatingMode()));
@@ -6927,7 +7082,105 @@ In `CMakeLists.txt`, add `src/led_sequencer.cpp` after `src/settings.cpp`.
   int App::applyLeds(bool ledA, bool ledB)
 ```
 
-- [ ] **Step 3: Build and bench-test the whole flow**
+9. In `src/app.hpp`, replace:
+
+```cpp
+      struct k_timer m_led_timer;
+```
+
+   with:
+
+```cpp
+      struct k_timer m_led_timer;
+
+      // ONE-SHOT trigger. Set while the output is asserted; when it clears, the
+      // trigger is complete and the main loop latches the device Inactive.
+      bool m_trigger_fired;
+      bool m_trigger_complete;
+```
+
+10. In `src/app.cpp`, replace:
+
+```cpp
+      , m_led_timer {}
+      , m_initialised(false)
+```
+
+   with:
+
+```cpp
+      , m_led_timer {}
+      , m_trigger_fired(false)
+      , m_trigger_complete(false)
+      , m_initialised(false)
+```
+
+11. In `src/app.cpp`, replace:
+
+```cpp
+      // The ONE place the output state is derived. See updateOutputState().
+      updateOutputState();
+```
+
+   with:
+
+```cpp
+      // The ONE place the output state is derived. See updateOutputState().
+      updateOutputState();
+
+      // Firing is one of the only two ways out of the armed state. Acted on here,
+      // not inside updateOutputState(), because setArmState() re-enters it.
+      if (m_trigger_complete) {
+        m_trigger_complete = false;
+        LOG_WRN("Trigger complete - latched Inactive. Re-arming needs an engineer command.");
+        setArmState(ArmState::Inactive);
+      }
+```
+
+12. In `src/app.cpp`, replace:
+
+```cpp
+    m_output_switch.Set(m_output_active);
+```
+
+   with:
+
+```cpp
+    m_output_switch.Set(m_output_active);
+
+    // ONE-SHOT. Once the output has asserted and its period has ended, the
+    // trigger is complete. Only flagged here - see the main loop.
+    if (m_output_active) { m_trigger_fired = true; }
+    if (m_trigger_fired && !m_output_active) {
+      m_trigger_fired    = false;
+      m_trigger_complete = true;
+    }
+```
+
+13. In `src/app.cpp`, replace:
+
+```cpp
+      // Boolean first, sensor second - see disableAccelerometer().
+      m_arm_state = ArmState::Inactive;
+      disableAccelerometer();
+```
+
+   with:
+
+```cpp
+      // Boolean first, sensor second - see disableAccelerometer().
+      m_arm_state = ArmState::Inactive;
+      disableAccelerometer();
+
+      // Whatever the route to Inactive, a trigger in progress is over. Cleared
+      // after disableAccelerometer(), which re-derives the output.
+      m_trigger_fired    = false;
+      m_trigger_complete = false;
+```
+
+Check the single path by reading, not just by testing: `grep -n "m_settings.ApplyFrom\|setArmState(ArmState::Active)" src/app.cpp` must show `ApplyFrom` **only** inside `applyCommand()` behind `decision.applySettings`, and `setArmState(ArmState::Active)` **only** in the `ArmAction::Arm` case. Any other call site is a second path — remove it.
+
+- [ ] **Step 5: Build and bench-test the whole flow**
 
 ```bash
 west build -b nrf54l15dk/nrf54l05/cpuapp -p always -- -DEXTRA_CONF_FILE=credentials.conf
@@ -6935,37 +7188,40 @@ west flash --dev-id 853003346 --recover
 make test
 ```
 
-Walk spec §8.2 end to end with the app, RTT open:
+With the app and RTT open:
 
 1. Boot: LED A lit (bench build), `Clock INVALID`. Provision.
-2. Armed off, adjust sliders, **Send**: **one blink**, `Applied: arm Inactive, ...`. Handle the device: **LED B** lights for ~5 s per detection.
-3. Armed on, **Send**: **rapid flash for 3 s**, then LED A off. `Arm state: Active`.
-4. Trigger it: LED B and the fire output for ~5 s.
-5. Set delay 60 s, **Send** armed (re-arm), trigger, then within the minute Armed off, **Send**: **double blink**, `Disarmed with a trigger PENDING`. The output never asserts.
-6. Armed off, **Send** again: **one blink**.
-7. **Send as Network Manager** with Report: **two blinks**, then `Mode 2 stored but reporting is not implemented`.
-8. Build with `CONFIG_MFS_DEBUG_LED=n` in `prj.conf`, flash, provision, and repeat step 3: **the rapid flash still plays** (patterns are not a debug aid), and LED A stays dark between patterns. Restore `CONFIG_MFS_DEBUG_LED=y`.
+2. Armed off, adjust sliders, **Send**: **one blink**, `Applied: arm Inactive, ...`. Handle the device: **LED B** lights ~5 s per detection.
+3. Armed on (activations 1, delay 0), **Send**: **rapid flash**, then LED A off. `Arm state: Active`.
+4. **Still armed**, change the sensitivity slider, **Send**: **no flash, nothing changes**, `Armed: command slot 1 n ... ignored - only a disarm is accepted while armed.` Then **Send as Network Manager** with Report: also ignored.
+5. Trigger it: fire output and LED B for ~5 s, then `Trigger complete - latched Inactive.` and `Arm state: Inactive`; LED A lights. Trigger again: LED B only if tuning was restarted — **the output never asserts**.
+6. Armed on with **delay 60 s**, **Send** (rapid flash). Trigger. Within the minute: Armed off, **change activations to 7**, **Send**: **double blink**, `Disarmed with a trigger PENDING`. The output never asserts, and the `Applied:` line still shows the **old** activation count — the disarm applied nothing else.
+7. Armed off, **Send** again: **one blink**, and now `Applied:` shows 7.
+8. Inactive, **Send as Network Manager** with Report: **two blinks**, then `Mode 2 stored but reporting is not implemented`.
+9. Build with `CONFIG_MFS_DEBUG_LED=n` in `prj.conf`, flash, provision, repeat step 3: **the rapid flash still plays**, and LED A stays dark between patterns. Restore `CONFIG_MFS_DEBUG_LED=y`.
 
-Record which patterns were confirmed by eye. Arm Refused cannot be provoked without disconnecting the ADXL367; note it as unverified on hardware if not attempted.
+**Steps 4, 5 and 6 are the ones that matter.** Record which patterns were confirmed by eye. Arm Refused cannot be provoked without disconnecting the ADXL367; note it as unverified on hardware if not attempted.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-/Users/andy/nrfenv/bin/clang-format -i src/app.cpp src/app.hpp
-git add src/app.cpp src/app.hpp CMakeLists.txt
-git commit -m "Carry out accepted commands and acknowledge them on LED A
+/Users/andy/nrfenv/bin/clang-format -i src/arm_policy.hpp src/app.cpp src/app.hpp tests/test_arm_policy.cpp tests/test_main.cpp
+git add src/arm_policy.hpp src/app.cpp src/app.hpp CMakeLists.txt tests/
+git commit -m "Allow an armed device only to disarm, and make triggers one-shot
 
-Replaces the phase-2 shim. The sequence number is already persisted when this
-runs, so a refused arm is spent - the engineer sends again with the next number.
-An arm command while armed disarms first, cancelling any pending delay, so arming
-always configures the part afresh with the settings that travelled with it.
+On command, an armed device does exactly one thing: disarm. Any other command
+is ignored outright - no settings, no mode, no clock trim, no re-arm - and a
+disarm applies nothing but the disarm. The rule is one pure function,
+DecideCommand(), host-tested across every state, slot and arm bit, and
+applyCommand() acts on its decision and nothing else.
 
-LED A plays the acknowledgement from a 10 ms timer, because the 100 ms loop
-cannot draw a 60 ms phase, and plays in every build: it is how a jammed command
-becomes visible. The clock is trimmed from every accepted command, and the mode
-changes only from slot 0.
+A trigger is one-shot: once the output period ends the device latches Inactive.
+Disarm and trigger are therefore the only two ways out of the armed state.
 
-Verified on hardware: <patterns confirmed by eye>."
+LED A acknowledges accepted commands from a 10 ms timer, in every build. An
+ignored command shows nothing.
+
+Verified on hardware: <steps 4-6 results; patterns confirmed by eye>."
 ```
 
 ---
@@ -7036,6 +7292,8 @@ Questions to answer first:
 3. **Is the report authenticated?** CCM under a report-specific key derived from the day key fits 16 bytes the same way commands do.
 4. **What does the hub do with a report it cannot attribute?**
 
+**Also to decide:** the one-shot latch (Task 16) completes when the output period ends. In `ReportOnly` the output never asserts, so Task 18 must define when a report-only trigger is complete — most simply, when the report burst ends.
+
 **When unblocked:** a `Reporter` class owning a bounded advertising burst; a call site in `updateOutputState()` immediately before `m_output_switch.Set(true)` for `ReportAndTrigger`, and in place of it for `ReportOnly`; removal of the Task 16 warning; the `CLAUDE.md` wording extended with the burst's bounds.
 
 ---
@@ -7057,7 +7315,7 @@ Questions to answer first:
 | 6 Screen | 13 | **Rewritten** — no codes; provisioner screen; hardware E2E |
 | 9 Detection engine | 14 | Settings loaded here; shim carries settings |
 | 9a Delay interlock | 15 | **Bug fixed** — delayed trigger never asserted |
-| 10 Payload handling | 16 | **Rewritten** — accepted commands, re-arm ordering, LED A |
+| 10 Payload handling | 16 | **Rewritten** — single armed path (`ArmPolicy`), one-shot trigger, LED A |
 | 11 Documents | 17 | Reduced — access documents already amended |
 | 12 Report modes | 18 | Still blocked; rotating IDs noted as a candidate |
 
@@ -7067,7 +7325,7 @@ Questions to answer first:
 
 **Spec coverage** (`docs/superpowers/specs/2026-09-12-app-control-design.md` and `docs/tan-scheme.md`):
 
-- Spec §1 scope, §5 encodings → Tasks 1, 2, 7, 11. §2 decisions 1–12 → Tasks 14, 15; 13–21 → Tasks 3–9, 16. §3 spike → Tasks 12, 13 (30 s window, iPhone measurement). §4 wire format → Tasks 2, 3, 11. §4.3 modes, slot 0 only → Tasks 2, 7, 12, 13, 16, 18. §6.1 units → Tasks 2–9. §6.2 invariant → Tasks 14, 17. §6.3 engine → Task 14. §6.4 activation order → Task 16. §6.5 no test code → Tasks 2, 12 (nothing implements one). §6.5.1 interlock → Task 15. §6.6 silence → Tasks 9, 16. §6.7 LEDs → Tasks 6, 16. §6.8 time → Tasks 4, 9, 16. §7 persistence → Tasks 7, 9. §8 app → Tasks 10–13. §9 verification: item 2 → Task 13; item 5 → Task 8; item 6 (LFXO trim) → **not in this plan**, a bench measurement outside the software. §10 documents → Task 17.
+- Spec §1 scope, §5 encodings → Tasks 1, 2, 7, 11. §2 decisions 1–12 → Tasks 14, 15; 13–21 → Tasks 3–9, 16. §3 spike → Tasks 12, 13 (30 s window, iPhone measurement). §4 wire format → Tasks 2, 3, 11. §4.3 modes, slot 0 only → Tasks 2, 7, 12, 13, 16, 18. §6.1 units → Tasks 2–9. §6.2 invariant → Tasks 14, 17. §6.3 engine → Task 14. §6.4 activation order and the single armed path → Task 16. §6.5 no test code → Tasks 2, 12 (nothing implements one). §6.5.1 interlock → Task 15. §6.6 silence → Tasks 9, 16. §6.7 LEDs → Tasks 6, 16. §6.8 time → Tasks 4, 9, 16. §7 persistence → Tasks 7, 9. §8 app → Tasks 10–13. §9 verification: item 2 → Task 13; item 5 → Task 8; item 6 (LFXO trim) → **not in this plan**, a bench measurement outside the software. §10 documents → Task 17.
 - tan-scheme §3 derivations → Tasks 3, 11; §3.1 never reuse n → Task 12 (reserve before advertise, tested); §4 day index → Tasks 4, 11; §5 key issue → Task 12 (bench stand-in only); §6.2 acceptance → Task 5; §6.4 lockout → Task 5; §6.6 LED ack → Task 16; §7.1 invalid on boot → Tasks 4, 9; §7.2 sync rules → Tasks 3, 4, 9, 13; §7.3 trim → Tasks 4, 16; §8 secrets → Tasks 8, 10 (bench); KMU → **not in this plan**.
 
 **Type consistency.** `protocol::Command` fields are identical in Tasks 2, 5, 7, 9, 14, 16 and mirrored by `Mfs1Command` in Task 11. `AccessControl::Evaluation { verdict, slot, n, command }` is used unchanged in Tasks 5, 9, 16. `Settings::ApplyFrom(const protocol::Command&, bool)` in Tasks 7, 14, 16. `CommandScanner::TakeCandidate` in Tasks 9 and 16; `SetFastScan` in Task 15. Dart `sealCommand(dayKey, deviceId, day, slot, n, plaintext)` matches the C++ `SealCommand` argument order.
@@ -7077,7 +7335,7 @@ Questions to answer first:
 **Known gaps, deliberately deferred.**
 
 1. The `OutputSwitch` fault-latch paths and the delay interlock have no automated tests — both need GPIO or kernel-timer seams the workspace has no mock for. Task 15 step 4 is a scripted bench procedure instead, and **its step 3 — deactivating mid-delay — is the single most important verification in this plan.**
-2. `App::applyCommand()` is not host-tested; its rules are small and bench-verified in Task 16, while every security rule it depends on is host-tested in Tasks 4–5.
+2. `App::applyCommand()` itself is not host-tested, but the decision it acts on is (`DecideCommand()`, Task 16), and every security rule beneath it is host-tested in Tasks 4–5. The one-shot latch is bench-verified in Task 16 step 5.
 3. The LED A write in the 100 ms loop mirrors the 10 ms timer and may be one timer tick late at a phase edge — a ≤ 10 ms visual artefact, accepted.
 4. Uninstalling the app resets its sequence counters (Task 12). Acceptable on the bench; the production Network Manager must issue a fresh slot to a reinstalled app.
 5. KMU key storage, Android Keystore, the real Network Manager and the LFXO trim are outside this plan (`docs/tan-scheme.md` §11).

@@ -128,6 +128,11 @@ next 04:00 UTC only — `docs/power-budget.md` §8.1):
   the device and the back office a day apart across every DST transition. The
   device has no timezone database and must not acquire one.
 - **Only slot 0 (the Network Manager) may change the operating mode.**
+- **Armed, the only command is disarm.** Every other command is ignored outright, and
+  a disarm applies nothing but the disarm. **Triggers are one-shot** and latch the
+  device Inactive, so disarm and trigger are the only two ways out of the armed
+  state. `DecideCommand()` (`src/arm_policy.hpp`) is the single place this is
+  decided — never add a second path in `App`.
 - **Persist before acting**, and **failures emit nothing** — no advert, no LED. LED A
   acknowledges only *accepted* commands, never a failed authentication.
 - **The device never advertises to solicit contact.** It scans. Report modes are

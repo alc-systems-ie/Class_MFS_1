@@ -271,6 +271,12 @@ uses ordinary commands with the arm bit clear; **there is no test code**.
 The mode field is applied only from slot 0. The minute field then trims the clock
 (§7.3).
 
+**An armed device accepts one command: disarm** (design spec §6.4). Any other
+authentic command is ignored — no settings, no mode, no trim, no re-arm — and a
+disarm applies nothing but the disarm. A trigger is one-shot and latches the device
+Inactive, so **disarm and trigger are the only two ways out of the armed state**. A
+stolen phone can therefore do nothing to an armed device except disarm it.
+
 ### 6.6 Silence, and the one exception
 
 **Failures emit nothing** — no advert, no LED. Silence denies an attacker any signal,
@@ -398,7 +404,7 @@ which is another route to the secret.
 | 2 | Two phones share a key and **reuse nonces** | **Fixed** by slots (§5) and save-before-advertise (§3.1) |
 | 3 | Copy a static ID and **lock the engineer out** | **Fixed** by rotating IDs; only an ID match counts (§6.4) |
 | 4 | Capture, jam, **release a command later** | **Bounded to 10 min** by freshness (§6.2) |
-| 5 | Stolen or malware-infected phone | **Bounded to today, assigned devices.** Mode changes need slot 0, so the phone cannot switch on reporting to locate sensors |
+| 5 | Stolen or malware-infected phone | **Bounded to today, assigned devices.** Mode changes need slot 0, so the phone cannot switch on reporting to locate sensors. An armed device accepts only a disarm, so the phone cannot retune it, lengthen its delay or desensitise it without first disarming it — which the Disarmed pattern shows |
 | 6 | Compromise the Network Manager | **Out of the device's hands.** HSM (§8) |
 | 7 | Physical access: SWD, battery pull | SWD: lock debug, KMU. Battery: disarms (cold start Inactive) and **invalidates the clock** — no stale day revived (§7.1) |
 | 8 | Traffic analysis | **Accepted.** 30 s of random-looking UUIDs from one phone reveals the app is in use |

@@ -53,7 +53,8 @@ code**.
    not whether detection happens: deactivated, the LED simulates; activated, two
    real GPIOs assert.
 5. **Trigger output follows detection** and self-clears after the 5 s ADXL loop
-   period, then re-arms. Unchanged from present LED behaviour.
+   period. ~~then re-arms~~ — **superseded by decision 23: the device then latches
+   Inactive.**
 6. **Geometric parameter encodings**, sensitivity byte 255 = most sensitive.
 7. **NVS for all persisted state** this phase. nPM2100 SCRATCHA is the intended
    refinement for arm state — see §7.
@@ -97,6 +98,13 @@ Amended 2026-09-13 (security) — full reasoning in `docs/tan-scheme.md`:
     measurement instead.
 21. **The clock is invalid on every boot** until an authenticated provisioner sync.
     Nothing resumes from NVS except the day floor.
+22. **One path in the armed state.** On command, an armed device does exactly one
+    thing: disarm. Every other command is ignored outright, and a disarm applies
+    nothing but the disarm — not the settings, delay or mode it carries.
+23. **Triggers are one-shot.** Once the output period ends the device latches
+    Inactive. Disarm and trigger are the only two ways out of the armed state
+    (power loss also ends it, because cold start is Inactive). This supersedes
+    decision 5's "then re-arms".
 
 ## 3. Spike result — advertising is proven, at a measured cost
 
@@ -373,34 +381,52 @@ Two rules the pseudocode encodes deliberately:
 
 The count clears only on trigger or on deactivation. It does **not** expire.
 
-### 6.4 Activation — order is load-bearing
+### 6.4 The command path — one path while armed
 
-Running detection while deactivated re-opens the stale-level hole that commit
-`0a50910` closed: at the moment the engineer activates the device they are
-handling it, so AWAKE is high and the count may already be non-zero. The
-teardown-and-rebuild is what preserves §1.0.1.
+**What an accepted command may do is decided in exactly one place**, the pure
+function `DecideCommand()` (`src/arm_policy.hpp`), and `App::applyCommand()` acts on
+that decision and on nothing else.
+
+| Device is | Command | Action | Settings | Mode | Clock trim |
+|---|---|---|---|---|---|
+| **Active** | arm bit set | **Ignore — nothing at all** | no | no | no |
+| **Active** | arm bit clear | **Disarm only** | **no** | **no** | yes |
+| Inactive | arm bit set | Arm | yes | slot 0 only | yes |
+| Inactive | arm bit clear | Tune | yes | slot 0 only | yes |
+
+**Armed, there is one path: disarm.** Re-arming with new settings, retuning, a mode
+change, even a Network Manager command — all ignored, silently, with an RTT warning
+and no LED. To change anything, the engineer disarms (slow flash), then sends the new
+settings (single blink), then arms. **A disarm applies nothing but the disarm**; the
+settings it carries are discarded.
+
+**Only two ways out of the armed state: disarm, or trigger.** A trigger is one-shot:
+when the output period ends, `updateOutputState()` flags the trigger complete and
+the main loop latches the device Inactive. (It is flagged rather than acted on in
+place because `setArmState()` re-enters `updateOutputState()`.) Power loss also ends
+the armed state, because cold start is Inactive.
+
+**Arming — order is load-bearing.** Running detection while deactivated re-opens the
+stale-level hole that commit `0a50910` closed: at the moment the engineer activates
+the device they are handling it, so AWAKE is high and the count may already be
+non-zero. The teardown-and-rebuild is what preserves §1.0.1.
 
 1. `AccessControl` authenticates, checks freshness and **persists the sequence
    number** (`docs/tan-scheme.md` §6.2). Nothing below runs otherwise.
-2. apply and persist the settings (mode only from slot 0)
+2. `DecideCommand()` returns Arm; apply and persist the settings (mode only from slot 0)
 3. `Standby()` → `ConfigureLoopMode(new threshold)` → **confirm AWAKE == 0**
 4. zero the count, clear `m_detection_met`
 5. arm boolean → Active, then `updateOutputState()`
 6. play the LED A pattern for the outcome (§6.7)
 
-**The sequence number is consumed first, deliberately.** The old ordering consumed
-the code last so a failed configure could not burn it. With an unbounded sequence
-that protection is worthless and the replay protection is not: a command acted on
-before it was persisted could be replayed after a power loss. A refused arm shows
-the Arm Refused pattern and the engineer presses Send again, which uses the next
-number.
+**The sequence number is consumed first, deliberately** — for ignored commands too.
+The old ordering consumed the code last so a failed configure could not burn it.
+With an unbounded sequence that protection is worthless and the replay protection is
+not. A refused arm shows the Arm Refused pattern and the engineer presses Send
+again, which uses the next number.
 
-**An arm command while already Active re-arms from scratch**: deactivate (cancelling
-any pending delay, which is the fail-safe direction), then activate with the new
-settings. There is no in-place settings change while armed.
-
-Deactivation is the mirror: boolean first, cancel any delay, re-derive the output,
-and the engine keeps running so tuning can continue.
+**Disarming is the mirror:** boolean first, cancel any delay, re-derive the output,
+then `Standby()`. A subsequent Tune restarts the engine for tuning.
 
 ### 6.5 There is no test code
 
@@ -505,6 +531,7 @@ it.
 | Result | LED A pattern | Length |
 |---|---|---|
 | **Armed** | rapid flash ~8 Hz (60 ms on / 65 ms off) | 3 s |
+| *(armed, command ignored)* | *nothing* | — |
 | **Disarmed** | slow flash 1 Hz (500 / 500) | 3 s |
 | **Disarmed, pending delay cancelled** | double blink each second (100 on / 100 off / 100 on / 700 off) | 3 s |
 | **Arm refused** (ADXL367 would not configure) | three long pulses (700 on / 300 off) | 3 s |
