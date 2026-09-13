@@ -46,7 +46,10 @@ code**.
    count **never expires** — it persists until the device triggers or is
    deactivated, so the device accumulates evidence of tampering over unlimited
    time.
-2. **The nPM2100 TIMER runs the cooldown**, signalling through PMIC GPIO0.
+2. **The nPM2100 TIMER runs the cooldown.** GPIO0 was proven reachable on hardware
+   (§9.1) but the firmware does not use it: `App::serviceCooldown()` polls
+   `TimerIsExpired()` over I²C each loop tick, forced over by an uptime deadline
+   (duration + 10% PMIC tolerance + fixed grace) if the PMIC event is missed.
 3. **The ADXL367 is held in standby across the blanking window** and reconfigured
    through the full bootstrap on re-arm.
 4. **Detection runs in both arm states.** The arm boolean selects the *consumer*,

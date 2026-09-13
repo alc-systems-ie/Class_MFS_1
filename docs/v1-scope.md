@@ -408,9 +408,18 @@ meaningful and the app's battery-life readout honest.
 ### 7.3 Scan window is a second axis — fixed at 100 ms for now
 
 The scan **window** trades detection reliability against power independently of
-cadence, and should not be confused with the counterpart's 20–50 ms **advertising
-interval** (`docs/power-budget.md` §6). A 100 ms window captures a 20 ms advertiser
-with near-certainty; a 20 ms window would fall to roughly 80% per wake.
+cadence, and should not be confused with the counterpart's advertising **interval**
+(`docs/power-budget.md` §6). A 100 ms window captures a 20 ms advertiser with
+near-certainty; a 20 ms window would fall to roughly 80% per wake.
+
+**Amendment, 2026-09-13:** the 20–50 ms interval above was a design assumption, not
+a measurement. A phone advertises at ~187 ms (macOS measurement; an iPhone
+re-measure is pending, `docs/superpowers/plans/2026-09-13-bench-checklist.md` §7),
+and the interval is not ours to set — iOS/macOS do not expose it. The app
+compensates with a 30 s advertising window instead
+(`docs/superpowers/specs/2026-09-12-app-control-design.md` §3). The scan window
+stays fixed at 100 ms regardless; only the counterpart's cooperation assumed below
+has changed.
 
 Fix the window at 100 ms and let the preset move cadence only. Exposing the window
 as a second slider is possible later, but it trades reliability rather than latency

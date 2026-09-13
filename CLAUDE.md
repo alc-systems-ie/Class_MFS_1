@@ -67,8 +67,12 @@ is dangerous.
 - Anything added later — voltage switch, alarm report, event counter, BLE
   notification — calls `IsOutputActive()` and **never** reads INT1, the AWAKE bit
   or `Adxl367::ReadAwake()` directly, and never re-derives the condition.
-- LED B is written as `ledB = IsOutputActive();` deliberately, as the example for
-  future consumers to copy.
+- `m_output_switch.Set(m_output_active);`, called from inside
+  `updateOutputState()` itself, is the worked example future consumers copy. LED B
+  (`ledB = m_detection_met;`) is a bench-only detection indicator, not an output
+  consumer, and is gated out of production builds.
+- Armed, the device's only path out is a disarm command or a one-shot trigger —
+  see `DecideCommand()` (`src/arm_policy.hpp`), restated under Access rules below.
 
 Related: **arming is edge-triggered** (§1.0.1). AWAKE is a level, not a latch, so a
 naive `armed && triggered` fires the instant the device is armed on motion that
