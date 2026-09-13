@@ -106,6 +106,16 @@ namespace alc
     m_sensitivity_byte = s_loaded_record[2];
     m_delay_code       = s_loaded_record[3] & protocol::M_DELAY_MASK;
     m_mode             = static_cast<protocol::Mode>(s_loaded_record[4]);
+
+    // Reporting is not implemented yet (Task 18). A bench device configured
+    // before this firmware may have a report mode stored - coerce it to
+    // Trigger only and rewrite the record, so it cannot keep a mode this
+    // build refuses to apply. Reserved is already rejected above.
+    if (m_mode != protocol::Mode::TriggerOnly) {
+      LOG_WRN("Stored mode %u is not implemented yet - coercing to Trigger only.", static_cast<unsigned>(m_mode));
+      m_mode = protocol::Mode::TriggerOnly;
+      save();
+    }
     return 0;
   }
 

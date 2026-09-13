@@ -1223,10 +1223,22 @@ namespace alc
     }
 
     if (decision.applySettings) {
+      bool applyMode { decision.applyMode };
+
       if (command.mode != protocol::Mode::TriggerOnly && !decision.applyMode) {
         LOG_WRN("Mode field from slot %u ignored - only the Network Manager may change the mode.", evaluation.slot);
       }
-      m_settings.ApplyFrom(command, decision.applyMode);
+
+      // Report modes are not implemented yet (Task 18). A Network Manager
+      // command asking for one is refused outright - applied with mode changes
+      // disallowed, so the device stays Trigger only rather than storing a
+      // mode it will never honour.
+      if (decision.applyMode && command.mode != protocol::Mode::TriggerOnly) {
+        LOG_WRN("Mode %u refused - reporting is not implemented yet; device stays Trigger only.", static_cast<unsigned>(command.mode));
+        applyMode = false;
+      }
+
+      m_settings.ApplyFrom(command, applyMode);
     }
 
     switch (decision.action) {
@@ -1285,9 +1297,9 @@ namespace alc
         return;
     }
 
-    if (decision.applySettings && m_settings.OperatingMode() != protocol::Mode::TriggerOnly) {
-      LOG_WRN("Mode %u stored but reporting is not implemented - behaving as Trigger only!", static_cast<unsigned>(m_settings.OperatingMode()));
-    }
+    // No "mode stored but not implemented" warning here any more: applyMode
+    // above refuses any mode but Trigger only at the point of application, so
+    // m_settings.OperatingMode() can no longer hold anything else.
 
     LOG_INF("Applied: arm %s, %u activations, %u s cooldown, %u LSB, %u s delay.", m_arm_state == ArmState::Active ? "Active" : "Inactive",
             m_settings.Activations(), m_settings.CooldownSeconds(), m_settings.ThresholdLsb(), m_settings.DelaySeconds());
