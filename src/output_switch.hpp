@@ -89,6 +89,19 @@ namespace alc
        */
       int ForceSafe();
 
+      /**
+       * @brief Predicate consulted immediately before the gates are driven high.
+       *
+       * Returning false REFUSES the assertion. This is a second, independent
+       * layer: the caller is expected to have already declined to ask. Reaching
+       * a refusal therefore means the first layer failed, which is a bug rather
+       * than a routine condition, and is treated as one.
+       */
+      using InterlockFn = bool (*)(void* context);
+
+      /** @brief Install the interlock. Passing nullptr removes it. */
+      void SetInterlock(InterlockFn interlock, void* context);
+
       /** @brief Whether the output is currently energised. */
       bool IsAsserted() const { return m_asserted; }
 
@@ -119,6 +132,8 @@ namespace alc
       bool m_faulted;
       bool m_asserted;
       bool m_readback_supported;
+      InterlockFn m_interlock;
+      void* m_interlock_context;
   };
 
 }

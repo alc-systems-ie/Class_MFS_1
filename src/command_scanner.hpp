@@ -53,8 +53,17 @@ namespace alc
        */
       uint32_t TakeDroppedCount();
 
+      /**
+       * @brief Switch between the duty-cycled scan and a continuous one.
+       *
+       * Continuous while a trigger is pending, so a deactivate is heard within one
+       * advert rather than ~30 s. Battery life is explicitly not a factor then.
+       */
+      int SetFastScan(bool fast);
+
     private:
       bool m_started;
+      bool m_fast;
   };
 
 }

@@ -114,6 +114,7 @@ namespace alc
 
   CommandScanner::CommandScanner()
       : m_started(false)
+      , m_fast(false)
   {}
 
   int CommandScanner::Start()
@@ -151,6 +152,31 @@ namespace alc
   uint32_t CommandScanner::TakeDroppedCount()
   {
     return static_cast<uint32_t>(atomic_set(&s_dropped, 0));
+  }
+
+  int CommandScanner::SetFastScan(bool fast)
+  {
+    int result { 0 };
+
+    const struct bt_le_scan_param scanParam {
+      .type     = BT_LE_SCAN_TYPE_PASSIVE,
+      .options  = BT_LE_SCAN_OPT_NONE,
+      .interval = fast ? M_SCAN_WINDOW_UNITS : M_SCAN_INTERVAL_UNITS,
+      .window   = M_SCAN_WINDOW_UNITS,
+    };
+
+    if (!m_started || fast == m_fast) { return 0; }
+
+    bt_le_scan_stop();
+    result = bt_le_scan_start(&scanParam, &scanRecvCallback);
+    if (result < 0) {
+      LOG_ERR("Failed to change scan cadence: %d!", result);
+      return result;
+    }
+
+    m_fast = fast;
+    LOG_INF("Scan cadence now %s.", fast ? "CONTINUOUS (trigger pending)" : "duty-cycled");
+    return 0;
   }
 
 }

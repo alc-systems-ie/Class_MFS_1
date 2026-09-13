@@ -36,7 +36,15 @@ namespace alc
       , m_faulted(false)
       , m_asserted(false)
       , m_readback_supported(false)
+      , m_interlock(nullptr)
+      , m_interlock_context(nullptr)
   {}
+
+  void OutputSwitch::SetInterlock(InterlockFn interlock, void* context)
+  {
+    m_interlock         = interlock;
+    m_interlock_context = context;
+  }
 
   int OutputSwitch::Init()
   {
@@ -134,6 +142,15 @@ namespace alc
     if (!IsUsable()) {
       LOG_ERR("Refusing to assert the fire output: switch is %s!", m_faulted ? "faulted" : "not initialised");
       driveBoth(false);
+      return -EPERM;
+    }
+
+    // SECOND LAYER. The caller should already have declined to ask, so being
+    // refused here means the first layer failed - a bug, not a routine
+    // condition. Latch faulty and say so loudly rather than quietly declining.
+    if (m_interlock != nullptr && !m_interlock(m_interlock_context)) {
+      driveBoth(false);
+      enterFaultState("interlock refused the assertion - a caller bypassed the derivation point", -EPERM);
       return -EPERM;
     }
 

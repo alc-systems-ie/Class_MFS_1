@@ -3,6 +3,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/pm/policy.h>
 
 #include <zephyr/settings/settings.h>
 
@@ -32,6 +33,10 @@ namespace alc
     // Stuck-AWAKE watchdog threshold, in 100 ms loop ticks. Generous multiple of
     // the configured inactivity period so normal sustained handling never trips it.
     constexpr uint32_t M_AWAKE_STUCK_TICKS { (CONFIG_MFS_ADXL_INACTIVITY_SECS * 10U * 6U) };
+
+    // How long a delayed trigger asserts: the ADXL loop period an undelayed
+    // trigger gets from its own AWAKE.
+    constexpr int64_t M_DELAYED_TRIGGER_HOLD_MS { CONFIG_MFS_ADXL_INACTIVITY_SECS * MSEC_PER_SEC };
 
     // nPM2100 TIMER is specified to +-10%, so the deadline fallback in
     // serviceCooldown() must allow that much slack over the requested duration
@@ -194,6 +199,10 @@ namespace alc
       , m_cooldown_rearm_failed(false)
       , m_cooldown_expired(false)
       , m_cooldown_next_retry_ms(0)
+      , m_delay_pending(false)
+      , m_delay_timer {}
+      , m_delay_pm_lock_held(false)
+      , m_detection_hold_until_ms(0)
       , m_initialised(false)
   {}
 
@@ -210,6 +219,8 @@ namespace alc
 
     LOG_INF("MFS_1 starting, serial %s.", CONFIG_ALC_DEVICE_SERIAL);
 
+    k_timer_init(&m_delay_timer, nullptr, nullptr);
+
     // THE FIRE OUTPUT IS BROUGHT UP FIRST, before the I2C bus, the FEM or the
     // LEDs. The external 10k pull-downs hold both lines de-energised from reset,
     // and this takes active ownership of them at the earliest opportunity so the
@@ -221,6 +232,9 @@ namespace alc
       LOG_ERR("Failed to initialise the fire output: %d!", result);
       return result;
     }
+
+    // Installed before anything can ask the switch to assert.
+    m_output_switch.SetInterlock(&App::interlockThunk, this);
 
     if (!device_is_ready(m_i2c_bus)) {
       LOG_ERR("i2c21 not ready!");
@@ -613,7 +627,7 @@ namespace alc
 
     // RISING EDGES, not levels. AWAKE stays asserted for the whole inactivity
     // period, so counting the level would add one activation per loop tick.
-    bool risingEdge { awake && !m_previous_awake && !m_ignore_stale_trigger && !m_in_cooldown };
+    bool risingEdge { awake && !m_previous_awake && !m_ignore_stale_trigger && !m_in_cooldown && !m_delay_pending };
     m_previous_awake = awake;
 
     if (risingEdge) {
@@ -621,10 +635,14 @@ namespace alc
       LOG_INF("Activation %u of %u.", m_activation_count, m_settings.Activations());
 
       if (m_activation_count >= m_settings.Activations()) {
-        m_detection_met    = true;
         m_activation_count = 0;
         // No blanking here. Standing the ADXL down at the moment of trigger
         // would cut short the assertion that IS the output's 5 s duration.
+        if (m_settings.DelaySeconds() > 0) {
+          beginDelay(); // m_detection_met waits for the timer
+        } else {
+          m_detection_met = true;
+        }
       } else {
         // Result not checked here - beginCooldown() already logs its own
         // failure, and on failure it has itself restored detection.
@@ -632,10 +650,26 @@ namespace alc
       }
     }
 
-    // The trigger's own AWAKE running to completion is what clears detection.
-    if (m_detection_met && !awake) { m_detection_met = false; }
+    // The delay elapsed and was not cancelled - commit the trigger.
+    if (m_delay_pending && k_timer_remaining_ticks(&m_delay_timer) == 0) {
+      cancelDelay(); // clears the flag and releases the PM lock
+      m_detection_met = true;
 
-    m_output_active = (m_arm_state == ArmState::Active) && m_detection_met;
+      // The delay outlived the AWAKE that started it, so AWAKE is already clear
+      // and would end detection on this very tick - the output would never
+      // assert. Hold detection for the same 5 s the loop period gives an
+      // undelayed trigger.
+      m_detection_hold_until_ms = k_uptime_get() + M_DELAYED_TRIGGER_HOLD_MS;
+    }
+
+    // The trigger's own AWAKE running to completion is what clears detection -
+    // or, for a delayed trigger, the hold set when the delay expired.
+    if (m_detection_met && !awake && k_uptime_get() >= m_detection_hold_until_ms) { m_detection_met = false; }
+
+    // Activations during a pending delay are ignored: the trigger is already
+    // committed, and re-counting would let a continuing disturbance postpone or
+    // duplicate it. LAYER ONE of the delay interlock is the last term.
+    m_output_active = (m_arm_state == ArmState::Active) && m_detection_met && delayPermitsFiring();
 
     // The fire output is driven HERE, in the same breath as the condition is
     // derived, rather than from the main loop. A consumer that lives at the
@@ -699,6 +733,13 @@ namespace alc
       }
       m_arm_state = ArmState::Active;
     } else {
+      // UNCONDITIONAL, and before anything else. A pending trigger must not
+      // outlive disarming. The pending state is also deliberately not persisted,
+      // so a reset loses the trigger too - the fail-safe direction.
+      cancelDelay();
+      m_detection_met    = false;
+      m_activation_count = 0;
+
       // Boolean first, sensor second - see disableAccelerometer().
       m_arm_state = ArmState::Inactive;
       disableAccelerometer();
@@ -816,6 +857,52 @@ namespace alc
     m_cooldown_expired = false;
     m_previous_awake   = false;
     LOG_INF("Cooldown elapsed - detection re-armed.");
+  }
+
+  bool App::delayPermitsFiring() const
+  {
+    // BOTH must agree. Not one, not either - both.
+    return !m_delay_pending && k_timer_remaining_ticks(&m_delay_timer) == 0;
+  }
+
+  bool App::interlockThunk(void* context)
+  {
+    return static_cast<const App*>(context)->delayPermitsFiring();
+  }
+
+  void App::beginDelay()
+  {
+    uint16_t seconds { m_settings.DelaySeconds() };
+
+    if (seconds == 0) { return; }
+
+    // GRTC, not the PMIC timer. At +/-10% over temperature the PMIC would put a
+    // 9-hour delay anywhere inside a 108-minute window.
+    k_timer_start(&m_delay_timer, K_SECONDS(seconds), K_NO_WAIT);
+    m_delay_pending = true;
+
+    // Stay awake for the duration and scan continuously. The deactivate path is
+    // the most important thing the device does while a trigger is pending, and at
+    // the normal 6 s cadence an abort takes ~30 s to be heard with confidence.
+    if (!m_delay_pm_lock_held) {
+      pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+      m_delay_pm_lock_held = true;
+    }
+    m_scanner.SetFastScan(true);
+
+    LOG_WRN("TRIGGER PENDING: firing in %u s. Deactivating cancels it.", seconds);
+  }
+
+  void App::cancelDelay()
+  {
+    k_timer_stop(&m_delay_timer);
+    m_delay_pending = false;
+
+    if (m_delay_pm_lock_held) {
+      pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+      m_delay_pm_lock_held = false;
+    }
+    m_scanner.SetFastScan(false);
   }
 
   int App::initAccess()

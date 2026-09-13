@@ -4,6 +4,7 @@
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/kernel.h>
 
 #include "access_control.hpp"
 #include "adxl367.hpp"
@@ -93,6 +94,21 @@ namespace alc
       // Polls the PMIC timer; on expiry re-arms the ADXL367 through the full
       // bootstrap so the engine cannot inherit a level from the blanking window.
       void serviceCooldown();
+
+      /**
+       * @brief True only when BOTH witnesses agree no delay is running.
+       *
+       * A flag left set with a dead timer blocks firing; a running timer with a
+       * cleared flag also blocks firing. Both failure directions are safe, which
+       * is the whole reason for using two witnesses of different kinds.
+       */
+      bool delayPermitsFiring() const;
+
+      // Installed into OutputSwitch as the second, independent layer.
+      static bool interlockThunk(void* context);
+
+      void beginDelay();
+      void cancelDelay();
 
       // Parses the bench credentials from Kconfig, initialises PSA, runs the crypto
       // self-test and restores the access state. A failure leaves commands
@@ -189,6 +205,19 @@ namespace alc
       // Earliest uptime at which the next re-arm attempt may run, so a failing
       // re-arm retries at M_COOLDOWN_RETRY_MS rather than every 100 ms tick.
       int64_t m_cooldown_next_retry_ms;
+
+      // The delay's two independent witnesses. Deliberately different in kind so
+      // that either being wrong still BLOCKS firing - see delayPermitsFiring().
+      bool m_delay_pending;
+      struct k_timer m_delay_timer;
+
+      // Held for the whole delay so the SoC cannot enter a deeper state. Battery
+      // life is explicitly not a factor while a trigger is pending.
+      bool m_delay_pm_lock_held;
+
+      // Uptime until which a DELAYED trigger holds detection regardless of AWAKE.
+      // Zero for an undelayed trigger, whose own AWAKE sets the duration.
+      int64_t m_detection_hold_until_ms;
 
       bool m_initialised;
   };
