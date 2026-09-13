@@ -33,6 +33,15 @@ namespace alc
     // the configured inactivity period so normal sustained handling never trips it.
     constexpr uint32_t M_AWAKE_STUCK_TICKS { (CONFIG_MFS_ADXL_INACTIVITY_SECS * 10U * 6U) };
 
+    // nPM2100 TIMER is specified to +-10%, so the deadline fallback in
+    // serviceCooldown() must allow that much slack over the requested duration
+    // before it can be trusted to mean the PMIC has gone silent.
+    constexpr int64_t M_COOLDOWN_TOLERANCE_DIVISOR { 10 };
+
+    // Extra fixed slack on top of the tolerance, covering scheduling jitter in the
+    // 100 ms poll loop itself.
+    constexpr int64_t M_COOLDOWN_GRACE_MS { 2000 };
+
 #if defined(CONFIG_MFS_BATTERY_TEST)
     // Liveness blink for the battery test, at the scan period.
     //
@@ -176,6 +185,8 @@ namespace alc
       , m_activation_count(0)
       , m_in_cooldown(false)
       , m_previous_awake(false)
+      , m_cooldown_deadline_ms(0)
+      , m_cooldown_rearm_failed(false)
       , m_initialised(false)
   {}
 
@@ -511,7 +522,7 @@ namespace alc
     result = m_accelerometer.ConfigureLoopMode(m_settings.ThresholdLsb(), CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
                                                CONFIG_MFS_ADXL_INACTIVITY_SECS);
     if (result < 0) {
-      LOG_ERR("Arming refused - the accelerometer would not configure: %d!", result);
+      LOG_ERR("Accelerometer would not configure: %d!", result);
       return result;
     }
 
@@ -519,9 +530,14 @@ namespace alc
     // engine actually holds; the pin only mirrors it.
     result = m_accelerometer.ReadAwake(awake);
     if (result < 0) {
-      LOG_ERR("Arming refused - AWAKE could not be read: %d!", result);
+      LOG_ERR("Accelerometer AWAKE could not be read: %d!", result);
       return result;
     }
+
+    // Every (re)configure starts with no inherited latch - a detection from
+    // before this configure must never reach the output (v1-scope section 1.0.1).
+    m_detection_met  = false;
+    m_previous_awake = false;
 
     // Should already be clear. If handling the device has woken it again in the
     // moments since, that assertion still predates arming, so suppress it until
@@ -574,10 +590,10 @@ namespace alc
     //  output switches a voltage, and a device that fires while
     //  deactivated is dangerous.
     //
-    //  Every consumer (LED B today; the voltage switch, alarm report and
-    //  event counter later) must call IsOutputActive(). If a future
-    //  change needs a different condition, change it HERE so every
-    //  consumer moves together.
+    //  Every consumer must call IsOutputActive(). OutputSwitch (below) is the
+    //  example future consumers - the alarm report, event counter, anything
+    //  else - copy. If a future change needs a different condition, change it
+    //  HERE so every consumer moves together.
     // ================================================================
     bool awake { gpio_pin_get_dt(&s_adxl_int1) > 0 };
 
@@ -603,6 +619,8 @@ namespace alc
         // No blanking here. Standing the ADXL down at the moment of trigger
         // would cut short the assertion that IS the output's 5 s duration.
       } else {
+        // Result not checked here - beginCooldown() already logs its own
+        // failure, and on failure it has itself restored detection.
         beginCooldown();
       }
     }
@@ -635,6 +653,8 @@ namespace alc
           LOG_ERR("ADXL re-arm failed!");
         }
         m_ignore_stale_trigger = false;
+        // A stuck level must not hold a detection - and so the output - open.
+        m_detection_met = false;
       }
     } else {
       m_awake_ticks = 0;
@@ -675,6 +695,18 @@ namespace alc
       // Boolean first, sensor second - see disableAccelerometer().
       m_arm_state = ArmState::Inactive;
       disableAccelerometer();
+
+      // Whatever was counted or latched belongs to the armed session that just
+      // ended. Cleared AFTER disableAccelerometer() because its re-derivation
+      // tick can itself count an edge and start a cooldown - clearing first would
+      // leave that tick's work in place.
+      m_activation_count = 0;
+      m_detection_met    = false;
+      m_previous_awake   = false;
+      if (m_in_cooldown) {
+        m_in_cooldown = false;
+        if (m_pmic.TimerStop() < 0) { LOG_ERR("Failed to stop the cooldown timer on deactivation!"); }
+      }
     }
 
     // Deliberately says nothing about the LEDs: the main loop logs their actual
@@ -707,10 +739,22 @@ namespace alc
     if (result == 0) { result = m_pmic.TimerStart(); }
     if (result < 0) {
       LOG_ERR("Failed to start the cooldown timer: %d!", result);
+
+      // Fail TOWARD detecting - no blanking this time - rather than leave the
+      // part standing down with nothing left to bring it back up.
+      m_pmic.TimerStop();
+      if (enableAccelerometer() < 0) { LOG_ERR("Could not restore detection after the cooldown timer failed!"); }
       return result;
     }
 
-    m_in_cooldown = true;
+    m_in_cooldown           = true;
+    m_cooldown_rearm_failed = false;
+
+    // Forced over regardless of the PMIC - see m_cooldown_deadline_ms. The TIMER
+    // block is +-10%, plus a fixed grace for loop scheduling jitter.
+    m_cooldown_deadline_ms = k_uptime_get() + static_cast<int64_t>(seconds) * MSEC_PER_SEC +
+                             (static_cast<int64_t>(seconds) * MSEC_PER_SEC) / M_COOLDOWN_TOLERANCE_DIVISOR + M_COOLDOWN_GRACE_MS;
+
     LOG_INF("Cooldown started: %u s.", seconds);
     return 0;
   }
@@ -718,20 +762,33 @@ namespace alc
   void App::serviceCooldown()
   {
     bool expired { false };
+    bool pmicExpired { false };
 
     if (!m_in_cooldown) { return; }
-    if (m_pmic.TimerIsExpired(expired) < 0 || !expired) { return; }
 
-    m_pmic.TimerClearExpiredEvent();
-    m_in_cooldown = false;
+    // A TimerIsExpired() error counts as not-expired from the PMIC, but the
+    // deadline below still applies - it is the fallback for exactly this case.
+    pmicExpired = (m_pmic.TimerIsExpired(expired) == 0) && expired;
+    expired     = pmicExpired || (k_uptime_get() >= m_cooldown_deadline_ms);
+    if (!expired) { return; }
+
+    if (!pmicExpired) { LOG_WRN("Cooldown forced over by the deadline - the PMIC timer did not report expiry!"); }
+
+    if (m_pmic.TimerClearExpiredEvent() < 0) { LOG_WRN("Failed to clear the cooldown timer expiry event!"); }
 
     // Full bootstrap, not a bare restart. Re-arming must confirm AWAKE is clear
     // so the engine cannot inherit an assertion from during the blanking window.
+    // m_in_cooldown is left set on failure so the re-arm is retried next tick,
+    // rather than stranding the ADXL in standby forever.
     if (enableAccelerometer() < 0) {
-      LOG_ERR("Failed to re-arm the ADXL after cooldown!");
+      if (!m_cooldown_rearm_failed) {
+        LOG_ERR("Failed to re-arm the ADXL after cooldown - retrying!");
+        m_cooldown_rearm_failed = true;
+      }
       return;
     }
 
+    m_in_cooldown    = false;
     m_previous_awake = false;
     LOG_INF("Cooldown elapsed - detection re-armed.");
   }

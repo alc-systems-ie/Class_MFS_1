@@ -172,6 +172,15 @@ namespace alc
       // not levels - a level would count the same activation on every loop tick.
       bool m_previous_awake;
 
+      // Uptime at which the cooldown is forced over regardless of what the PMIC
+      // reports, so a TimerIsExpired() fault or a timer that never expires cannot
+      // strand the device in standby forever. See serviceCooldown().
+      int64_t m_cooldown_deadline_ms;
+
+      // True once a failed re-arm after cooldown has been logged, so a retry that
+      // keeps failing logs once rather than every 100 ms tick.
+      bool m_cooldown_rearm_failed;
+
       bool m_initialised;
   };
 

@@ -357,6 +357,13 @@ the condition at the consumer.
 
 Runs in **both** arm states. The arm boolean selects the consumer, nothing else.
 
+While Inactive the ADXL367 is held in standby after a disarm (§1.0.1); the
+engine runs while Inactive only once a Tune command starts it, for LED B
+simulation. Every configure — arming, tuning, cooldown re-arm — clears the
+detection latch, and deactivation clears the count, the latch and any
+cooldown, so nothing counted or latched in one session can reach the output in
+the next. (Amended 2026-09-13.)
+
 ```
 AWAKE rising edge
   -> m_activation_count++
