@@ -11,6 +11,7 @@
 #include "device_clock.hpp"
 #include "npm2100.hpp"
 #include "output_switch.hpp"
+#include "settings.hpp"
 
 namespace alc
 {
@@ -85,6 +86,14 @@ namespace alc
 
       void setArmState(ArmState state);
 
+      // Stands the ADXL367 down and starts the PMIC timer for the cooldown between
+      // counted activations. No-op when the cooldown is zero.
+      int beginCooldown();
+
+      // Polls the PMIC timer; on expiry re-arms the ADXL367 through the full
+      // bootstrap so the engine cannot inherit a level from the blanking window.
+      void serviceCooldown();
+
       // Parses the bench credentials from Kconfig, initialises PSA, runs the crypto
       // self-test and restores the access state. A failure leaves commands
       // disabled for the whole boot - see m_access_ready.
@@ -143,6 +152,25 @@ namespace alc
 
       // Consecutive loop ticks with the ADXL awake, for the stuck-AWAKE watchdog.
       uint32_t m_awake_ticks;
+
+      // The engineer-settable parameters, NVS-backed.
+      Settings m_settings;
+
+      // Latched by the detection engine when the activation count reaches the
+      // configured threshold; cleared when AWAKE de-asserts. NOT derived in
+      // updateOutputState() - the engine zeroes the count when it latches, so
+      // deriving this from the count would take the output false immediately.
+      bool m_detection_met;
+
+      // Activations seen since the last trigger or deactivation. Does not expire.
+      uint8_t m_activation_count;
+
+      // True while the ADXL is standing down for a cooldown window.
+      bool m_in_cooldown;
+
+      // Previous INT1 level, for edge detection. The engine counts RISING edges,
+      // not levels - a level would count the same activation on every loop tick.
+      bool m_previous_awake;
 
       bool m_initialised;
   };

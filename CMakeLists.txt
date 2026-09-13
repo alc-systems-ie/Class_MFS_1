@@ -19,4 +19,5 @@ target_sources(app PRIVATE
   src/access_store.cpp
   src/access_control.cpp
   src/device_clock.cpp
+  src/settings.cpp
 )

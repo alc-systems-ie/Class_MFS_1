@@ -171,6 +171,11 @@ namespace alc
       , m_ignore_stale_trigger(false)
       , m_output_active(false)
       , m_awake_ticks(0)
+      , m_settings()
+      , m_detection_met(false)
+      , m_activation_count(0)
+      , m_in_cooldown(false)
+      , m_previous_awake(false)
       , m_initialised(false)
   {}
 
@@ -236,6 +241,13 @@ namespace alc
     result = initAccess();
     if (result < 0) { LOG_ERR("Access control unavailable (%d) - commands will be ignored this boot!", result); }
 
+    // After initAccess(), which initialises the settings subsystem. Defaults stand
+    // if nothing is stored or the record is invalid.
+    result = m_settings.Load();
+    if (result < 0) { LOG_WRN("Settings not loaded (%d) - using defaults.", result); }
+    LOG_INF("Settings: %u activations, %u s cooldown, %u LSB, %u s delay, mode %u.", m_settings.Activations(), m_settings.CooldownSeconds(),
+            m_settings.ThresholdLsb(), m_settings.DelaySeconds(), static_cast<unsigned>(m_settings.OperatingMode()));
+
     // Cold start defaults to Inactive — see docs/v1-scope.md section 6.
     setArmState(ArmState::Inactive);
 
@@ -262,6 +274,8 @@ namespace alc
       if (blinkOnTicks > 0) { --blinkOnTicks; }
 #endif
 
+      serviceCooldown();
+
       // The ONE place the output state is derived. See updateOutputState().
       updateOutputState();
 
@@ -273,9 +287,11 @@ namespace alc
 #if !defined(CONFIG_MFS_BATTERY_TEST)
       ledA = (m_arm_state == ArmState::Inactive);
 #endif
-      // LED B is a CONSUMER of the output state, exactly like the future voltage
-      // switch will be. It does not re-derive the condition.
-      ledB = IsOutputActive();
+      // LED B shows DETECTION, in either arm state, for the 5 s ADXL loop period.
+      // Inactive it simulates triggers while tuning; Active it confirms one. It is
+      // a bench indicator, not an output consumer - OutputSwitch is the example
+      // future consumers copy (design spec section 6.2).
+      ledB = m_detection_met;
 #endif
 
       // Log only on transitions. A periodic dump floods the 4 KB RTT buffer in
@@ -492,7 +508,7 @@ namespace alc
     // soft-resets the part and forces one activity/inactivity cycle, which drives
     // AWAKE low and captures a valid reference. Doing it per-arm also means the
     // reference is always taken in the orientation the device is actually left in.
-    result = m_accelerometer.ConfigureLoopMode(CONFIG_MFS_ADXL_THRESHOLD, CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
+    result = m_accelerometer.ConfigureLoopMode(m_settings.ThresholdLsb(), CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
                                                CONFIG_MFS_ADXL_INACTIVITY_SECS);
     if (result < 0) {
       LOG_ERR("Arming refused - the accelerometer would not configure: %d!", result);
@@ -572,7 +588,29 @@ namespace alc
       LOG_INF("ADXL cleared after arming - device is now live.");
     }
 
-    m_output_active = (m_arm_state == ArmState::Active) && awake && !m_ignore_stale_trigger;
+    // RISING EDGES, not levels. AWAKE stays asserted for the whole inactivity
+    // period, so counting the level would add one activation per loop tick.
+    bool risingEdge { awake && !m_previous_awake && !m_ignore_stale_trigger && !m_in_cooldown };
+    m_previous_awake = awake;
+
+    if (risingEdge) {
+      m_activation_count++;
+      LOG_INF("Activation %u of %u.", m_activation_count, m_settings.Activations());
+
+      if (m_activation_count >= m_settings.Activations()) {
+        m_detection_met    = true;
+        m_activation_count = 0;
+        // No blanking here. Standing the ADXL down at the moment of trigger
+        // would cut short the assertion that IS the output's 5 s duration.
+      } else {
+        beginCooldown();
+      }
+    }
+
+    // The trigger's own AWAKE running to completion is what clears detection.
+    if (m_detection_met && !awake) { m_detection_met = false; }
+
+    m_output_active = (m_arm_state == ArmState::Active) && m_detection_met;
 
     // The fire output is driven HERE, in the same breath as the condition is
     // derived, rather than from the main loop. A consumer that lives at the
@@ -592,7 +630,7 @@ namespace alc
       if (++m_awake_ticks >= M_AWAKE_STUCK_TICKS) {
         m_awake_ticks = 0;
         LOG_ERR("ADXL stuck AWAKE for %u s - re-arming the loop engine!", M_AWAKE_STUCK_TICKS / 10U);
-        if (m_accelerometer.ConfigureLoopMode(CONFIG_MFS_ADXL_THRESHOLD, CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
+        if (m_accelerometer.ConfigureLoopMode(m_settings.ThresholdLsb(), CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
                                               CONFIG_MFS_ADXL_INACTIVITY_SECS) < 0) {
           LOG_ERR("ADXL re-arm failed!");
         }
@@ -643,6 +681,59 @@ namespace alc
     // applied values. An earlier version asserted "LED A ON" here from the arm
     // state alone, which was wrong in any build that does not drive LED A.
     LOG_INF("Arm state: %s (uptime %lld ms).", state == ArmState::Active ? "Active" : "Inactive", k_uptime_get());
+  }
+
+  int App::beginCooldown()
+  {
+    uint16_t seconds { m_settings.CooldownSeconds() };
+    int result { 0 };
+
+    if (seconds == 0) { return 0; }
+
+    // Stand the accelerometer down for the window. Leaving it running would let
+    // a continuous disturbance hold AWAKE asserted right through the blanking
+    // period, so the re-arm would inherit a stale level - exactly the bug commit
+    // 0a50910 fixed for the arming path.
+    result = m_accelerometer.Standby();
+    if (result < 0) {
+      LOG_ERR("Failed to stand the ADXL down for cooldown: %d!", result);
+      return result;
+    }
+
+    result = m_pmic.TimerStop();
+    if (result == 0) { result = m_pmic.TimerSetMode(Npm2100::TimerMode::GeneralPurpose); }
+    if (result == 0) { result = m_pmic.TimerSetDurationMs(static_cast<uint32_t>(seconds) * MSEC_PER_SEC); }
+    if (result == 0) { result = m_pmic.TimerClearExpiredEvent(); }
+    if (result == 0) { result = m_pmic.TimerStart(); }
+    if (result < 0) {
+      LOG_ERR("Failed to start the cooldown timer: %d!", result);
+      return result;
+    }
+
+    m_in_cooldown = true;
+    LOG_INF("Cooldown started: %u s.", seconds);
+    return 0;
+  }
+
+  void App::serviceCooldown()
+  {
+    bool expired { false };
+
+    if (!m_in_cooldown) { return; }
+    if (m_pmic.TimerIsExpired(expired) < 0 || !expired) { return; }
+
+    m_pmic.TimerClearExpiredEvent();
+    m_in_cooldown = false;
+
+    // Full bootstrap, not a bare restart. Re-arming must confirm AWAKE is clear
+    // so the engine cannot inherit an assertion from during the blanking window.
+    if (enableAccelerometer() < 0) {
+      LOG_ERR("Failed to re-arm the ADXL after cooldown!");
+      return;
+    }
+
+    m_previous_awake = false;
+    LOG_INF("Cooldown elapsed - detection re-armed.");
   }
 
   int App::initAccess()
@@ -760,9 +851,10 @@ namespace alc
             protocol::CooldownToSeconds(evaluation.command.cooldownByte), protocol::SensitivityToThresholdLsb(evaluation.command.sensitivityByte),
             evaluation.command.minuteOfDay);
 
-    // PHASE 2 SHIM. Applies only the arm bit so the device stays usable while the
-    // app is built against it. Settings, the clock trim and the LED patterns
-    // arrive in Task 16, which replaces this.
+    // PHASE 2 SHIM, extended in Task 14 to carry the settings so the detection
+    // engine can be bench-tested from the app. The clock trim, re-arm ordering and
+    // LED patterns arrive in Task 16, which replaces this.
+    m_settings.ApplyFrom(evaluation.command, evaluation.slot == access::M_SLOT_NETWORK_MANAGER);
     setArmState(evaluation.command.armActive ? ArmState::Active : ArmState::Inactive);
   }
 
