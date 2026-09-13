@@ -1,8 +1,14 @@
+#include <cstring>
+
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "access_keys.hpp"
 #include "app.hpp"
+#include "credentials.hpp"
+#include "crypto.hpp"
+#include "crypto_selftest.hpp"
 #include "npm2100_zephyr.hpp"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
@@ -74,6 +80,12 @@ namespace alc
 
     const struct gpio_dt_spec* const s_fem_pins[] { &s_fem_pdn, &s_fem_tx_en, &s_fem_rx_en, &s_fem_mode };
 
+    // BENCH credentials, parsed from Kconfig (credentials.conf) at boot. Production
+    // moves both keys into the KMU - see docs/tan-scheme.md section 8.
+    uint32_t s_device_id { 0 };
+    uint8_t s_device_secret[access::M_SECRET_BYTES] {};
+    uint8_t s_provision_key[access::M_SECRET_BYTES] {};
+
     const char* resetReasonName(Npm2100::ResetReason reason)
     {
       switch (reason) {
@@ -117,6 +129,7 @@ namespace alc
       , m_pmic(npm2100_zephyr::MakeZephyrTransport(DEVICE_DT_GET(DT_NODELABEL(i2c21))))
       , m_accelerometer(DEVICE_DT_GET(DT_NODELABEL(i2c21)))
       , m_scanner()
+      , m_access_ready(false)
       , m_output_switch()
       , m_arm_state(ArmState::Inactive)
       , m_ignore_stale_trigger(false)
@@ -181,6 +194,11 @@ namespace alc
 
     result = lowerLsoutToUlp();
     if (result < 0) { return result; }
+
+    // Not fatal. A device that cannot authenticate commands still boots, safe
+    // and Inactive, so its hardware can be diagnosed over RTT.
+    result = initAccess();
+    if (result < 0) { LOG_ERR("Access control unavailable (%d) - commands will be ignored this boot!", result); }
 
     // Cold start defaults to Inactive — see docs/v1-scope.md section 6.
     setArmState(ArmState::Inactive);
@@ -588,6 +606,36 @@ namespace alc
     // applied values. An earlier version asserted "LED A ON" here from the arm
     // state alone, which was wrong in any build that does not drive LED A.
     LOG_INF("Arm state: %s (uptime %lld ms).", state == ArmState::Active ? "Active" : "Inactive", k_uptime_get());
+  }
+
+  int App::initAccess()
+  {
+    int result { 0 };
+
+    if (!credentials::ParseDeviceId(CONFIG_MFS_DEVICE_ID, s_device_id) ||
+        !credentials::ParseHexBytes(CONFIG_MFS_DEVICE_SECRET, s_device_secret, sizeof(s_device_secret)) ||
+        !credentials::ParseHexBytes(CONFIG_MFS_PROVISION_KEY, s_provision_key, sizeof(s_provision_key))) {
+      LOG_ERR("Credentials missing or malformed - build with -DEXTRA_CONF_FILE=credentials.conf!");
+      return -EINVAL;
+    }
+
+    // An all-zero key is a template nobody filled in, and would be shared by every
+    // such build. The two keys must also differ, or the provisioner holds entry.
+    if (credentials::IsAllZero(s_device_secret, sizeof(s_device_secret)) || credentials::IsAllZero(s_provision_key, sizeof(s_provision_key)) ||
+        memcmp(s_device_secret, s_provision_key, sizeof(s_device_secret)) == 0) {
+      LOG_ERR("Device secret and provisioning key must be set and must differ!");
+      return -EINVAL;
+    }
+
+    result = crypto::Init();
+    if (result < 0) { return result; }
+
+    result = crypto::RunSelfTest();
+    if (result < 0) { return result; }
+
+    m_access_ready = true;
+    LOG_INF("Device 0x%08X: credentials loaded, crypto proven.", s_device_id);
+    return 0;
   }
 
   void App::toggleArmState()

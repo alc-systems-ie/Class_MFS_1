@@ -135,23 +135,32 @@ config ALC_DEVICE_SERIAL
 	  Unique serial identifier (e.g. MFS-0826-0043). The prefix is
 	  provisional pending assignment of the CLASS device type.
 
-config MFS_TAN_SEED
-	string "TAN seed (64-char hex string)"
+config MFS_DEVICE_ID
+	string "Device ID (8-char hex string)"
 	default ""
 	help
-	  32-byte per-device secret from which every day's TANs are derived.
+	  Public 32-bit identity bound into every key derivation, e.g. 4D465331.
+	  Not secret and never transmitted. The Network Manager looks the device
+	  up by it. See docs/tan-scheme.md section 3.
+
+config MFS_DEVICE_SECRET
+	string "Device secret (64-char hex string)"
+	default ""
+	help
+	  32-byte per-device secret from which every day key is derived.
 	  Loaded from credentials.conf (gitignored) for bench work only.
-	  PRODUCTION MUST USE THE nRF54L05 KMU — a seed in the image is readable,
-	  and a readable seed makes TAN expiry decorative. See
-	  docs/tan-scheme.md section 7.
+	  PRODUCTION MUST USE THE nRF54L05 KMU - a secret in the image is
+	  readable, and a readable secret yields every day key for this device
+	  forever. See docs/tan-scheme.md section 8.
 
 config MFS_PROVISION_KEY
 	string "Provisioning key (64-char hex string)"
 	default ""
 	help
-	  32-byte per-device secret authorising time-of-day sync, and nothing
-	  else. Must be distinct from MFS_TAN_SEED so that a compromised
-	  provisioner can cause denial of service but not entry. See
-	  docs/tan-scheme.md section 7.1.
+	  32-byte per-device key authorising a time sync while the clock is
+	  invalid, and nothing else. Must differ from MFS_DEVICE_SECRET so that a
+	  compromised provisioner can cause denial of service but not entry. The
+	  firmware refuses to enable commands if the two are equal. See
+	  docs/tan-scheme.md section 8.1.
 
 source "Kconfig.zephyr"

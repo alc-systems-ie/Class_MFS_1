@@ -11,4 +11,9 @@ target_sources(app PRIVATE
   src/npm2100.cpp
   src/output_switch.cpp
   src/npm2100_zephyr.cpp
+  src/mfs_protocol.cpp
+  src/access_keys.cpp
+  src/credentials.cpp
+  src/crypto_psa.cpp
+  src/crypto_selftest.cpp
 )

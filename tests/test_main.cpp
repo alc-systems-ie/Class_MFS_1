@@ -7,6 +7,7 @@ void run_device_clock_tests();
 void run_access_control_tests();
 void run_led_sequencer_tests();
 void run_settings_tests();
+void run_credentials_tests();
 
 int main()
 {
@@ -17,6 +18,7 @@ int main()
   run_access_control_tests();
   run_led_sequencer_tests();
   run_settings_tests();
+  run_credentials_tests();
   printf("ALL TESTS PASSED\n");
   return 0;
 }

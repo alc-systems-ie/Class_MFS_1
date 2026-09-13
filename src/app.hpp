@@ -85,10 +85,20 @@ namespace alc
 
       void toggleArmState();
 
+      // Parses the bench credentials from Kconfig, initialises PSA and runs the
+      // crypto self-test. A failure leaves commands disabled for the whole boot -
+      // see m_access_ready.
+      int initAccess();
+
       const struct device* m_i2c_bus;
       Npm2100 m_pmic;
       Adxl367 m_accelerometer;
       CommandScanner m_scanner;
+
+      // False if credentials, PSA or the self-test failed. Commands and syncs are
+      // then ignored for the whole boot: a backend that disagrees with the app
+      // must not be trusted to judge anything.
+      bool m_access_ready;
 
       // The device's actual output. Driven ONLY from updateOutputState(), which
       // is the single derivation point - see IsOutputActive(). This class owns
