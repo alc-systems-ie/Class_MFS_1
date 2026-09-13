@@ -42,7 +42,7 @@ namespace alc
         NotForUs,      ///< No expected rotating ID matched. The normal case for any other advert. Not counted.
         ClockInvalid,  ///< No trustworthy time yet - only a provisioner sync is listened for.
         LockedOut,     ///< An ID matched during a lockout. Not decrypted, not counted.
-        AuthFailed,    ///< An ID matched but no candidate authenticated. Counted.
+        AuthFailed,    ///< An ID matched but no candidate authenticated. Counted once per expected ID.
         Malformed,     ///< Authentic, but the plaintext is invalid. Not consumed.
         Stale,         ///< Authentic, but the minute is outside the freshness window. Not consumed.
         PersistFailed, ///< Authentic and fresh, but the sequence number could not be saved. NOT acted on.
@@ -97,6 +97,10 @@ namespace alc
       uint8_t m_day_keys[access::M_SLOT_COUNT][access::M_DAY_KEY_BYTES];
       uint8_t m_expected_ids[access::M_SLOT_COUNT][M_WINDOW][protocol::M_ROTATING_ID_BYTES];
       uint8_t m_window_size[access::M_SLOT_COUNT];
+      // Bit k = 1 if expected_ids[slot][k] has already counted a failure. Copied and
+      // corrupted adverts must not lock out an engineer — a lockout now needs 20 distinct
+      // expected IDs to fail, not 20 copies of one.
+      uint16_t m_failed_ids[access::M_SLOT_COUNT];
 
       uint8_t m_failures;
       bool m_locked;

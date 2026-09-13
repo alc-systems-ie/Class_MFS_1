@@ -249,9 +249,12 @@ threat, with or without the lockout.
 
 ### 6.4 Lockout
 
-- **Only an ID match followed by a failed tag counts.** Garbage cannot count, because
-  nobody without the day key can produce a matching ID. **A lockout DoS by copying
-  adverts is therefore impossible**, which is what rotating IDs bought.
+- **Only an ID match followed by a failed tag counts, and each expected ID counts at most
+  once.** Garbage cannot count, because nobody without the day key can produce a matching
+  ID. An attacker who captures an unaccepted command can corrupt and resend it, but that ID
+  counts once however often it is sent, so a lockout needs 20 distinct unaccepted commands.
+  (Corrected 2026-09-13: without the count-once rule, one captured advert resent 20 times
+  would lock out disarm.)
 - 20 consecutive failures → locked for 10 min, doubling per lockout to a 4 h cap.
 - Any authentic command clears the count and resets the duration.
 - Timed on uptime, not UTC, so a clock trim cannot shorten or extend it.

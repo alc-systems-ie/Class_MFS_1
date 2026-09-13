@@ -16,6 +16,7 @@ namespace alc
     struct Candidate
     {
         uint8_t slot;
+        uint8_t offset;
         uint32_t n;
     };
 
@@ -34,6 +35,7 @@ namespace alc
       , m_day_keys {}
       , m_expected_ids {}
       , m_window_size {}
+      , m_failed_ids {}
       , m_failures(0)
       , m_locked(false)
       , m_lockout_until_secs(0)
@@ -57,6 +59,7 @@ namespace alc
       if (result < 0) { return result; }
     }
     m_window_size[slot] = size;
+    m_failed_ids[slot]  = 0;
     return 0;
   }
 
@@ -149,7 +152,7 @@ namespace alc
     for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
       for (uint8_t offset = 0; offset < m_window_size[slot]; offset++) {
         if (memcmp(m_expected_ids[slot][offset], &onAir[protocol::M_OFFSET_ROTATING_ID], protocol::M_ROTATING_ID_BYTES) != 0) { continue; }
-        if (candidateCount < M_MAX_CANDIDATES) { candidates[candidateCount++] = Candidate { slot, m_state.next[slot] + offset }; }
+        if (candidateCount < M_MAX_CANDIDATES) { candidates[candidateCount++] = Candidate { slot, offset, m_state.next[slot] + offset }; }
       }
     }
 
@@ -175,7 +178,18 @@ namespace alc
     }
 
     if (!authentic) {
-      recordFailure(uptimeSecs);
+      // Count each expected ID at most once towards the lockout. An attacker who
+      // captures an unaccepted command can corrupt and resend it, but only that
+      // ID (not every copy) counts, so a lockout requires 20 distinct IDs.
+      bool newFailure { false };
+      for (uint8_t index = 0; index < candidateCount; index++) {
+        uint16_t bit { static_cast<uint16_t>(1U << candidates[index].offset) };
+        if ((m_failed_ids[candidates[index].slot] & bit) == 0) {
+          m_failed_ids[candidates[index].slot] |= bit;
+          newFailure = true;
+        }
+      }
+      if (newFailure) { recordFailure(uptimeSecs); }
       evaluation.verdict = Verdict::AuthFailed;
       return evaluation;
     }

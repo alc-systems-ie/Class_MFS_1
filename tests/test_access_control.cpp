@@ -175,26 +175,47 @@ void run_access_control_tests()
       assert(access.Evaluate(garbage, sizeof(garbage), clock, 0).verdict == Verdict::NotForUs);
     }
     assert(access.ConsecutiveFailures() == 0);
+  }
 
-    // A correct ID with a corrupted tag: counted. Twenty trigger a lockout.
+  // Same corrupted ID resent 100 times: AuthFailed every time, but only 1 failure counted.
+  {
+    PersistSpy spy;
+    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
     buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
     onAir[protocol::M_OFFSET_TAG] ^= 0x01;
-    for (uint8_t attempt = 0; attempt < AccessControl::M_LOCKOUT_THRESHOLD; attempt++) {
+    for (int attempt = 0; attempt < 100; attempt++) {
+      assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AuthFailed);
+    }
+    assert(access.ConsecutiveFailures() == 1);
+    assert(!access.IsLockedOut(0));
+  }
+
+  // Lockout requires 20 distinct expected IDs: slot 1 (n=0..15) + slot 2 (n=0..3), each with tag bit flipped.
+  {
+    PersistSpy spy;
+    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+
+    // Corrupt slot 1, n = 0..15 (16 failures).
+    for (uint32_t n = 0; n < 16; n++) {
+      buildCommand(256, 1, n, true, M_MINUTE_0500, onAir);
+      onAir[protocol::M_OFFSET_TAG] ^= 0x01;
+      assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AuthFailed);
+    }
+    assert(access.ConsecutiveFailures() == 16);
+    assert(!access.IsLockedOut(0));
+
+    // Corrupt slot 2, n = 0..3 (4 more = 20 total).
+    for (uint32_t n = 0; n < 4; n++) {
+      buildCommand(256, 2, n, true, M_MINUTE_0500, onAir);
+      onAir[protocol::M_OFFSET_TAG] ^= 0x01;
       assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AuthFailed);
     }
     assert(access.IsLockedOut(0));
-
-    // During the lockout even an authentic command is not decrypted.
-    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
-    assert(access.Evaluate(onAir, sizeof(onAir), clock, 599).verdict == Verdict::LockedOut);
-
-    // After ten minutes it is. Uptime 600 is 05:10, and the command says 05:10.
-    buildCommand(256, 1, 0, true, M_MINUTE_0500 + 10, onAir);
-    assert(access.Evaluate(onAir, sizeof(onAir), clock, 600).verdict == Verdict::Accepted);
-    assert(!access.IsLockedOut(600));
   }
 
-  // The lockout doubles and caps at four hours.
+  // The lockout doubles and caps at four hours (with 20 fresh distinct IDs each round).
   {
     PersistSpy spy;
     AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
@@ -202,16 +223,112 @@ void run_access_control_tests()
     int64_t now { 0 };
     const uint32_t expectedSecs[] { 600, 1200, 2400, 4800, 9600, 14400, 14400 };
 
-    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
-    onAir[protocol::M_OFFSET_TAG] ^= 0x01;
-    for (uint32_t lockoutSecs : expectedSecs) {
-      for (uint8_t attempt = 0; attempt < AccessControl::M_LOCKOUT_THRESHOLD; attempt++) {
-        access.Evaluate(onAir, sizeof(onAir), clock, now);
+    for (uint32_t round = 0; round < 7; round++) {
+      uint32_t lockoutSecs { expectedSecs[round] };
+
+      // Restore with fresh sequence numbers for each round.
+      AccessState restored {};
+      restored.day     = 256;
+      restored.next[1] = round * 16;
+      restored.next[2] = round * 16;
+      access.Restore(restored);
+
+      // Corrupt slot 1, n = base..base+15 (16 failures).
+      for (uint32_t n = 0; n < 16; n++) {
+        buildCommand(256, 1, restored.next[1] + n, true, M_MINUTE_0500, onAir);
+        onAir[protocol::M_OFFSET_TAG] ^= 0x01;
+        assert(access.Evaluate(onAir, sizeof(onAir), clock, now).verdict == Verdict::AuthFailed);
       }
+
+      // Corrupt slot 2, n = base..base+3 (4 more = 20 total).
+      for (uint32_t n = 0; n < 4; n++) {
+        buildCommand(256, 2, restored.next[2] + n, true, M_MINUTE_0500, onAir);
+        onAir[protocol::M_OFFSET_TAG] ^= 0x01;
+        assert(access.Evaluate(onAir, sizeof(onAir), clock, now).verdict == Verdict::AuthFailed);
+      }
+
       assert(access.IsLockedOut(now + lockoutSecs - 1));
       assert(!access.IsLockedOut(now + lockoutSecs));
       now += lockoutSecs;
     }
+  }
+
+  // Failed rollover persist: state reverts, floor advances anyway.
+  {
+    PersistSpy spy;
+    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+    AccessState restored {};
+    restored.day     = 255;
+    restored.next[1] = 5;
+    access.Restore(restored);
+
+    spy.failWith = -EIO;
+    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::PersistFailed);
+    assert(access.State().day == 255 && access.State().next[1] == 5);
+    assert(clock.FloorDay() == 256); // Floor advanced despite persist failure.
+
+    spy.failWith = 0;
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted);
+  }
+
+  // today < state.day: clock is behind persisted day.
+  {
+    PersistSpy spy;
+    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessState restored {};
+    restored.day = 257;
+    access.Restore(restored);
+
+    DeviceClock clock { syncedClock() }; // Day 256 from sync.
+    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::ClockInvalid);
+  }
+
+  // Sequence limit: next[1] = UINT32_MAX - 16, window size 0 beyond limit.
+  {
+    PersistSpy spy;
+    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+    AccessState restored {};
+    restored.day     = 256;
+    restored.next[1] = UINT32_MAX - 16;
+    access.Restore(restored);
+
+    buildCommand(256, 1, UINT32_MAX - 16, true, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted);
+    assert(access.State().next[1] == UINT32_MAX - 15);
+
+    // Next window number wraps, so it is not in the window.
+    buildCommand(256, 1, UINT32_MAX - 15, true, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
+  }
+
+  // Malformed plaintext not consumed: build a command with an invalid minute (1440 > 1439).
+  {
+    PersistSpy spy;
+    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+
+    uint8_t dayKey[access::M_DAY_KEY_BYTES] {};
+    uint8_t plaintext[protocol::M_PLAINTEXT_BYTES] {};
+    assert(access::DeriveDayKey(access::vectors::M_SECRET, access::vectors::M_DEVICE_ID, 256, 1, dayKey) == 0);
+
+    // Encode a command with minute 1440 (invalid). Plaintext[4:6] = 0xA0 0x05 (LE) = 1440.
+    plaintext[0] = 0;    // armActive = false
+    plaintext[1] = 0;    // activations = 0
+    plaintext[2] = 0;    // cooldown = 0
+    plaintext[3] = 0;    // sensitivity = 0
+    plaintext[4] = 0xA0; // minute LE low byte = 0xA0
+    plaintext[5] = 0x05; // minute LE high byte = 0x05; 0x05A0 = 1440 (invalid).
+    plaintext[6] = 0;
+    plaintext[7] = 0;
+    assert(access::SealCommand(dayKey, access::vectors::M_DEVICE_ID, 256, 1, 0, plaintext, onAir) == 0);
+
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Malformed);
+    assert(access.State().next[1] == 0); // Not consumed.
+    assert(access.ConsecutiveFailures() == 0);
   }
 
   printf("access control: OK\n");
