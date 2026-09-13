@@ -110,36 +110,45 @@ namespace alc
       bt_data_parse(buf, &parseAdStructure, nullptr);
     }
 
+    // One place that builds the scan parameters and starts the scan, so
+    // Start(), SetFastScan() and ServiceScan() cannot disagree on how.
+    int startScan(bool fast)
+    {
+      const struct bt_le_scan_param scanParam {
+        .type     = BT_LE_SCAN_TYPE_PASSIVE,
+        .options  = BT_LE_SCAN_OPT_NONE,
+        .interval = fast ? M_SCAN_WINDOW_UNITS : M_SCAN_INTERVAL_UNITS,
+        .window   = M_SCAN_WINDOW_UNITS,
+      };
+
+      return bt_le_scan_start(&scanParam, &scanRecvCallback);
+    }
+
   }
 
   CommandScanner::CommandScanner()
       : m_started(false)
       , m_fast(false)
+      , m_scanning(false)
   {}
 
   int CommandScanner::Start()
   {
     int result { bt_enable(nullptr) };
 
-    const struct bt_le_scan_param scanParam {
-      .type     = BT_LE_SCAN_TYPE_PASSIVE,
-      .options  = BT_LE_SCAN_OPT_NONE,
-      .interval = M_SCAN_INTERVAL_UNITS,
-      .window   = M_SCAN_WINDOW_UNITS,
-    };
-
     if (result < 0) {
       LOG_ERR("bt_enable failed: %d!", result);
       return result;
     }
 
-    result = bt_le_scan_start(&scanParam, &scanRecvCallback);
+    result = startScan(false);
     if (result < 0) {
       LOG_ERR("bt_le_scan_start failed: %d!", result);
       return result;
     }
 
-    m_started = true;
+    m_started  = true;
+    m_scanning = true;
     LOG_INF("Passive scan started: %u ms window every %u ms.", CONFIG_MFS_SCAN_WINDOW_MS, CONFIG_MFS_SCAN_PERIOD_MS);
     return 0;
   }
@@ -157,26 +166,49 @@ namespace alc
   int CommandScanner::SetFastScan(bool fast)
   {
     int result { 0 };
+    int fallbackResult { 0 };
 
-    const struct bt_le_scan_param scanParam {
-      .type     = BT_LE_SCAN_TYPE_PASSIVE,
-      .options  = BT_LE_SCAN_OPT_NONE,
-      .interval = fast ? M_SCAN_WINDOW_UNITS : M_SCAN_INTERVAL_UNITS,
-      .window   = M_SCAN_WINDOW_UNITS,
-    };
+    if (!m_started) { return 0; }
+    if (fast == m_fast && m_scanning) { return 0; }
 
-    if (!m_started || fast == m_fast) { return 0; }
-
+    // Unconditional: bt_le_scan_stop() clears the scan whether or not the
+    // following start succeeds, so m_scanning must agree with it immediately
+    // rather than only on the success path.
     bt_le_scan_stop();
-    result = bt_le_scan_start(&scanParam, &scanRecvCallback);
+    m_scanning = false;
+
+    result = startScan(fast);
     if (result < 0) {
-      LOG_ERR("Failed to change scan cadence: %d!", result);
+      LOG_ERR("Failed to change scan cadence to %s: %d!", fast ? "CONTINUOUS" : "duty-cycled", result);
+
+      // Fall back to restarting at the cadence that was running before,
+      // rather than leave the scanner stopped outright on a single failed
+      // start. ServiceScan() (see App::serviceScanHealth()) is the last
+      // resort if even the fallback fails.
+      fallbackResult = startScan(m_fast);
+      m_scanning     = (fallbackResult == 0);
+      if (!m_scanning) { LOG_ERR("Scanner fallback restart also failed: %d - scanner is DOWN!", fallbackResult); }
       return result;
     }
 
-    m_fast = fast;
+    m_fast     = fast;
+    m_scanning = true;
     LOG_INF("Scan cadence now %s.", fast ? "CONTINUOUS (trigger pending)" : "duty-cycled");
     return 0;
+  }
+
+  int CommandScanner::ServiceScan()
+  {
+    int result { 0 };
+
+    if (!m_started || m_scanning) { return 0; }
+
+    result = startScan(m_fast);
+    if (result == 0) {
+      m_scanning = true;
+      LOG_WRN("Scanner restarted.");
+    }
+    return result;
   }
 
 }

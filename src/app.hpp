@@ -98,9 +98,11 @@ namespace alc
       /**
        * @brief True only when BOTH witnesses agree no delay is running.
        *
-       * A flag left set with a dead timer blocks firing; a running timer with a
-       * cleared flag also blocks firing. Both failure directions are safe, which
-       * is the whole reason for using two witnesses of different kinds.
+       * A flag left set with a dead timer now waits for the deadline rather
+       * than firing early - see m_delay_deadline_ms and the expiry commit in
+       * updateOutputState(). A running timer with a cleared flag still blocks
+       * firing. Both failure directions are safe, which is the whole reason
+       * for using two witnesses of different kinds.
        */
       bool delayPermitsFiring() const;
 
@@ -109,6 +111,12 @@ namespace alc
 
       void beginDelay();
       void cancelDelay();
+
+      // Confirms the scanner is actually running, retries at
+      // M_SCAN_SERVICE_INTERVAL_MS if not, and updates m_delay_scan_lost every
+      // tick while a delay is pending - see the expiry commit in
+      // updateOutputState(). Called every main-loop tick.
+      void serviceScanHealth();
 
       // Parses the bench credentials from Kconfig, initialises PSA, runs the crypto
       // self-test and restores the access state. A failure leaves commands
@@ -211,9 +219,33 @@ namespace alc
       bool m_delay_pending;
       struct k_timer m_delay_timer;
 
-      // Held for the whole delay so the SoC cannot enter a deeper state. Battery
-      // life is explicitly not a factor while a trigger is pending.
+      // Held for the whole delay so the SoC cannot enter a deeper state - only
+      // takes effect when CONFIG_PM is enabled (it is off in this build, so
+      // continuous scanning below is the mechanism that actually keeps a
+      // disarm heard promptly). Battery life is explicitly not a factor while
+      // a trigger is pending.
       bool m_delay_pm_lock_held;
+
+      // Uptime at which a pending delay is considered genuinely expired.
+      // k_timer_remaining_ticks() returns 0 both when a timer has expired and
+      // when it was never armed, so this deadline is what tells the two apart
+      // for the expiry commit in updateOutputState().
+      int64_t m_delay_deadline_ms;
+
+      // Set in beginDelay() if the scanner was not confirmed running at the
+      // start of the delay, and every tick thereafter while the delay is
+      // pending if it drops out. Does not suppress the trigger - Andy's
+      // ruling is to prioritise the alarm - but is logged at the expiry
+      // commit so a missed disarm is visible.
+      bool m_delay_scan_lost;
+
+      // Uptime of the last scanner health check - see serviceScanHealth().
+      int64_t m_last_scan_service_ms;
+
+      // True once a scan outage has been logged, so a scanner that stays down
+      // logs once rather than every M_SCAN_SERVICE_INTERVAL_MS tick. Cleared
+      // once the scanner is confirmed running again.
+      bool m_scan_outage_logged;
 
       // Uptime until which a DELAYED trigger holds detection regardless of AWAKE.
       // Zero for an undelayed trigger, whose own AWAKE sets the duration.

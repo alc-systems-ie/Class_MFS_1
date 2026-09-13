@@ -58,12 +58,38 @@ namespace alc
        *
        * Continuous while a trigger is pending, so a deactivate is heard within one
        * advert rather than ~30 s. Battery life is explicitly not a factor then.
+       *
+       * On failure to start at the requested cadence, falls back to restarting at
+       * the PREVIOUS one rather than leaving the scanner stopped outright. If even
+       * that fails the scanner is left down - see ServiceScan() and IsScanning().
+       *
+       * @return 0 on success (including a no-op when already at this cadence);
+       *         the original negative errno on failure, whether or not the
+       *         fallback restart succeeded.
        */
       int SetFastScan(bool fast);
+
+      /** @brief True only while a scan is confirmed running. See ServiceScan(). */
+      bool IsScanning() const { return m_scanning; }
+
+      /**
+       * @brief Retry starting the scan if it is not currently running.
+       *
+       * Call periodically from the main loop. A scan can be left stopped if
+       * SetFastScan() fails at both the requested and the fallback cadence -
+       * this is what eventually recovers it, at the last cadence requested.
+       *
+       * @return 0 if already running or the restart succeeded; negative errno
+       *         from bt_le_scan_start() otherwise.
+       */
+      int ServiceScan();
 
     private:
       bool m_started;
       bool m_fast;
+
+      // True only while a scan is known to be running - see IsScanning().
+      bool m_scanning;
   };
 
 }

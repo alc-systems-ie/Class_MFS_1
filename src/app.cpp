@@ -25,6 +25,13 @@ namespace alc
 
     constexpr uint32_t M_POLL_INTERVAL_MS { 100 };
 
+    // How often serviceScanHealth() retries starting the scan if it is down.
+    // The outage check and m_delay_scan_lost update themselves run every tick
+    // regardless - only the retry itself is throttled, since the Bluetooth
+    // stack's own stop/start churn is not free and a genuine outage does not
+    // need a 100 ms retry rate to recover promptly.
+    constexpr int64_t M_SCAN_SERVICE_INTERVAL_MS { 1000 };
+
     // How often the persisted day floor is adopted from the clock with no command
     // involved. Keeps a device that receives no commands for days from later
     // accepting a stale captured provisioner sync against an old floor.
@@ -202,6 +209,10 @@ namespace alc
       , m_delay_pending(false)
       , m_delay_timer {}
       , m_delay_pm_lock_held(false)
+      , m_delay_deadline_ms(0)
+      , m_delay_scan_lost(false)
+      , m_last_scan_service_ms(0)
+      , m_scan_outage_logged(false)
       , m_detection_hold_until_ms(0)
       , m_initialised(false)
   {}
@@ -296,6 +307,7 @@ namespace alc
     while (true) {
       serviceCandidates();
       serviceDayRollover();
+      serviceScanHealth();
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
       if (++blinkTicks >= M_BLINK_PERIOD_TICKS) {
@@ -557,8 +569,9 @@ namespace alc
 
     // Every (re)configure starts with no inherited latch - a detection from
     // before this configure must never reach the output (v1-scope section 1.0.1).
-    m_detection_met  = false;
-    m_previous_awake = false;
+    m_detection_met           = false;
+    m_previous_awake          = false;
+    m_detection_hold_until_ms = 0;
 
     // Should already be clear. If handling the device has woken it again in the
     // moments since, that assertion still predates arming, so suppress it until
@@ -650,8 +663,10 @@ namespace alc
       }
     }
 
-    // The delay elapsed and was not cancelled - commit the trigger.
-    if (m_delay_pending && k_timer_remaining_ticks(&m_delay_timer) == 0) {
+    // The delay elapsed and was not cancelled. k_timer_remaining_ticks() alone
+    // cannot be trusted here: it reads 0 both for "expired" and for "never
+    // armed", and m_delay_deadline_ms is what tells the two apart.
+    if (m_delay_pending && k_timer_remaining_ticks(&m_delay_timer) == 0 && k_uptime_get() >= m_delay_deadline_ms) {
       cancelDelay(); // clears the flag and releases the PM lock
       m_detection_met = true;
 
@@ -660,6 +675,12 @@ namespace alc
       // assert. Hold detection for the same 5 s the loop period gives an
       // undelayed trigger.
       m_detection_hold_until_ms = k_uptime_get() + M_DELAYED_TRIGGER_HOLD_MS;
+
+      // Andy's ruling: the alarm is prioritised over the risk of a missed
+      // disarm. A scanner outage during the delay does not suppress the
+      // trigger - it is logged instead, so a missed disarm is at least
+      // visible after the fact.
+      if (m_delay_scan_lost) { LOG_WRN("Trigger firing although the scanner was not running during the delay - a disarm may have been missed."); }
     }
 
     // The trigger's own AWAKE running to completion is what clears detection -
@@ -748,9 +769,10 @@ namespace alc
       // ended. Cleared AFTER disableAccelerometer() because its re-derivation
       // tick can itself count an edge and start a cooldown - clearing first would
       // leave that tick's work in place.
-      m_activation_count = 0;
-      m_detection_met    = false;
-      m_previous_awake   = false;
+      m_activation_count        = 0;
+      m_detection_met           = false;
+      m_previous_awake          = false;
+      m_detection_hold_until_ms = 0;
       if (m_in_cooldown) {
         m_in_cooldown      = false;
         m_cooldown_expired = false;
@@ -873,28 +895,41 @@ namespace alc
   void App::beginDelay()
   {
     uint16_t seconds { m_settings.DelaySeconds() };
+    int result { 0 };
 
     if (seconds == 0) { return; }
 
     // GRTC, not the PMIC timer. At +/-10% over temperature the PMIC would put a
     // 9-hour delay anywhere inside a 108-minute window.
     k_timer_start(&m_delay_timer, K_SECONDS(seconds), K_NO_WAIT);
-    m_delay_pending = true;
+    m_delay_pending     = true;
+    m_delay_deadline_ms = k_uptime_get() + static_cast<int64_t>(seconds) * MSEC_PER_SEC;
 
-    // Stay awake for the duration and scan continuously. The deactivate path is
-    // the most important thing the device does while a trigger is pending, and at
-    // the normal 6 s cadence an abort takes ~30 s to be heard with confidence.
+    // Stay awake for the duration - only effective when CONFIG_PM is enabled
+    // (it is off in this build; the continuous scan below is what actually
+    // keeps a disarm heard promptly).
     if (!m_delay_pm_lock_held) {
       pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
       m_delay_pm_lock_held = true;
     }
-    m_scanner.SetFastScan(true);
+
+    // Scan continuously. The deactivate path is the most important thing the
+    // device does while a trigger is pending, and at the normal 6 s cadence an
+    // abort takes ~30 s to be heard with confidence.
+    m_delay_scan_lost = false;
+    result            = m_scanner.SetFastScan(true);
+    if (result < 0 || !m_scanner.IsScanning()) {
+      m_delay_scan_lost = true;
+      LOG_ERR("Scanner not running at the start of a delay - a disarm may not be heard!");
+    }
 
     LOG_WRN("TRIGGER PENDING: firing in %u s. Deactivating cancels it.", seconds);
   }
 
   void App::cancelDelay()
   {
+    int result { 0 };
+
     k_timer_stop(&m_delay_timer);
     m_delay_pending = false;
 
@@ -902,7 +937,39 @@ namespace alc
       pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
       m_delay_pm_lock_held = false;
     }
-    m_scanner.SetFastScan(false);
+
+    result = m_scanner.SetFastScan(false);
+    if (result < 0) {
+      // serviceScanHealth() keeps retrying - a failed cadence change here
+      // must not be silently lost.
+      LOG_ERR("Failed to restore duty-cycled scanning: %d!", result);
+    }
+  }
+
+  void App::serviceScanHealth()
+  {
+    int64_t uptimeMs { k_uptime_get() };
+
+    // Every tick, not throttled: a delay that goes blind to the scanner must
+    // not complete as if nothing happened - see the expiry commit in
+    // updateOutputState().
+    if (m_delay_pending && !m_scanner.IsScanning()) { m_delay_scan_lost = true; }
+
+    // The retry itself IS throttled - the Bluetooth stack's own stop/start
+    // churn is not free, and a genuine outage does not need a 100 ms retry
+    // rate to recover promptly.
+    if (uptimeMs - m_last_scan_service_ms < M_SCAN_SERVICE_INTERVAL_MS) { return; }
+    m_last_scan_service_ms = uptimeMs;
+
+    if (m_scanner.IsScanning()) {
+      m_scan_outage_logged = false;
+      return;
+    }
+
+    if (m_scanner.ServiceScan() < 0 && !m_scan_outage_logged) {
+      LOG_ERR("Scanner is down and could not be restarted!");
+      m_scan_outage_logged = true;
+    }
   }
 
   int App::initAccess()
