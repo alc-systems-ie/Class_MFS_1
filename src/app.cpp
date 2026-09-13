@@ -351,12 +351,19 @@ namespace alc
       if (ledSequencerActive) {
         ledA = m_led_sequencer.Level(ledNowMs);
       } else {
-#if defined(CONFIG_MFS_DEBUG_LED)
 #if !defined(CONFIG_MFS_BATTERY_TEST)
+#if defined(CONFIG_MFS_DEBUG_LED)
         // Bench only, between patterns: LED A is lit while Inactive, as before.
         ledA = (m_arm_state == ArmState::Inactive);
+#else
+        // Production: between patterns LED A must be explicitly turned off - left
+        // unassigned, it would stick at whatever level the last pattern ended on,
+        // costing ~2 mA and breaking covertness.
+        ledA = false;
 #endif
 #endif
+        // Battery-test builds set ledA from the liveness blink above; this branch
+        // must not override it between patterns.
       }
 
 #if defined(CONFIG_MFS_DEBUG_LED)
@@ -802,7 +809,8 @@ namespace alc
 
       // Sensor first, boolean second. A device that cannot configure its
       // accelerometer must NOT report itself armed: it would be a silent loss of
-      // function. It stays Inactive with LED A lit, so the refusal is visible.
+      // function. It stays Inactive and LED A shows the Arm Refused pattern, so
+      // the refusal is visible - in bench builds it then stays lit while Inactive.
       if (enableAccelerometer() < 0) {
         LOG_ERR("Arm request rejected - device stays Inactive!");
         // Best effort - the part must not keep running on a device that reports
