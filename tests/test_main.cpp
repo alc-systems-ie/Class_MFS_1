@@ -5,6 +5,7 @@ void run_command_codec_tests();
 void run_access_key_tests();
 void run_device_clock_tests();
 void run_access_control_tests();
+void run_led_sequencer_tests();
 
 int main()
 {
@@ -13,6 +14,7 @@ int main()
   run_access_key_tests();
   run_device_clock_tests();
   run_access_control_tests();
+  run_led_sequencer_tests();
   printf("ALL TESTS PASSED\n");
   return 0;
 }
