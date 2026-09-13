@@ -211,7 +211,10 @@ expected rotating IDs per slot — **128 IDs, 512 bytes of RAM**.
 1. **No valid clock → listen only for a provisioner time sync** (§7). No keys can be
    derived without a day.
 2. **New day** (`today > state.day`): zero every `next`, **persist**, raise the clock
-   floor, rebuild all tables. A failed persist refuses the day.
+   floor, rebuild all tables. A failed persist refuses the day. The rollover is
+   also adopted when a time sync is applied and at least once a minute while the
+   clock is valid, so the floor tracks the real day even on a device that
+   receives no commands.
 3. **Match bytes 0–3 against the table.** No match → *not for us*: silent and **not
    counted**. This is the fate of every other advert in range, and of every repeat
    of a command already accepted, because its ID has left the window.

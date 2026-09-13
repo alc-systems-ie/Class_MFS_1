@@ -70,6 +70,11 @@ namespace alc
       /** @brief Adopt a state loaded from NVS. Call before the first Evaluate(). */
       void Restore(const AccessState& state);
 
+      /**
+       * @brief Set the device ID once credentials are parsed. Forces a table rebuild.
+       */
+      void SetDeviceId(uint32_t deviceId);
+
       const AccessState& State() const { return m_state; }
       bool IsLockedOut(int64_t uptimeSecs) const { return m_locked && uptimeSecs < m_lockout_until_secs; }
       uint8_t ConsecutiveFailures() const { return m_failures; }
@@ -81,6 +86,18 @@ namespace alc
        * so the command cannot be replayed however the caller then fails.
        */
       Evaluation Evaluate(const uint8_t* onAir, uint8_t length, DeviceClock& clock, int64_t uptimeSecs);
+
+      /**
+       * @brief Adopt the clock's current day if it has moved on: persist the rollover and raise the floor.
+       *
+       * A command advances the day as a side effect of Evaluate(), but a device that
+       * receives no commands for days would otherwise keep a stale floor and, after a
+       * power cut, accept an old captured provisioner sync that revives that day's
+       * keys. Call after a sync and periodically.
+       *
+       * @return 0, or negative errno if the rollover could not be persisted (state unchanged).
+       */
+      int Advance(DeviceClock& clock, int64_t uptimeSecs);
 
     private:
       int prepareDay(uint16_t today, DeviceClock& clock);

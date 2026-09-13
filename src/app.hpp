@@ -98,6 +98,11 @@ namespace alc
 
       void handleCommandCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs);
 
+      // Adopts the clock's current day at most once every M_ADVANCE_INTERVAL_SECS,
+      // so a device that receives no commands for days still advances its
+      // persisted floor and cannot later accept a stale captured provisioner sync.
+      void serviceDayRollover();
+
       const struct device* m_i2c_bus;
       Npm2100 m_pmic;
       Adxl367 m_accelerometer;
@@ -108,6 +113,10 @@ namespace alc
 
       // The only judge of whether a candidate is an authentic, fresh command.
       AccessControl m_access;
+
+      // Uptime of the last serviceDayRollover() call that attempted Advance().
+      // See M_ADVANCE_INTERVAL_SECS.
+      int64_t m_last_advance_secs;
 
       // False if credentials, PSA or the self-test failed. Commands and syncs are
       // then ignored for the whole boot: a backend that disagrees with the app

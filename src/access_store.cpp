@@ -1,5 +1,4 @@
 #include <cerrno>
-#include <cstring>
 
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
@@ -54,10 +53,11 @@ namespace alc::access_store
 
   int Load(AccessState& state)
   {
+    int result { 0 };
+
     s_record_loaded  = false;
     s_record_invalid = false;
-
-    int result { settings_load_subtree("access") };
+    result           = settings_load_subtree("access");
 
     if (result < 0) {
       LOG_ERR("Failed to load the access state: %d!", result);

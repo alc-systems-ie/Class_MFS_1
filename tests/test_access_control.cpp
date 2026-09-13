@@ -331,5 +331,62 @@ void run_access_control_tests()
     assert(access.ConsecutiveFailures() == 0);
   }
 
+  // Advance(): an invalid clock is a no-op - nothing to adopt yet.
+  {
+    PersistSpy spy;
+    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    DeviceClock clock;
+
+    assert(access.Advance(clock, 0) == 0);
+    assert(spy.calls == 0);
+  }
+
+  // Advance(): a stale floor is adopted with no command at all, and a repeat
+  // call at the same uptime does not persist again.
+  {
+    PersistSpy spy;
+    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    DeviceClock clock { syncedClock() }; // Day 256 at uptime 0.
+    AccessState restored {};
+    restored.day     = 250;
+    restored.next[1] = 5;
+    access.Restore(restored);
+
+    assert(access.Advance(clock, 0) == 0);
+    assert(spy.calls == 1);
+    assert(access.State().day == 256);
+    assert(access.State().next[1] == 0 && access.State().next[2] == 0);
+    assert(clock.FloorDay() == 256);
+
+    // Same day, same uptime - already adopted, so no second persist.
+    assert(access.Advance(clock, 0) == 0);
+    assert(spy.calls == 1);
+
+    // A day later, with no command having been received in between.
+    constexpr int64_t M_TOMORROW { DeviceClock::M_SECONDS_PER_DAY };
+    assert(access.Advance(clock, M_TOMORROW) == 0);
+    assert(spy.calls == 2);
+    assert(access.State().day == 257);
+
+    // Advance() alone rebuilt the tables - an authentic command for the new day
+    // is still accepted.
+    buildCommand(257, 1, 0, true, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_TOMORROW).verdict == Verdict::Accepted);
+  }
+
+  // Advance(): a failed persist leaves the state unchanged and reports the error.
+  {
+    PersistSpy spy;
+    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    DeviceClock clock { syncedClock() }; // Day 256.
+    AccessState restored {};
+    restored.day = 250;
+    access.Restore(restored);
+
+    spy.failWith = -EIO;
+    assert(access.Advance(clock, 0) == -EIO);
+    assert(access.State().day == 250);
+  }
+
   printf("access control: OK\n");
 }

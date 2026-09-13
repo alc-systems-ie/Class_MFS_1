@@ -24,6 +24,11 @@ namespace alc
 
     constexpr uint32_t M_POLL_INTERVAL_MS { 100 };
 
+    // How often the persisted day floor is adopted from the clock with no command
+    // involved. Keeps a device that receives no commands for days from later
+    // accepting a stale captured provisioner sync against an old floor.
+    constexpr int64_t M_ADVANCE_INTERVAL_SECS { 60 };
+
     // Stuck-AWAKE watchdog threshold, in 100 ms loop ticks. Generous multiple of
     // the configured inactivity period so normal sustained handling never trips it.
     constexpr uint32_t M_AWAKE_STUCK_TICKS { (CONFIG_MFS_ADXL_INACTIVITY_SECS * 10U * 6U) };
@@ -110,9 +115,8 @@ namespace alc
           return "PersistFailed";
         case AccessControl::Verdict::CryptoError:
           return "CryptoError";
-        default:
-          return "Unknown";
       }
+      return "Unknown"; // Unreachable while every Verdict is handled above - -Wswitch warns if a new one is added.
     }
 
     const char* resetReasonName(Npm2100::ResetReason reason)
@@ -160,6 +164,7 @@ namespace alc
       , m_scanner()
       , m_clock()
       , m_access(0, s_device_secret, &access_store::Persist, nullptr)
+      , m_last_advance_secs(0)
       , m_access_ready(false)
       , m_output_switch()
       , m_arm_state(ArmState::Inactive)
@@ -246,6 +251,7 @@ namespace alc
 
     while (true) {
       serviceCandidates();
+      serviceDayRollover();
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
       if (++blinkTicks >= M_BLINK_PERIOD_TICKS) {
@@ -674,10 +680,10 @@ namespace alc
     result = access_store::Load(restored);
     if (result < 0) { return result; }
 
-    // The device ID is known only now, so AccessControl is rebuilt with it. The
-    // restored day is the floor a provisioner sync may not go below; the clock
-    // itself stays INVALID - there is no resume from NVS.
-    m_access = AccessControl(s_device_id, s_device_secret, &access_store::Persist, nullptr);
+    // The device ID is known only now, so AccessControl's tables are rebuilt
+    // against it. The restored day is the floor a provisioner sync may not go
+    // below; the clock itself stays INVALID - there is no resume from NVS.
+    m_access.SetDeviceId(s_device_id);
     if (result > 0) {
       m_access.Restore(restored);
       m_clock.RaiseFloorDay(restored.day);
@@ -695,6 +701,7 @@ namespace alc
   {
     CommandScanner::Candidate candidate {};
     int64_t uptimeSecs { k_uptime_get() / MSEC_PER_SEC };
+    uint32_t dropped { 0 };
 
     while (m_scanner.TakeCandidate(candidate)) {
       if (!m_access_ready) { continue; }
@@ -705,6 +712,11 @@ namespace alc
         handleCommandCandidate(candidate, uptimeSecs);
       }
     }
+
+    // Counted on the Bluetooth RX thread, logged here instead - see
+    // CommandScanner::TakeDroppedCount().
+    dropped = m_scanner.TakeDroppedCount();
+    if (dropped > 0) { LOG_WRN("Candidate queue full - %u adverts dropped!", dropped); }
   }
 
   void App::handleTimeSyncCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs)
@@ -724,6 +736,8 @@ namespace alc
 
     LOG_INF("Clock set by provisioner: unix %u, day %u, %02u:%02u UTC.", unixSeconds, m_clock.DayIndex(uptimeSecs),
             m_clock.MinuteOfDay(uptimeSecs) / 60U, m_clock.MinuteOfDay(uptimeSecs) % 60U);
+
+    if (m_access.Advance(m_clock, uptimeSecs) < 0) { LOG_ERR("Day rollover could not be persisted after the time sync!"); }
   }
 
   void App::handleCommandCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs)
@@ -750,6 +764,17 @@ namespace alc
     // app is built against it. Settings, the clock trim and the LED patterns
     // arrive in Task 16, which replaces this.
     setArmState(evaluation.command.armActive ? ArmState::Active : ArmState::Inactive);
+  }
+
+  void App::serviceDayRollover()
+  {
+    int64_t uptimeSecs { k_uptime_get() / MSEC_PER_SEC };
+
+    if (!m_access_ready || !m_clock.IsValid()) { return; }
+    if (uptimeSecs - m_last_advance_secs < M_ADVANCE_INTERVAL_SECS) { return; }
+
+    m_last_advance_secs = uptimeSecs;
+    if (m_access.Advance(m_clock, uptimeSecs) < 0) { LOG_ERR("Day rollover could not be persisted!"); }
   }
 
   int App::applyLeds(bool ledA, bool ledB)

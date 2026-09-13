@@ -1,7 +1,11 @@
 #include "app.hpp"
 
+namespace
+{
+  alc::App s_app;
+}
+
 int main()
 {
-  alc::App app;
-  return app.Run();
+  return s_app.Run();
 }

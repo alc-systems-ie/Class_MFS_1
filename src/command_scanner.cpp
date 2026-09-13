@@ -3,6 +3,7 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/atomic.h>
 
 #include "command_scanner.hpp"
 
@@ -30,50 +31,73 @@ namespace alc
     constexpr size_t M_QUEUE_DEPTH { 8 };
 
     // How many recently queued UUIDs are remembered for repeat suppression.
-    constexpr uint8_t M_RECENT_COUNT { 4 };
+    constexpr uint8_t M_RECENT_COUNT { 8 };
+
+    // A phone repeats the same advert roughly every 187 ms, so 2 s still collapses
+    // a 30 s burst about 10:1. Expiring the entry (rather than remembering it
+    // forever) means a command first seen while it could not yet be judged - the
+    // clock invalid, a lockout, a transient persist failure - is re-offered within
+    // 2 s instead of being suppressed for the rest of its burst.
+    constexpr int64_t M_RECENT_TTL_MS { 2000 };
 
     K_MSGQ_DEFINE(s_candidates, sizeof(CommandScanner::Candidate), M_QUEUE_DEPTH, 1);
 
+    // Counted, not logged - see CommandScanner::TakeDroppedCount(). Logging on
+    // the Bluetooth RX thread at a rate an outsider controls, in immediate log
+    // mode on a 2 KB stack, is not safe.
+    atomic_t s_dropped { ATOMIC_INIT(0) };
+
+    struct RecentEntry
+    {
+        uint8_t bytes[protocol::M_UUID_BYTES];
+        int64_t seenMs;
+    };
+
     // Touched only from the Bluetooth RX thread, so no lock is needed.
-    uint8_t s_recent[M_RECENT_COUNT][protocol::M_UUID_BYTES] {};
+    RecentEntry s_recent[M_RECENT_COUNT] {};
     uint8_t s_recent_next { 0 };
     uint8_t s_recent_filled { 0 };
 
-    bool seenRecently(const uint8_t* bytes)
+    bool seenRecently(const uint8_t* bytes, int64_t nowMs)
     {
       for (uint8_t index = 0; index < s_recent_filled; index++) {
-        if (memcmp(s_recent[index], bytes, protocol::M_UUID_BYTES) == 0) { return true; }
+        if (nowMs - s_recent[index].seenMs >= M_RECENT_TTL_MS) { continue; }
+        if (memcmp(s_recent[index].bytes, bytes, protocol::M_UUID_BYTES) == 0) { return true; }
       }
       return false;
     }
 
-    void remember(const uint8_t* bytes)
+    void remember(const uint8_t* bytes, int64_t nowMs)
     {
-      memcpy(s_recent[s_recent_next], bytes, protocol::M_UUID_BYTES);
-      s_recent_next = static_cast<uint8_t>((s_recent_next + 1) % M_RECENT_COUNT);
+      memcpy(s_recent[s_recent_next].bytes, bytes, protocol::M_UUID_BYTES);
+      s_recent[s_recent_next].seenMs = nowMs;
+      s_recent_next                  = static_cast<uint8_t>((s_recent_next + 1) % M_RECENT_COUNT);
       if (s_recent_filled < M_RECENT_COUNT) { s_recent_filled++; }
     }
 
     bool parseAdStructure(struct bt_data* data, void* userData)
     {
       CommandScanner::Candidate candidate {};
+      int64_t nowMs { 0 };
 
       ARG_UNUSED(userData);
 
       // Exactly one 128-bit UUID. A list of several is not our phone, which never
       // advertises anything else.
       if (data->type != M_AD_UUID128_ALL || data->data_len != protocol::M_UUID_BYTES) { return true; }
-      if (seenRecently(data->data)) { return false; }
+
+      nowMs = k_uptime_get();
+      if (seenRecently(data->data, nowMs)) { return false; }
 
       memcpy(candidate.bytes, data->data, protocol::M_UUID_BYTES);
       if (k_msgq_put(&s_candidates, &candidate, K_NO_WAIT) != 0) {
         // Dropped, not remembered - so a later copy of the same advert can still
         // get in once the loop has drained the queue.
-        LOG_WRN("Candidate queue full - advert dropped!");
+        atomic_inc(&s_dropped);
         return false;
       }
 
-      remember(data->data);
+      remember(data->data, nowMs);
       return false;
     }
 
@@ -122,6 +146,11 @@ namespace alc
   bool CommandScanner::TakeCandidate(Candidate& out)
   {
     return k_msgq_get(&s_candidates, &out, K_NO_WAIT) == 0;
+  }
+
+  uint32_t CommandScanner::TakeDroppedCount()
+  {
+    return static_cast<uint32_t>(atomic_set(&s_dropped, 0));
   }
 
 }

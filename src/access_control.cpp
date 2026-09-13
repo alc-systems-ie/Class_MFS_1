@@ -48,6 +48,12 @@ namespace alc
     m_tables_ready = false;
   }
 
+  void AccessControl::SetDeviceId(uint32_t deviceId)
+  {
+    m_device_id    = deviceId;
+    m_tables_ready = false;
+  }
+
   int AccessControl::rebuildSlot(uint8_t slot)
   {
     uint32_t base { m_state.next[slot] };
@@ -227,6 +233,18 @@ namespace alc
     if (rebuildSlot(evaluation.slot) < 0) { m_tables_ready = false; }
     evaluation.verdict = Verdict::Accepted;
     return evaluation;
+  }
+
+  int AccessControl::Advance(DeviceClock& clock, int64_t uptimeSecs)
+  {
+    uint16_t today { 0 };
+
+    if (!clock.IsValid()) { return 0; }
+
+    today = clock.DayIndex(uptimeSecs);
+    if (today < m_state.day) { return -EINVAL; }
+
+    return prepareDay(today, clock);
   }
 
 }

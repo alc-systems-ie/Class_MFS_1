@@ -45,6 +45,14 @@ namespace alc
        */
       bool TakeCandidate(Candidate& out);
 
+      /**
+       * @brief Number of adverts dropped for a full queue since the last call. Resets to 0.
+       *
+       * The drop is counted on the Bluetooth RX thread (an outsider-controlled
+       * rate) rather than logged there - see command_scanner.cpp.
+       */
+      uint32_t TakeDroppedCount();
+
     private:
       bool m_started;
   };
