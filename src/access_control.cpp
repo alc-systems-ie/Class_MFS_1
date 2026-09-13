@@ -36,6 +36,7 @@ namespace alc
       , m_expected_ids {}
       , m_window_size {}
       , m_failed_ids {}
+      , m_id_failures {}
       , m_failures(0)
       , m_locked(false)
       , m_lockout_until_secs(0)
@@ -66,6 +67,7 @@ namespace alc
     }
     m_window_size[slot] = size;
     m_failed_ids[slot]  = 0;
+    memset(m_id_failures[slot], 0, sizeof(m_id_failures[slot]));
     return 0;
   }
 
@@ -158,6 +160,12 @@ namespace alc
     for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
       for (uint8_t offset = 0; offset < m_window_size[slot]; offset++) {
         if (memcmp(m_expected_ids[slot][offset], &onAir[protocol::M_OFFSET_ROTATING_ID], protocol::M_ROTATING_ID_BYTES) != 0) { continue; }
+
+        // A burned ID (M_MAX_ID_FAILURES wrong tags already) is treated exactly
+        // like no match at all - not a candidate, not decrypted, not counted -
+        // so an attacker who captured it cannot keep guessing its tag.
+        if (m_id_failures[slot][offset] >= M_MAX_ID_FAILURES) { continue; }
+
         if (candidateCount < M_MAX_CANDIDATES) { candidates[candidateCount++] = Candidate { slot, offset, m_state.next[slot] + offset }; }
       }
     }
@@ -193,6 +201,14 @@ namespace alc
         if ((m_failed_ids[candidates[index].slot] & bit) == 0) {
           m_failed_ids[candidates[index].slot] |= bit;
           newFailure = true;
+        }
+
+        // The per-ID guess cap, unlike the bit above, keeps counting every
+        // attempt against the SAME id - that is what lets it burn after
+        // M_MAX_ID_FAILURES even though a resend no longer counts towards
+        // the lockout.
+        if (m_id_failures[candidates[index].slot][candidates[index].offset] < M_MAX_ID_FAILURES) {
+          m_id_failures[candidates[index].slot][candidates[index].offset]++;
         }
       }
       if (newFailure) { recordFailure(uptimeSecs); }

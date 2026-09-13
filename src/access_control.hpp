@@ -37,6 +37,13 @@ namespace alc
       static constexpr uint32_t M_LOCKOUT_INITIAL_SECS { 600 };
       static constexpr uint32_t M_LOCKOUT_MAX_SECS { 14400 };
 
+      // Per-expected-ID tag-guess cap. A genuine copy of an accepted command is
+      // byte-identical and authenticates first time; eight failures on one ID
+      // can only be guessing, since a captured-but-unaccepted ID stays in the
+      // window and would otherwise be guessable indefinitely - the one-shot
+      // lockout bit only counts it once, not once per attempt.
+      static constexpr uint8_t M_MAX_ID_FAILURES { 8 };
+
       enum class Verdict : uint8_t {
         Accepted,
         NotForUs,      ///< No expected rotating ID matched. The normal case for any other advert. Not counted.
@@ -118,6 +125,14 @@ namespace alc
       // corrupted adverts must not lock out an engineer — a lockout now needs 20 distinct
       // expected IDs to fail, not 20 copies of one.
       uint16_t m_failed_ids[access::M_SLOT_COUNT];
+
+      // Per-expected-ID wrong-tag count, independent of the one-shot bit above.
+      // Reaching M_MAX_ID_FAILURES burns the ID: the candidate filter then skips
+      // it exactly like no match at all (NotForUs, not decrypted, not counted),
+      // so an attacker cannot keep guessing tags against one captured ID.
+      // Cleared per slot by rebuildSlot() along with everything else in the
+      // window.
+      uint8_t m_id_failures[access::M_SLOT_COUNT][M_WINDOW];
 
       uint8_t m_failures;
       bool m_locked;

@@ -177,18 +177,51 @@ void run_access_control_tests()
     assert(access.ConsecutiveFailures() == 0);
   }
 
-  // Same corrupted ID resent 100 times: AuthFailed every time, but only 1 failure counted.
+  // Per-ID tag-guess cap: the same corrupted ID resent repeatedly burns after
+  // M_MAX_ID_FAILURES wrong tags. Before the cap this ID could be guessed
+  // indefinitely - it matched the ID filter every time but never counted
+  // towards the lockout, which only counts once per distinct ID.
   {
     PersistSpy spy;
     AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
+    AccessControl::Evaluation evaluation {};
     buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
     onAir[protocol::M_OFFSET_TAG] ^= 0x01;
-    for (int attempt = 0; attempt < 100; attempt++) {
+
+    for (int attempt = 0; attempt < AccessControl::M_MAX_ID_FAILURES; attempt++) {
       assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AuthFailed);
     }
     assert(access.ConsecutiveFailures() == 1);
     assert(!access.IsLockedOut(0));
+
+    // The 9th and later guesses against the SAME id: burned, treated exactly
+    // like no match - NotForUs, not decrypted, not counted further.
+    for (int attempt = 0; attempt < 5; attempt++) {
+      assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
+    }
+    assert(access.ConsecutiveFailures() == 1);
+    assert(!access.IsLockedOut(0));
+
+    // The GENUINE command for the same n is burned too - the id itself is
+    // spent, not merely its wrong tags.
+    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
+
+    // n+1's id was never attacked - its genuine command is accepted normally.
+    buildCommand(256, 1, 1, true, M_MINUTE_0500, onAir);
+    evaluation = access.Evaluate(onAir, sizeof(onAir), clock, 0);
+    assert(evaluation.verdict == Verdict::Accepted && evaluation.n == 1);
+
+    // Acceptance rebuilds the slot, which clears the per-id counters: a FRESH
+    // corrupted id in the new window burns again only after its own eight
+    // tries, none carried over from before the rebuild.
+    buildCommand(256, 1, 2, true, M_MINUTE_0500, onAir);
+    onAir[protocol::M_OFFSET_TAG] ^= 0x01;
+    for (int attempt = 0; attempt < AccessControl::M_MAX_ID_FAILURES; attempt++) {
+      assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AuthFailed);
+    }
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
   }
 
   // Lockout requires 20 distinct expected IDs: slot 1 (n=0..15) + slot 2 (n=0..3), each with tag bit flipped.
