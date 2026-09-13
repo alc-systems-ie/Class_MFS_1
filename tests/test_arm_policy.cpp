@@ -10,7 +10,7 @@ void run_arm_policy_tests()
   protocol::Command armCommand;
   protocol::Command disarmCommand;
   ArmDecision decision;
-  const bool M_BOTH_SLOT_KINDS[] { false, true };
+  constexpr bool M_BOTH_SLOT_KINDS[] { false, true };
 
   armCommand.armActive    = true;
   armCommand.activations  = 5;

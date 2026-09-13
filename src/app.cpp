@@ -341,18 +341,25 @@ namespace alc
       // actually written to the pins. Recomputing them inside the log statement
       // from the arm state produced messages that contradicted the build - a
       // battery-test build never drives LED A, but the log still claimed "LED A ON".
-#if !defined(CONFIG_MFS_BATTERY_TEST)
-      // While a pattern plays the LED timer owns LED A, and this mirrors it so the
-      // loop's write cannot fight the timer. Patterns play in EVERY build: they are
-      // the command acknowledgement, not a debug aid.
-      ledA = m_led_sequencer.Level(k_uptime_get());
-#endif
+      int64_t ledNowMs { k_uptime_get() };
+      bool ledSequencerActive { m_led_sequencer.IsActive(ledNowMs) };
 
+      // While a pattern plays, the 10 ms LED timer owns LED A exclusively - in
+      // EVERY build, battery-test included, or the loop's write below would fight
+      // the timer's. ledA is still computed so the transition log reports what is
+      // actually lit; the pin write itself is skipped further down.
+      if (ledSequencerActive) {
+        ledA = m_led_sequencer.Level(ledNowMs);
+      } else {
 #if defined(CONFIG_MFS_DEBUG_LED)
 #if !defined(CONFIG_MFS_BATTERY_TEST)
-      // Bench only: between patterns, LED A is lit while Inactive, as before.
-      if (!m_led_sequencer.IsActive(k_uptime_get())) { ledA = (m_arm_state == ArmState::Inactive); }
+        // Bench only, between patterns: LED A is lit while Inactive, as before.
+        ledA = (m_arm_state == ArmState::Inactive);
 #endif
+#endif
+      }
+
+#if defined(CONFIG_MFS_DEBUG_LED)
       // LED B shows DETECTION, in either arm state, for the 5 s ADXL loop period.
       // Inactive it simulates triggers while tuning; Active it confirms one. It is
       // a bench indicator, not an output consumer - OutputSwitch is the example
@@ -369,7 +376,11 @@ namespace alc
                 m_arm_state == ArmState::Active ? "Active" : "Inactive", ledA ? "ON" : "off", ledB ? "ON" : "off");
       }
 
-      result = applyLeds(ledA, ledB);
+      // LED A is written here ONLY while no pattern is playing - see
+      // ledSequencerActive above. LED B has no second writer, so it is always
+      // written from the loop.
+      result = applyLedB(ledB);
+      if (result == 0 && !ledSequencerActive) { result = applyLedA(ledA); }
       if (result < 0) { LOG_ERR("LED update failed: %d!", result); }
 
       k_msleep(M_POLL_INTERVAL_MS);
@@ -675,7 +686,11 @@ namespace alc
         m_activation_count = 0;
         // No blanking here. Standing the ADXL down at the moment of trigger
         // would cut short the assertion that IS the output's 5 s duration.
-        if (m_settings.DelaySeconds() > 0) {
+        //
+        // While Inactive (tuning) the delay is not simulated - LED B shows
+        // detection at once, and no real timer, fast scan or PM lock is
+        // started on a disarmed device.
+        if (m_arm_state == ArmState::Active && m_settings.DelaySeconds() > 0) {
           beginDelay(); // m_detection_met waits for the timer
         } else {
           m_detection_met = true;
@@ -777,11 +792,22 @@ namespace alc
     // the latch immediately before arming (ReadActivityLatched) - but a latch
     // clear has no effect on a level.
     if (state == ArmState::Active) {
+      // Every arm starts with no pending delay - a delay counted before arming
+      // belongs to motion before arming and must never fire the armed device
+      // (v1-scope section 1.0.1).
+      cancelDelay();
+      m_detection_hold_until_ms = 0;
+      m_trigger_fired           = false;
+      m_trigger_complete        = false;
+
       // Sensor first, boolean second. A device that cannot configure its
       // accelerometer must NOT report itself armed: it would be a silent loss of
       // function. It stays Inactive with LED A lit, so the refusal is visible.
       if (enableAccelerometer() < 0) {
         LOG_ERR("Arm request rejected - device stays Inactive!");
+        // Best effort - the part must not keep running on a device that reports
+        // itself Inactive.
+        if (m_accelerometer.Standby() < 0) { LOG_WRN("Could not stand the accelerometer down after a refused arm."); }
         return;
       }
       m_arm_state = ArmState::Active;
@@ -1215,7 +1241,18 @@ namespace alc
         // restarting the simulation after a disarm stood the part down.
         m_activation_count = 0;
         m_detection_met    = false;
-        m_in_cooldown      = false;
+
+        // A cooldown - or its expiry latch - from before this Tune must not
+        // carry into the restarted engine.
+        if (m_in_cooldown) {
+          m_in_cooldown      = false;
+          m_cooldown_expired = false;
+          if (m_pmic.TimerStop() < 0) { LOG_WRN("Could not stop the tuning cooldown timer before restarting the engine."); }
+        }
+
+        // A delay counted before this Tune must not outlive it either - see the
+        // Arm case and setArmState(Active).
+        cancelDelay();
         if (enableAccelerometer() < 0) { LOG_ERR("Could not start the engine for tuning!"); }
         pattern = (m_settings.OperatingMode() != previousMode) ? LedPattern::ModeChanged : LedPattern::SettingsApplied;
         break;
@@ -1224,7 +1261,7 @@ namespace alc
         return;
     }
 
-    if (m_settings.OperatingMode() != protocol::Mode::TriggerOnly) {
+    if (decision.applySettings && m_settings.OperatingMode() != protocol::Mode::TriggerOnly) {
       LOG_WRN("Mode %u stored but reporting is not implemented - behaving as Trigger only!", static_cast<unsigned>(m_settings.OperatingMode()));
     }
 
@@ -1258,11 +1295,13 @@ namespace alc
     gpio_pin_set_dt(&s_led_a, self->m_led_sequencer.Level(now) ? 1 : 0);
   }
 
-  int App::applyLeds(bool ledA, bool ledB)
+  int App::applyLedA(bool ledA)
   {
-    int result { gpio_pin_set_dt(&s_led_a, ledA ? 1 : 0) };
+    return gpio_pin_set_dt(&s_led_a, ledA ? 1 : 0);
+  }
 
-    if (result < 0) { return result; }
+  int App::applyLedB(bool ledB)
+  {
     return gpio_pin_set_dt(&s_led_b, ledB ? 1 : 0);
   }
 

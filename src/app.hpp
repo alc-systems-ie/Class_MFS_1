@@ -79,9 +79,12 @@ namespace alc
       // already derived low before the part is stopped.
       int disableAccelerometer();
 
-      // Writes the two LED pins. Takes the states directly so the caller can log
-      // exactly what is applied, rather than each recomputing and disagreeing.
-      int applyLeds(bool ledA, bool ledB);
+      // Writes LED A. Split from LED B so the main loop can skip this call while
+      // the LED timer owns the pin - see ledSequencerActive in Run().
+      int applyLedA(bool ledA);
+
+      // Writes LED B. Always called from the main loop; nothing else writes it.
+      int applyLedB(bool ledB);
 
       // Derives m_output_active. The single place the arm state and the
       // accelerometer are combined — see IsOutputActive().
