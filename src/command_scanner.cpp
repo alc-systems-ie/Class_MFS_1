@@ -120,8 +120,29 @@ namespace alc
         .interval = fast ? M_SCAN_WINDOW_UNITS : M_SCAN_INTERVAL_UNITS,
         .window   = M_SCAN_WINDOW_UNITS,
       };
+      int result { bt_le_scan_start(&scanParam, &scanRecvCallback) };
 
-      return bt_le_scan_start(&scanParam, &scanRecvCallback);
+      // A prior stopScan() that failed to actually stop the controller (see
+      // stopScan()) leaves a scan already running when this is called to
+      // start the next one, and bt_le_scan_start() reports that as
+      // -EALREADY rather than success. A scan IS running in that case - just
+      // not provably at the cadence just requested - so this is treated as
+      // success rather than a permanent, unrecoverable "scanner is down".
+      if (result == -EALREADY) { return 0; }
+      return result;
+    }
+
+    // One place that stops the scan and reports anything unexpected, so
+    // SetFastScan() and ServiceScan() cannot disagree on how.
+    void stopScan()
+    {
+      int result { bt_le_scan_stop() };
+
+      // -EALREADY just means there was nothing running to stop - not worth a
+      // log. Anything else means the controller may still have a scan
+      // running at the cadence this call was meant to end; startScan()'s own
+      // -EALREADY handling (above) is what recovers from that.
+      if (result < 0 && result != -EALREADY) { LOG_WRN("bt_le_scan_stop failed: %d!", result); }
     }
 
   }
@@ -129,6 +150,7 @@ namespace alc
   CommandScanner::CommandScanner()
       : m_started(false)
       , m_fast(false)
+      , m_fast_requested(false)
       , m_scanning(false)
   {}
 
@@ -168,13 +190,19 @@ namespace alc
     int result { 0 };
     int fallbackResult { 0 };
 
+    // Recorded regardless of outcome below - see IsAtRequestedCadence() and
+    // ServiceScan(), which is what reconciles m_fast with this if the
+    // requested cadence is not achieved here.
+    m_fast_requested = fast;
+
     if (!m_started) { return 0; }
     if (fast == m_fast && m_scanning) { return 0; }
 
-    // Unconditional: bt_le_scan_stop() clears the scan whether or not the
-    // following start succeeds, so m_scanning must agree with it immediately
-    // rather than only on the success path.
-    bt_le_scan_stop();
+    // Unconditional: a scan that stopScan() fails to actually stop is still
+    // treated as not-yet-at-the-new-cadence here, so m_scanning tracks intent
+    // immediately rather than only on the success path. startScan()'s
+    // -EALREADY handling is what recovers if the controller disagrees.
+    stopScan();
     m_scanning = false;
 
     result = startScan(fast);
@@ -183,8 +211,9 @@ namespace alc
 
       // Fall back to restarting at the cadence that was running before,
       // rather than leave the scanner stopped outright on a single failed
-      // start. ServiceScan() (see App::serviceScanHealth()) is the last
-      // resort if even the fallback fails.
+      // start. m_fast is deliberately NOT updated to `fast` here, so
+      // IsAtRequestedCadence() correctly reports the mismatch and
+      // ServiceScan() (see App::serviceScanHealth()) keeps retrying for it.
       fallbackResult = startScan(m_fast);
       m_scanning     = (fallbackResult == 0);
       if (!m_scanning) { LOG_ERR("Scanner fallback restart also failed: %d - scanner is DOWN!", fallbackResult); }
@@ -200,14 +229,31 @@ namespace alc
   int CommandScanner::ServiceScan()
   {
     int result { 0 };
+    int fallbackResult { 0 };
 
-    if (!m_started || m_scanning) { return 0; }
+    if (!m_started) { return 0; }
+    if (m_scanning && m_fast == m_fast_requested) { return 0; }
 
-    result = startScan(m_fast);
-    if (result == 0) {
-      m_scanning = true;
-      LOG_WRN("Scanner restarted.");
+    // Stop first if a scan is running at the wrong cadence; nothing to stop
+    // if a previous attempt already left it down.
+    if (m_scanning) {
+      stopScan();
+      m_scanning = false;
     }
+
+    result = startScan(m_fast_requested);
+    if (result == 0) {
+      m_fast     = m_fast_requested;
+      m_scanning = true;
+      LOG_WRN("Scanner restored at the requested cadence.");
+      return 0;
+    }
+
+    // Fall back to the cadence last known to work, rather than leave the
+    // scanner stopped outright on a single failed retry.
+    fallbackResult = startScan(m_fast);
+    m_scanning     = (fallbackResult == 0);
+    if (!m_scanning) { LOG_ERR("Scanner fallback restart also failed: %d - scanner is DOWN!", fallbackResult); }
     return result;
   }
 

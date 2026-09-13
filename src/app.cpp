@@ -918,9 +918,15 @@ namespace alc
     // abort takes ~30 s to be heard with confidence.
     m_delay_scan_lost = false;
     result            = m_scanner.SetFastScan(true);
-    if (result < 0 || !m_scanner.IsScanning()) {
+    if (!m_scanner.IsScanning()) {
+      // Truly down - nothing is listening at all.
       m_delay_scan_lost = true;
       LOG_ERR("Scanner not running at the start of a delay - a disarm may not be heard!");
+    } else if (result < 0) {
+      // Still running, just at the fallback (duty-cycled) cadence - a disarm
+      // can still be heard, only more slowly. Not scan-lost: serviceScanHealth()
+      // keeps retrying for the true continuous cadence in the background.
+      LOG_WRN("Continuous scan unavailable at the start of a delay - retrying; a disarm is still heard at the duty-cycled rate.");
     }
 
     LOG_WRN("TRIGGER PENDING: firing in %u s. Deactivating cancels it.", seconds);
@@ -952,7 +958,11 @@ namespace alc
 
     // Every tick, not throttled: a delay that goes blind to the scanner must
     // not complete as if nothing happened - see the expiry commit in
-    // updateOutputState().
+    // updateOutputState(). Keyed on IsScanning() alone, deliberately NOT
+    // IsAtRequestedCadence(): a scan running at the wrong (duty-cycled)
+    // cadence can still hear a disarm, just more slowly, so it is not
+    // "lost" - Andy's decision to fire regardless of a TRUE loss stands
+    // either way.
     if (m_delay_pending && !m_scanner.IsScanning()) { m_delay_scan_lost = true; }
 
     // The retry itself IS throttled - the Bluetooth stack's own stop/start
@@ -961,13 +971,18 @@ namespace alc
     if (uptimeMs - m_last_scan_service_ms < M_SCAN_SERVICE_INTERVAL_MS) { return; }
     m_last_scan_service_ms = uptimeMs;
 
-    if (m_scanner.IsScanning()) {
+    // Health and retry are keyed on the REQUESTED cadence, not merely
+    // "running": a scan that is running but stuck at the fallback cadence
+    // (a failed SetFastScan() whose fallback succeeded) is a silent failure
+    // that IsScanning() alone would miss entirely.
+    if (m_scanner.IsAtRequestedCadence()) {
       m_scan_outage_logged = false;
       return;
     }
 
-    if (m_scanner.ServiceScan() < 0 && !m_scan_outage_logged) {
-      LOG_ERR("Scanner is down and could not be restarted!");
+    m_scanner.ServiceScan();
+    if (!m_scanner.IsAtRequestedCadence() && !m_scan_outage_logged) {
+      LOG_ERR("Scanner not at the requested cadence - retrying!");
       m_scan_outage_logged = true;
     }
   }

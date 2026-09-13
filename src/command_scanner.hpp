@@ -59,9 +59,12 @@ namespace alc
        * Continuous while a trigger is pending, so a deactivate is heard within one
        * advert rather than ~30 s. Battery life is explicitly not a factor then.
        *
-       * On failure to start at the requested cadence, falls back to restarting at
-       * the PREVIOUS one rather than leaving the scanner stopped outright. If even
-       * that fails the scanner is left down - see ServiceScan() and IsScanning().
+       * Records `fast` as the REQUESTED cadence regardless of outcome - see
+       * IsAtRequestedCadence(). On failure to start at it, falls back to
+       * restarting at the PREVIOUS (achieved) cadence rather than leaving the
+       * scanner stopped outright; a mismatch between requested and achieved is
+       * then what ServiceScan() corrects. If even the fallback fails the
+       * scanner is left down - see IsScanning().
        *
        * @return 0 on success (including a no-op when already at this cadence);
        *         the original negative errno on failure, whether or not the
@@ -69,24 +72,49 @@ namespace alc
        */
       int SetFastScan(bool fast);
 
-      /** @brief True only while a scan is confirmed running. See ServiceScan(). */
+      /** @brief True only while a scan is confirmed running, AT ANY cadence. */
       bool IsScanning() const { return m_scanning; }
 
       /**
-       * @brief Retry starting the scan if it is not currently running.
+       * @brief True only while running AND at the cadence last requested.
        *
-       * Call periodically from the main loop. A scan can be left stopped if
-       * SetFastScan() fails at both the requested and the fallback cadence -
-       * this is what eventually recovers it, at the last cadence requested.
+       * IsScanning() alone is not enough: a scan that is running but stuck at
+       * the wrong cadence (a failed SetFastScan() whose fallback succeeded) can
+       * still hear adverts, just not at the rate that was asked for - a silent
+       * failure mode that is easy to mistake for full health. This is the
+       * correct predicate for health checks and retry logic - see
+       * App::serviceScanHealth().
+       */
+      bool IsAtRequestedCadence() const { return m_scanning && m_fast == m_fast_requested; }
+
+      /**
+       * @brief Restore the scan to the last requested cadence if it is not
+       * already there - whether stopped outright or merely running at the
+       * wrong (fallback) cadence.
        *
-       * @return 0 if already running or the restart succeeded; negative errno
-       *         from bt_le_scan_start() otherwise.
+       * Call periodically from the main loop. This is what eventually
+       * recovers from either a SetFastScan() that left the scanner down, or
+       * one whose fallback left it running at the wrong cadence - see
+       * SetFastScan() and IsAtRequestedCadence().
+       *
+       * @return 0 if already at the requested cadence or the restart
+       *         succeeded; the negative errno from the failed attempt at the
+       *         requested cadence otherwise, whether or not a further
+       *         fallback restart succeeded.
        */
       int ServiceScan();
 
     private:
       bool m_started;
+
+      // The cadence last ACHIEVED - what the radio is actually doing. May
+      // differ from m_fast_requested after a failed SetFastScan() whose
+      // fallback succeeded. See IsAtRequestedCadence().
       bool m_fast;
+
+      // The cadence last REQUESTED via SetFastScan(), regardless of whether
+      // it was achieved. See IsAtRequestedCadence() and ServiceScan().
+      bool m_fast_requested;
 
       // True only while a scan is known to be running - see IsScanning().
       bool m_scanning;
