@@ -764,10 +764,26 @@ namespace alc
       if (++m_awake_ticks >= M_AWAKE_STUCK_TICKS) {
         m_awake_ticks = 0;
         LOG_ERR("ADXL stuck AWAKE for %u s - re-arming the loop engine!", M_AWAKE_STUCK_TICKS / 10U);
-        if (m_accelerometer.ConfigureLoopMode(m_settings.ThresholdLsb(), CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
-                                              CONFIG_MFS_ADXL_INACTIVITY_SECS) < 0) {
+
+        // enableAccelerometer(), not a bare ConfigureLoopMode() call - the
+        // watchdog's re-arm must reset the latch, the previous-awake edge
+        // witness and the stale-trigger hold exactly like every other
+        // (re)configure, or a fresh motion edge right after recovery could be
+        // lost or miscounted.
+        if (enableAccelerometer() < 0) {
           LOG_ERR("ADXL re-arm failed!");
+
+          // Hand over to serviceCooldown()'s existing re-arm retry path rather
+          // than leave the part unconfigured and the watchdog silent until it
+          // next trips M_AWAKE_STUCK_TICKS later - that would leave the device
+          // deaf for the whole watchdog period again. serviceCooldown() now
+          // retries the re-arm at 1 Hz until detection is restored.
+          m_in_cooldown            = true;
+          m_cooldown_expired       = true;
+          m_cooldown_next_retry_ms = 0;
+          m_cooldown_rearm_failed  = false;
         }
+
         m_ignore_stale_trigger = false;
         // A stuck level must not hold a detection - and so the output - open.
         m_detection_met = false;
