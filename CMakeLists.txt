@@ -20,4 +20,5 @@ target_sources(app PRIVATE
   src/access_control.cpp
   src/device_clock.cpp
   src/settings.cpp
+  src/led_sequencer.cpp
 )

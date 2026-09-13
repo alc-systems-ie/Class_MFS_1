@@ -8,6 +8,7 @@ void run_access_control_tests();
 void run_led_sequencer_tests();
 void run_settings_tests();
 void run_credentials_tests();
+void run_arm_policy_tests();
 
 int main()
 {
@@ -19,6 +20,7 @@ int main()
   run_led_sequencer_tests();
   run_settings_tests();
   run_credentials_tests();
+  run_arm_policy_tests();
   printf("ALL TESTS PASSED\n");
   return 0;
 }

@@ -8,8 +8,10 @@
 
 #include "access_control.hpp"
 #include "adxl367.hpp"
+#include "arm_policy.hpp"
 #include "command_scanner.hpp"
 #include "device_clock.hpp"
+#include "led_sequencer.hpp"
 #include "npm2100.hpp"
 #include "output_switch.hpp"
 #include "settings.hpp"
@@ -131,6 +133,17 @@ namespace alc
 
       void handleCommandCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs);
 
+      // Carries out an ACCEPTED command: arm transitions, settings, clock trim and
+      // the LED A acknowledgement. Called only after AccessControl has persisted
+      // the sequence number.
+      void applyCommand(const AccessControl::Evaluation& evaluation, int64_t uptimeSecs);
+
+      // Starts an LED A pattern and the 10 ms timer that renders it.
+      void playLedPattern(LedPattern pattern);
+
+      // k_timer expiry: renders LED A while a pattern plays, then stops itself.
+      static void ledTimerHandler(struct k_timer* timer);
+
       // Adopts the clock's current day at most once every M_ADVANCE_INTERVAL_SECS,
       // so a device that receives no commands for days still advances its
       // persisted floor and cannot later accept a stale captured provisioner sync.
@@ -250,6 +263,16 @@ namespace alc
       // Uptime until which a DELAYED trigger holds detection regardless of AWAKE.
       // Zero for an undelayed trigger, whose own AWAKE sets the duration.
       int64_t m_detection_hold_until_ms;
+
+      // LED A acknowledgement patterns. The sequencer is read from the timer
+      // handler and written from the main loop; see playLedPattern().
+      LedSequencer m_led_sequencer;
+      struct k_timer m_led_timer;
+
+      // ONE-SHOT trigger. Set while the output is asserted; when it clears, the
+      // trigger is complete and the main loop latches the device Inactive.
+      bool m_trigger_fired;
+      bool m_trigger_complete;
 
       bool m_initialised;
   };

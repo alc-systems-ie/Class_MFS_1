@@ -214,6 +214,10 @@ namespace alc
       , m_last_scan_service_ms(0)
       , m_scan_outage_logged(false)
       , m_detection_hold_until_ms(0)
+      , m_led_sequencer()
+      , m_led_timer {}
+      , m_trigger_fired(false)
+      , m_trigger_complete(false)
       , m_initialised(false)
   {}
 
@@ -231,6 +235,8 @@ namespace alc
     LOG_INF("MFS_1 starting, serial %s.", CONFIG_ALC_DEVICE_SERIAL);
 
     k_timer_init(&m_delay_timer, nullptr, nullptr);
+    k_timer_init(&m_led_timer, &App::ledTimerHandler, nullptr);
+    k_timer_user_data_set(&m_led_timer, this);
 
     // THE FIRE OUTPUT IS BROUGHT UP FIRST, before the I2C bus, the FEM or the
     // LEDs. The external 10k pull-downs hold both lines de-energised from reset,
@@ -323,13 +329,29 @@ namespace alc
       // The ONE place the output state is derived. See updateOutputState().
       updateOutputState();
 
+      // Firing is one of the only two ways out of the armed state. Acted on here,
+      // not inside updateOutputState(), because setArmState() re-enters it.
+      if (m_trigger_complete) {
+        m_trigger_complete = false;
+        LOG_WRN("Trigger complete - latched Inactive. Re-arming needs an engineer command.");
+        setArmState(ArmState::Inactive);
+      }
+
       // Compute the LED states HERE, once, so the log below reports what is
       // actually written to the pins. Recomputing them inside the log statement
       // from the arm state produced messages that contradicted the build - a
       // battery-test build never drives LED A, but the log still claimed "LED A ON".
+#if !defined(CONFIG_MFS_BATTERY_TEST)
+      // While a pattern plays the LED timer owns LED A, and this mirrors it so the
+      // loop's write cannot fight the timer. Patterns play in EVERY build: they are
+      // the command acknowledgement, not a debug aid.
+      ledA = m_led_sequencer.Level(k_uptime_get());
+#endif
+
 #if defined(CONFIG_MFS_DEBUG_LED)
 #if !defined(CONFIG_MFS_BATTERY_TEST)
-      ledA = (m_arm_state == ArmState::Inactive);
+      // Bench only: between patterns, LED A is lit while Inactive, as before.
+      if (!m_led_sequencer.IsActive(k_uptime_get())) { ledA = (m_arm_state == ArmState::Inactive); }
 #endif
       // LED B shows DETECTION, in either arm state, for the 5 s ADXL loop period.
       // Inactive it simulates triggers while tuning; Active it confirms one. It is
@@ -640,7 +662,9 @@ namespace alc
 
     // RISING EDGES, not levels. AWAKE stays asserted for the whole inactivity
     // period, so counting the level would add one activation per loop tick.
-    bool risingEdge { awake && !m_previous_awake && !m_ignore_stale_trigger && !m_in_cooldown && !m_delay_pending };
+    // While a trigger's output period is in progress no new activation is
+    // counted, so a second delay cannot start and cut the one-shot pulse short.
+    bool risingEdge { awake && !m_previous_awake && !m_ignore_stale_trigger && !m_in_cooldown && !m_delay_pending && !m_trigger_fired };
     m_previous_awake = awake;
 
     if (risingEdge) {
@@ -697,6 +721,14 @@ namespace alc
     // derivation point cannot be forgotten by a future edit to the loop, and
     // there is no second call site that could disagree with this one.
     m_output_switch.Set(m_output_active);
+
+    // ONE-SHOT. Once the output has asserted and its period has ended, the
+    // trigger is complete. Only flagged here - see the main loop.
+    if (m_output_active) { m_trigger_fired = true; }
+    if (m_trigger_fired && !m_output_active) {
+      m_trigger_fired    = false;
+      m_trigger_complete = true;
+    }
 
     // Stuck-AWAKE watchdog. Defence in depth: if the accelerometer somehow holds
     // AWAKE far beyond its configured inactivity period, the device stops
@@ -778,6 +810,10 @@ namespace alc
         m_cooldown_expired = false;
         if (m_pmic.TimerStop() < 0) { LOG_ERR("Failed to stop the cooldown timer on deactivation!"); }
       }
+
+      // Whatever the route to Inactive, a trigger in progress is over.
+      m_trigger_fired    = false;
+      m_trigger_complete = false;
     }
 
     // Deliberately says nothing about the LEDs: the main loop logs their actual
@@ -1102,11 +1138,7 @@ namespace alc
             protocol::CooldownToSeconds(evaluation.command.cooldownByte), protocol::SensitivityToThresholdLsb(evaluation.command.sensitivityByte),
             evaluation.command.minuteOfDay);
 
-    // PHASE 2 SHIM, extended in Task 14 to carry the settings so the detection
-    // engine can be bench-tested from the app. The clock trim, re-arm ordering and
-    // LED patterns arrive in Task 16, which replaces this.
-    m_settings.ApplyFrom(evaluation.command, evaluation.slot == access::M_SLOT_NETWORK_MANAGER);
-    setArmState(evaluation.command.armActive ? ArmState::Active : ArmState::Inactive);
+    applyCommand(evaluation, uptimeSecs);
   }
 
   void App::serviceDayRollover()
@@ -1118,6 +1150,112 @@ namespace alc
 
     m_last_advance_secs = uptimeSecs;
     if (m_access.Advance(m_clock, uptimeSecs) < 0) { LOG_ERR("Day rollover could not be persisted!"); }
+  }
+
+  void App::applyCommand(const AccessControl::Evaluation& evaluation, int64_t uptimeSecs)
+  {
+    const protocol::Command& command { evaluation.command };
+    bool fromNetworkManager { evaluation.slot == access::M_SLOT_NETWORK_MANAGER };
+    ArmDecision decision { DecideCommand(m_arm_state == ArmState::Active, fromNetworkManager, command) };
+    protocol::Mode previousMode { m_settings.OperatingMode() };
+    bool delayWasPending { m_delay_pending };
+    LedPattern pattern { LedPattern::None };
+
+    // THE SINGLE PATH. Everything below acts on `decision` and on nothing else -
+    // see DecideCommand(). On command, an armed device only ever disarms.
+    if (decision.action == ArmAction::Ignore) {
+      LOG_WRN("Armed: command slot %u n %u ignored - only a disarm is accepted while armed.", evaluation.slot, evaluation.n);
+      return;
+    }
+
+    if (decision.trimClock && m_clock.ApplyMinuteHint(command.minuteOfDay, uptimeSecs) == DeviceClock::TrimResult::Trimmed) {
+      LOG_INF("Clock trimmed from slot %u: now minute %u.", evaluation.slot, m_clock.MinuteOfDay(uptimeSecs));
+    }
+
+    if (decision.applySettings) {
+      if (command.mode != protocol::Mode::TriggerOnly && !decision.applyMode) {
+        LOG_WRN("Mode field from slot %u ignored - only the Network Manager may change the mode.", evaluation.slot);
+      }
+      m_settings.ApplyFrom(command, decision.applyMode);
+    }
+
+    switch (decision.action) {
+      case ArmAction::Disarm:
+        // Nothing but the disarm. The settings this command carries were not
+        // applied above; the engineer sends them once the device is Inactive.
+        setArmState(ArmState::Inactive);
+        pattern = delayWasPending ? LedPattern::DisarmedDelayCancelled : LedPattern::Disarmed;
+        if (delayWasPending) { LOG_WRN("Disarmed with a trigger PENDING - the trigger is cancelled."); }
+        break;
+
+      case ArmAction::Arm:
+        m_activation_count = 0;
+        m_detection_met    = false;
+
+        // A cooldown - or its expiry latch - left over from Inactive tuning must
+        // not carry into the armed session.
+        if (m_in_cooldown) {
+          m_in_cooldown      = false;
+          m_cooldown_expired = false;
+          if (m_pmic.TimerStop() < 0) { LOG_WRN("Could not stop the tuning cooldown timer before arming."); }
+        }
+
+        // setArmState() performs the standby -> configure -> confirm-AWAKE-clear
+        // sequence that makes arming edge-triggered, and refuses if it cannot.
+        setArmState(ArmState::Active);
+        pattern = (m_arm_state == ArmState::Active) ? LedPattern::Armed : LedPattern::ArmRefused;
+        if (pattern == LedPattern::ArmRefused) {
+          LOG_ERR("Arming refused - command slot %u n %u is spent; send again.", evaluation.slot, evaluation.n);
+        }
+        break;
+
+      case ArmAction::Tune:
+        // (Re)start the engine at the new threshold so LED B simulates triggers
+        // straight away. Always, not only on change - the engineer may be
+        // restarting the simulation after a disarm stood the part down.
+        m_activation_count = 0;
+        m_detection_met    = false;
+        m_in_cooldown      = false;
+        if (enableAccelerometer() < 0) { LOG_ERR("Could not start the engine for tuning!"); }
+        pattern = (m_settings.OperatingMode() != previousMode) ? LedPattern::ModeChanged : LedPattern::SettingsApplied;
+        break;
+
+      default:
+        return;
+    }
+
+    if (m_settings.OperatingMode() != protocol::Mode::TriggerOnly) {
+      LOG_WRN("Mode %u stored but reporting is not implemented - behaving as Trigger only!", static_cast<unsigned>(m_settings.OperatingMode()));
+    }
+
+    LOG_INF("Applied: arm %s, %u activations, %u s cooldown, %u LSB, %u s delay.", m_arm_state == ArmState::Active ? "Active" : "Inactive",
+            m_settings.Activations(), m_settings.CooldownSeconds(), m_settings.ThresholdLsb(), m_settings.DelaySeconds());
+    playLedPattern(pattern);
+  }
+
+  void App::playLedPattern(LedPattern pattern)
+  {
+    constexpr k_timeout_t M_LED_TICK { K_MSEC(10) };
+
+    // Stop the timer before touching the sequencer, so the handler never reads it
+    // half-written. A new command replaces whatever was playing.
+    k_timer_stop(&m_led_timer);
+    m_led_sequencer.Start(pattern, k_uptime_get());
+    k_timer_start(&m_led_timer, K_NO_WAIT, M_LED_TICK);
+  }
+
+  void App::ledTimerHandler(struct k_timer* timer)
+  {
+    App* self { static_cast<App*>(k_timer_user_data_get(timer)) };
+    int64_t now { k_uptime_get() };
+
+    if (!self->m_led_sequencer.IsActive(now)) {
+      k_timer_stop(timer);
+      return;
+    }
+
+    // ISR context. gpio_pin_set_dt() is ISR-safe on the nRF GPIO driver.
+    gpio_pin_set_dt(&s_led_a, self->m_led_sequencer.Level(now) ? 1 : 0);
   }
 
   int App::applyLeds(bool ledA, bool ledB)
