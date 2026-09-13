@@ -234,6 +234,13 @@ bring-up before trusting any measured scan figure against this budget.
 
 ### 8.1 The requirement
 
+> **Amended 2026-09-13.** Paper TAN sheets are replaced by **day keys** issued to an
+> engineer's phone by the Network Manager (`docs/tan-scheme.md`). The governing
+> requirement is unchanged in substance — a lost credential compromises those
+> devices until the next 04:00 UTC and no longer — and so are its three consequences
+> below, with (1) restated: *every code must expire at the day boundary.* A sequence
+> number nested under a day key satisfies that; a bare HOTP counter still does not.
+
 An engineer working on a device is issued a **paper TAN sheet for that day only**
 — 10 TANs. If the sheet is lost, **only that day is compromised**; the sheet is
 useless the following day. Expiry is by date, and it happens whether or not the
@@ -252,6 +259,10 @@ consequences that follow directly:
    taken from the presenter.
 
 ### 8.2 Storage collapses to 4 bytes
+
+> **Superseded 2026-09-13.** The persisted access state is now the day index plus one
+> sequence number per key slot — 34 bytes (`docs/tan-scheme.md` §6.2). The argument
+> below still holds: nothing about past days is kept.
 
 Because a TAN expires by date regardless of consumption, a consumed-flag for any
 past day is dead weight — those TANs are already rejected on date grounds and can
@@ -277,6 +288,10 @@ Consequences worth noting:
 - 4 bytes of state rewritten a few times a day is trivial NVS traffic.
 
 ### 8.3 Guess rate
+
+> **Superseded 2026-09-13.** Six digits turned out to be brute-forceable in about a
+> day by a dongle left beside the device. A guess must now hit a rotating 32-bit ID
+> and a 32-bit CCM tag, ~2⁻⁵⁷ per advert (`docs/tan-scheme.md` §6.3).
 
 A 6-digit TAN is ~10<sup>6</sup> of code space; 10 valid codes on any given day
 gives a **1 in 100,000 hit rate per guess**. Day-scoping is what makes this safe —
@@ -304,6 +319,13 @@ whose clock is wrong** — they need a valid TAN to get in, and the device's own
 **Decision: no external RTC.** With the day boundary now a security boundary, the
 reasoning changes from the earlier revision of this document, so it is set out in
 full.
+
+> **Reaffirmed 2026-09-13.** An RV-3028 with a supercap on VBACKUP was reconsidered
+> because it would make a battery change a non-event. It **breaks the BOM budget**.
+> The LFXO is trimmed by measurement instead (§8.5.3). Note for anyone revisiting:
+> Zephyr's in-tree `rtc_rv3028` driver clears the power-on-reset flag during init
+> (`zephyr/drivers/rtc/rtc_rv3028.c`), so a flat backup would read back as a valid
+> 2000-01-01 — use direct register access.
 
 **Boundary drift is bounded by clock error, not by a day.** With no multi-day
 window, clock error shows up as a small window either side of midnight in which
@@ -410,15 +432,21 @@ practical methods:
 Record the residual and the measurement date here once trimmed, as was done for
 `&hfxo`.
 
-**Anchor the day boundary away from working hours.** Define the TAN "day" as a
-
-**Anchor the day boundary away from working hours.** Define the TAN "day" as a
-24 h window starting at **04:00 local** rather than midnight. Clock error at the
+**Anchor the day boundary away from working hours.** Define the access "day" as a
+24 h window starting at **04:00 UTC** rather than midnight — UTC, never local time,
+see `docs/tan-scheme.md` §4. Clock error at the
 boundary then falls in the small hours, where it can neither reject a working
 engineer nor usefully extend a lost sheet into a working day. This costs one
 constant and removes the entire practical impact of drift.
 
 ### 8.6 Power loss is the one real hole
+
+> **Closed 2026-09-13.** The device clock is now **invalid on every boot** and becomes
+> valid only through an authenticated provisioner sync; nothing resumes from NVS
+> except a floor the sync may not go below (`docs/tan-scheme.md` §7.1). A power cut
+> therefore cannot revive an old day's keys — it leaves the device safe (Inactive)
+> and unresponsive until provisioned. The cost is a provisioner visit after any
+> reset. The analysis below is kept because it explains why an RTC was not the fix.
 
 System ON idle keeps the RTC running, but a **battery change or brown-out resets
 it** and the day index is lost outright — a step error, not a slow one.
@@ -535,28 +563,34 @@ manufacturer-specific advertising data is available, so §8.7.1 is adopted as
 written: the tool advertises, the device stays scan-only for its entire life and
 never advertises at all.
 
-**Constraint retained anyway: both advertising payloads must fit 12 bytes.** This
-keeps an iOS tool possible later without a protocol change, and it costs nothing —
-see the budget below. Treat 12 bytes as a hard design limit, not a target.
+**Constraint retained anyway: every advertising payload fits one 128-bit service
+UUID — 16 bytes.** This keeps an iOS tool possible without a protocol change, and it
+is what the Flutter app actually uses on both platforms.
 
-Why 12: iOS `CBPeripheralManager.startAdvertising` accepts only
+Why 16: iOS `CBPeripheralManager.startAdvertising` accepts only
 `CBAdvertisementDataLocalNameKey` and `CBAdvertisementDataServiceUUIDsKey` —
 **manufacturer-specific data is unavailable**. A payload must be smuggled into a
 128-bit service UUID. A legacy 31-byte advert holds flags (3) + one 128-bit UUID
-(18) = 21 bytes with room left for a short name, giving 16 payload bytes; reserving
-4 as a fixed magic prefix so the device can still filter adverts cheaply leaves
-**12 usable**.
+(18) = 21 bytes, giving 16 payload bytes.
+
+> **Amended 2026-09-13 — no fixed prefix.** This section previously reserved 4 of the
+> 16 bytes as a fixed magic prefix for cheap filtering, leaving 12. A readable prefix
+> identifies CLASS traffic and, with a device field, the addressed device. It is
+> replaced by a **rotating ID** that only a day-key holder can produce, which the
+> device matches against a table of the 128 IDs it expects — filtering better than
+> the prefix did (a stray UUID matches 1 in 2³² per entry, not 1 in 65,536).
 
 | Payload | Contents | Bytes |
 |---|---|---|
-| TAN | version (1) + 6-digit TAN (3) | 4 |
-| Time sync | timestamp `uint32` (4) + truncated HMAC (8) | 12 |
+| Command | rotating ID (4) + AES-128-CCM ciphertext (8) + tag (4) | 16 |
+| Time sync | timestamp `uint32` LE (4) + truncated HMAC (12) | 16 |
 
-Note the time sync needs **no anti-replay counter**: the monotonic floor rule in
-§8.7.3 already rejects a replayed old timestamp, so those bytes go to the MAC
-instead. A 64-bit MAC is ample — forging it is 2<sup>64</sup> work, and the device
-accepts at most one attempt per 6 s scan window, so online brute force is not a
-threat.
+Full definitions: `docs/tan-scheme.md` §3.
+
+The time sync needs **no anti-replay counter**: the device accepts a sync only while
+its clock is invalid, and never below the persisted floor (§8.7.3), so a replayed
+sync is refused. A 96-bit MAC is ample — the device checks at most a handful of
+adverts per 6 s scan window, so online brute force is not a threat.
 
 Two iOS caveats to record in case the option is ever taken up:
 
@@ -565,7 +599,8 @@ Two iOS caveats to record in case the option is ever taken up:
   non-Apple scanners. Acceptable for an attended engineer tool, fatal for anything
   unattended.
 - Abusing a UUID field as a data field is non-standard and prevents filtering on
-  the full UUID — hence the fixed 4-byte prefix above.
+  the full UUID. The fixed 4-byte prefix that once answered this is replaced by the
+  rotating ID (amendment above).
 
 #### 8.7.5 Bench development uses a dongle, not a phone
 

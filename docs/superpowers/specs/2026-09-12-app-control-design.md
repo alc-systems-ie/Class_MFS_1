@@ -2,33 +2,42 @@
 
 Recorded 2026-09-12.
 
-Replaces the Thingy:53 toggle tool with a Flutter app that sets three parameters
-on MFS_1 and arms it against a day code. The Thingy:53 tool is **retired** — no
-co-existence, one payload format.
+Replaces the Thingy:53 toggle tool with a Flutter app that sets MFS_1's parameters
+and arms it under a day key. The Thingy:53 tool is **retired** — no co-existence,
+one payload format.
 
 Prerequisite reading: `docs/v1-scope.md` (the arm invariant and the ADXL367
 traps), `docs/power-budget.md` §8.7 (the tool platform and the time-sync rules),
-`docs/tan-scheme.md` (what the day codes become).
+**`docs/tan-scheme.md` (the day-key access scheme — authoritative for keys, the
+wire format's cryptography, acceptance rules and time)**.
+
+> **Amended 2026-09-13 (security).** The hard-coded day codes, the settings-test
+> code and the plaintext wire format are replaced by the day-key scheme. Sections
+> changed: §1, §2 (items 13–21), §4, §6.1, §6.4–§6.8, §7, §8, §9, §10. Where this
+> document and `docs/tan-scheme.md` disagree on anything cryptographic, the scheme
+> document wins.
 
 ## 1. Scope
 
-Three settable parameters, sent as one payload with an arm instruction:
+Settable parameters, sent as one encrypted command with an arm instruction:
 
 | Parameter | Range | Wire |
 |---|---|---|
 | Activations before triggering | 1–16 | 1 byte, literal |
 | Cooldown between activations | 0–3600 s | 1 byte, geometric |
 | Activation threshold sensitivity | 255 levels | 1 byte, geometric |
-| Delay before triggering | 0 s – 9 h | 7 bits of byte 9, piecewise |
-| Operating mode | 3 modes | 2 bits of byte 4 |
+| Delay before triggering | 0 s – 9 h | 7 bits of plaintext byte 0, piecewise |
+| Operating mode | 3 modes | 2 bits of plaintext byte 1 — **slot 0 only** |
 
 Cooldown is meaningful only when activations > 1; the app hides the slider
 otherwise, and the device accepts the byte regardless.
 
-Day codes are **ten hard-coded constants** this phase — `0x11111111`,
-`0x22222222` … `0xAAAAAAAA` — plus `0x00000000` as a settings-test code. Each real
-code is single-use; when all ten are spent the device releases all ten for the
-next cycle. Derivation from the TAN seed is deferred to `docs/tan-scheme.md`.
+**Authority comes from day keys** (`docs/tan-scheme.md`): the Network Manager
+derives `dayKey(id, day, slot)` from the device secret, the phone encrypts each
+command under it with a fresh sequence number, and the device accepts any of the
+next 16. This phase has no Network Manager; the app carries a **bench Network
+Manager** holding the bench secret. There are no hard-coded codes and **no test
+code**.
 
 ## 2. Decisions
 
@@ -52,18 +61,42 @@ next cycle. Derivation from the TAN seed is deferred to `docs/tan-scheme.md`.
 
 Amended 2026-09-13:
 
-9. **Delay before triggering**, 0 s to 9 h, in bits 1–7 of byte 9. Runs on a
+9. **Delay before triggering**, 0 s to 9 h, in bits 1–7 of byte 9 (plaintext byte 0 since the §4 rewrite). Runs on a
    GRTC `k_timer`, never the PMIC timer, whose ±10 % would put a 9-hour delay
    anywhere inside a 108-minute window.
 10. **A doubled delay interlock.** A software flag *and* the kernel timer must
     both agree no delay is pending before the output can assert, checked
     independently at the derivation point and again inside `OutputSwitch`.
-11. **Three operating modes** in bits 6–7 of byte 4: Trigger only (default),
+11. **Three operating modes** in bits 6–7 of byte 4 (plaintext byte 1 bits 4–5 since the §4 rewrite): Trigger only (default),
     Report and trigger, Report only. The latter two are **exceptions** to the
     never-advertise rule, for use only when absolutely necessary.
 12. **The SoC stays awake for the whole delay** and shortens its scan period, so
     the deactivate path is as responsive as possible. Battery life is explicitly
     not a factor while a trigger is pending.
+
+Amended 2026-09-13 (security) — full reasoning in `docs/tan-scheme.md`:
+
+13. **Day keys replace day codes.** Per device, per day, per slot. Paper TANs and
+    any paper fallback are dropped.
+14. **Commands are encrypted and authenticated** with AES-128-CCM, 4-byte tag. A
+    listener learns neither the settings nor the arm state.
+15. **Rotating IDs replace the `'C' 'L'` prefix.** Bytes 0–3 are unpredictable
+    without the day key, so a listener cannot tell which device is addressed and
+    garbage cannot count towards a lockout.
+16. **Eight key slots.** Slot 0 is the Network Manager's; slots 1–7 are assigned to
+    engineers per device per day. **Only slot 0 may change the operating mode.**
+17. **A 10-minute freshness window** on the UTC minute each command carries, and the
+    same field trims clock drift within tight limits.
+18. **Lockout** after 20 authenticated-ID failures: 10 min doubling to 4 h.
+    Deactivate does **not** bypass it.
+19. **LED A acknowledges accepted commands** (§6.7) so a jammed arm is visible.
+    **LED B lights for the 5 s detection period whenever the device detects**, in
+    either arm state. This is testbed behaviour; the final product switches the
+    output and shows nothing.
+20. **No external RTC** — a supercap breaks the BOM budget. The LFXO is trimmed by
+    measurement instead.
+21. **The clock is invalid on every boot** until an authenticated provisioner sync.
+    Nothing resumes from NVS except the day floor.
 
 ## 3. Spike result — advertising is proven, at a measured cost
 
@@ -108,37 +141,78 @@ the iPhone** before treating 187 ms as final.
 
 ## 4. Wire format
 
-One 128-bit service UUID. On-air byte order — exactly what a scanner's hex dump
-shows:
+**Superseded 2026-09-13.** The plaintext layout with a `'C' 'L'` prefix, a device
+type and a day-code field is gone. The authoritative definition, with the
+derivations and a worked vector, is `docs/tan-scheme.md` §3 and §6.1. Summary:
+
+One 128-bit service UUID, 16 bytes, on-air order:
+
+| Bytes | Content |
+|---|---|
+| 0–3 | rotating ID — `HMAC(dayKey, n ‖ 0x04)[0..3]` |
+| 4–11 | AES-128-CCM ciphertext of the 8-byte plaintext below |
+| 12–15 | CCM tag, 4 bytes |
+
+The protocol version (`0x02`) is never on air; both sides supply it as associated
+data. The time-sync payload shares the same UUID slot (`docs/tan-scheme.md` §7.2) and
+is listened for only while the clock is invalid.
+
+Plaintext:
 
 | Byte | Bits | Field | Notes |
 |---|---|---|---|
-| 0–1 | — | magic `'C' 'L'` (0x43 0x4C) | cheap reject |
-| 2–3 | — | device type, LE `uint16` | MFS_1 = `0x0001` |
-| 4 | 0–5 | protocol version | `0x01`; **6 bits, so the version check must mask** |
-| 4 | 6–7 | **operating mode** | device-level, all variants — §4.3 |
-| 5–8 | — | day code, LE `uint32` | `0x00000000` = settings-test |
-| 9 | 0 | desired arm state | `0` Inactive, `1` Active |
-| 9 | 1–7 | **delay before triggering** | device-level, all variants — §5.1 |
-| 10 | — | activations before trigger | 1–16; anything else rejects the payload |
-| 11 | — | cooldown | geometric byte, `0` = none |
-| 12 | — | sensitivity | geometric byte, 255 = most sensitive |
-| 13–15 | — | **per-variant extension** | **MFS_1 MUST ignore, never validate** |
+| 0 | 0 | desired arm state | `0` Inactive, `1` Active |
+| 0 | 1–7 | **delay before triggering** | device-level, all variants — §5.1 |
+| 1 | 0–3 | activations − 1 | 1–16, so every value is valid |
+| 1 | 4–5 | **operating mode** | device-level; `3` rejects; **slot 0 only** — §4.3 |
+| 1 | 6–7 | reserved | ignored |
+| 2 | — | cooldown | geometric byte, `0` = none |
+| 3 | — | sensitivity | geometric byte, 255 = most sensitive |
+| 4–5 | 0–10 | UTC minute of day, LE | 0–1439; ≥ 1440 rejects. Freshness and trim |
+| 4–5 | 11–15 | reserved | ignored |
+| 6–7 | — | **per-variant extension** | **MFS_1 MUST ignore, never validate** |
 
-Bytes 4 and 9 carry the two device-level settings because they apply to **every**
-MFS variant, unlike bytes 13–15 which are per-variant. Packing them into existing
-bytes keeps the payload at nine used bytes with three still spare.
+**Bytes 6–7 belong to other MFS variants.** MFS_1 must not require them to be zero:
+doing so would make it reject commands from a future app build the moment another
+variant starts using that space. The same holds for the reserved bits. Per-variant
+space shrinks from three bytes to two plus spare bits — the cost of the tag and the
+minute field.
 
-### 4.3 Operating mode — bits 6–7 of byte 4
+### 4.1 The command is an absolute state assertion
+
+It says "be in this state with these settings", never "change". Two consequences:
+
+- **Repeats are free.** The phone advertises each command ~160 times in 30 s. Once
+  the first copy is accepted its rotating ID leaves the window, so every later copy
+  is simply *not for us* — silent and not counted. No payload-identity dedupe is
+  needed on the device.
+- **The swallowed-second-press bug cannot occur.** The 12 s command cooldown in
+  `command_scanner.cpp` existed because the old payload was a toggle; it is removed.
+
+### 4.2 Settings and arm state always travel together
+
+Every Send carries the live slider values. While Inactive, the engineer tunes with
+ordinary commands whose arm bit is clear; each uses the next sequence number, which
+costs nothing because the sequence never runs out. To arm, the app sends the final
+settings with the arm bit set. **There is no window in which the device is armed with
+settings the engineer did not watch being tested**, and there is no unauthenticated
+tuning path.
+
+### 4.3 Operating mode — bits 4–5 of plaintext byte 1
 
 | Value | Mode | Behaviour |
 |---|---|---|
 | `00` | **Trigger only** | **Default.** Fires the output. Emits nothing. |
 | `01` | Report and trigger | Broadcasts a trigger message immediately before firing |
 | `10` | Report only | Broadcasts, does not fire |
-| `11` | reserved | reject the payload |
+| `11` | reserved | reject the command |
 
-**These modes are exceptions to a standing rule and must be documented as such.**
+**Only a slot-0 command changes the mode.** From slots 1–7 the field is decoded (a
+reserved value still rejects) but ignored, and the stored mode kept. The Network
+Manager builds slot-0 commands; the engineer's phone only carries them. A stolen
+phone therefore cannot switch reporting on and use it to locate the sensors.
+
+**Report modes are exceptions to a standing rule and must be documented as such.**
 `CLAUDE.md` states that the device never advertises, and that rule stands as the
 general case. Report and Report-and-trigger are **optional exceptions, to be used
 only when deemed absolutely necessary**, because advertising forfeits covertness.
@@ -152,31 +226,6 @@ with no counter. It is the Drawer Master behaviour reduced to a beacon.
 **Never advertise unbounded** (`docs/power-budget.md` §8.7.1). Power is not the
 constraint here: a burst of a few seconds costs a fraction of one 6 s scan wake and
 triggers are rare. Covertness is the constraint.
-
-Bytes 0–3 are the 4-byte filter prefix reserved by §8.7.4; bytes 4–15 are the 12
-usable payload bytes, of which nine are used here.
-
-**Bytes 13–15 belong to other MFS variants.** MFS_1 must not require them to be
-zero: doing so would make it reject payloads from a future app build the moment
-another variant starts using that space.
-
-### 4.1 The payload is an absolute state assertion
-
-It says "be in this state with these settings", never "change". Two consequences:
-
-- **It is idempotent.** At ~187 ms the device hears the same advert across
-  several scan windows. The device dedupes on payload identity — a payload
-  byte-identical to the last accepted one is ignored. No nonce, no counter.
-- **The swallowed-second-press bug cannot occur.** The present 12 s command
-  cooldown in `command_scanner.cpp` exists because the old payload was a toggle;
-  it is removed.
-
-### 4.2 Settings and arm state always travel together
-
-Deactivated, the app sends `0x00000000` plus the live slider values and the device
-applies them immediately for tuning. To arm, the app sends a real day code plus
-the final settings in one payload. **There is no window in which the device is
-armed with settings the engineer did not watch being tested.**
 
 ## 5. Parameter encodings
 
@@ -207,7 +256,7 @@ cannot express a 5 s cooldown at all.
 
 The nPM2100 TIMER spans 16 ms to 3 days, so 1–3600 s fits with enormous margin.
 
-### 5.1 Delay before triggering — bits 1–7 of byte 9
+### 5.1 Delay before triggering — bits 1–7 of plaintext byte 0
 
 Seven bits, 0–127, piecewise and fully contiguous. Default 0 — no delay, which is
 the present behaviour.
@@ -253,16 +302,23 @@ collapses that latency at a power cost the operator has already accepted.
 
 ### 6.1 Units
 
-| Unit | Responsibility |
-|---|---|
-| `CommandScanner` | parse AD 0x07, validate prefix/type/version, dedupe, hand 12 bytes to the loop |
-| `DayCodes` | the hard-coded table, the used-mask in NVS, auto-release when all ten spend |
-| `Settings` | the three parameters, NVS-backed, byte↔physical conversion |
-| `OutputSwitch` | **stub** — two GPIOs, the only real consumer of `IsOutputActive()` |
-| `App` | the state machine |
+| Unit | Responsibility | Host-tested |
+|---|---|---|
+| `mfs_protocol` | plaintext layout, `Command`, encode/decode, the generated tables | yes |
+| `crypto` | the one seam to a crypto library: PSA on target, OpenSSL on the host | via vectors |
+| `access_keys` | day key, encryption key, rotating ID, nonce, seal/open, time-sync tag | yes, against Python vectors |
+| `DeviceClock` | UTC from uptime, validity, day index, floor, sync rules, trim rules | yes |
+| `AccessControl` | slots, windows, rotating-ID table, lockout, freshness, persist-before-act | yes |
+| `LedSequencer` | LED A acknowledgement patterns, time-based | yes |
+| `Settings` | the parameters, NVS-backed, mode gated on slot 0 | yes |
+| `CommandScanner` | passive scan, AD 0x07, queues raw 16-byte UUIDs to the main loop | no |
+| `OutputSwitch` | two GPIOs, the only real consumer of `IsOutputActive()` | no |
+| `App` | the state machine; the ONLY caller of `AccessControl` and `DeviceClock` | no |
 
-`CommandScanner` changes from parsing `BT_DATA_MANUFACTURER_DATA` to AD type 0x07.
-The Thingy:53 tool is retired, so no dual parsing.
+`CommandScanner` changes from parsing `BT_DATA_MANUFACTURER_DATA` to AD type 0x07,
+and **no longer validates anything**: it cannot, without keys. It queues each
+distinct 16-byte UUID for the main loop, which owns every decision. The Thingy:53
+tool is retired, so no dual parsing.
 
 ### 6.2 The arm invariant, restated
 
@@ -324,23 +380,34 @@ Running detection while deactivated re-opens the stale-level hole that commit
 handling it, so AWAKE is high and the count may already be non-zero. The
 teardown-and-rebuild is what preserves §1.0.1.
 
-1. validate the day code against the table and the used-mask
-2. apply and persist the settings
+1. `AccessControl` authenticates, checks freshness and **persists the sequence
+   number** (`docs/tan-scheme.md` §6.2). Nothing below runs otherwise.
+2. apply and persist the settings (mode only from slot 0)
 3. `Standby()` → `ConfigureLoopMode(new threshold)` → **confirm AWAKE == 0**
 4. zero the count, clear `m_detection_met`
 5. arm boolean → Active, then `updateOutputState()`
-6. **only now** consume the code and persist the mask
+6. play the LED A pattern for the outcome (§6.7)
 
-**Step 6 is last so a failed configure cannot burn a day code.** Arming is
-refused, the code stays unused, and the engineer sends it again. Deactivation is
-the mirror: boolean first, re-derive the output, and the engine keeps running so
-tuning can continue.
+**The sequence number is consumed first, deliberately.** The old ordering consumed
+the code last so a failed configure could not burn it. With an unbounded sequence
+that protection is worthless and the replay protection is not: a command acted on
+before it was persisted could be replayed after a power loss. A refused arm shows
+the Arm Refused pattern and the engineer presses Send again, which uses the next
+number.
 
-### 6.5 The test code is strictly weaker
+**An arm command while already Active re-arms from scratch**: deactivate (cancelling
+any pending delay, which is the fail-safe direction), then activate with the new
+settings. There is no in-place settings change while armed.
 
-`0x00000000` is accepted **only while Inactive**, applies settings immediately, is
-never consumed, and is **rejected outright if the payload asks for Active**. The
-test code can never arm the device. This property holds even in a bench build.
+Deactivation is the mirror: boolean first, cancel any delay, re-derive the output,
+and the engine keeps running so tuning can continue.
+
+### 6.5 There is no test code
+
+Retired 2026-09-13. Tuning uses ordinary authenticated commands with the arm bit
+clear (§4.2). The property the test code existed to guarantee — tuning can never arm
+the device — now holds trivially: every command is authenticated, and a command
+arms the device only if its arm bit says so.
 
 ### 6.5.1 THE DELAY INTERLOCK — safety critical
 
@@ -421,20 +488,76 @@ ship until it is answered.
 
 ### 6.6 Failures are silent
 
-Per `docs/tan-scheme.md`: an invalid code, a used code, an out-of-range parameter
-or a test code asking to arm all produce **no radio emission whatsoever**. The
-device logs over RTT and does nothing else.
+Per `docs/tan-scheme.md` §6.6: a command that is not for us, fails authentication,
+is stale, malformed or arrives during a lockout produces **no radio emission and no
+LED whatsoever**. The device logs over RTT and does nothing else.
+
+### 6.7 LED scheme — PROVISIONAL
+
+The final hardware has **three LEDs visible through a light window**, integral to
+the design. This scheme is provisional and is what v1 implements.
+
+**LED A acknowledges accepted commands.** A pattern plays only after an
+authenticated command has been accepted, and only once the new state is real — for
+arming, after the boolean is set. A new command arriving during a pattern replaces
+it.
+
+| Result | LED A pattern | Length |
+|---|---|---|
+| **Armed** | rapid flash ~8 Hz (60 ms on / 65 ms off) | 3 s |
+| **Disarmed** | slow flash 1 Hz (500 / 500) | 3 s |
+| **Disarmed, pending delay cancelled** | double blink each second (100 on / 100 off / 100 on / 700 off) | 3 s |
+| **Arm refused** (ADXL367 would not configure) | three long pulses (700 on / 300 off) | 3 s |
+| **Settings applied while Inactive** | one 200 ms blink | 0.2 s |
+| **Mode changed** (slot 0) | two 200 ms blinks | 0.6 s |
+
+Arm-state results take precedence; Mode Changed plays only when the arm result is
+Settings Applied.
+
+- **"Delay cancelled" tells the engineer a trigger really was pending** when they
+  disarmed.
+- **"Arm refused" stops a hardware fault looking like a jammed command.** It is not a
+  breach of silence on failure: that rule covers failed authentication, and a refused
+  arm comes from a valid key holder.
+- **No flash means the command did not land.** Send again.
+
+A 10 ms `k_timer` renders the pattern while one is active, because the 100 ms main
+loop cannot draw a 60 ms phase. The patterns total a few seconds per command, so they
+cost nothing against the power budget. Between patterns, a bench build
+(`CONFIG_MFS_DEBUG_LED`) keeps LED A lit while Inactive as before.
+
+**LED B lights for the 5 s detection period on every detection**, armed or not
+(`ledB = m_detection_met`). Inactive, that simulates triggers during tuning; Active,
+it confirms a real trigger. **Testbed behaviour**: an LED that lights when an
+intruder disturbs the area reveals the sensor, and the final firmware switches the
+output and shows nothing.
+
+**LED 3** is unassigned.
+
+### 6.8 Time
+
+`DeviceClock` implements `docs/tan-scheme.md` §7 exactly: invalid on every boot;
+valid only after a provisioner sync that passes the floor and 400-day bounds; syncs
+refused once valid; trimmed from accepted commands by 2–5 minute steps within a 5
+minute daily magnitude budget, never below the floor. While the clock is invalid
+the main loop offers each queued UUID to the time-sync check and to nothing else.
 
 ## 7. Persistence
 
-**NVS in the nRF54L05's RRAM** for the used-code mask, the settings and the arm
-state. RRAM is rated 10,000 write/rewrite cycles per 128-bit word line with 10
-years retention at 85 °C.
+**NVS in the nRF54L05's RRAM**, through the Zephyr settings subsystem:
 
-Ten codes a day over 2.4 years is ~8,760 writes — **88 % of a single word line's
-rated endurance**. That is acceptable only because NVS wear-levels across its
-partition. Two rules follow: never write state to a fixed RRAM address, and
-**write only on change**, never per scan or per boot.
+| Key | Content | Written |
+|---|---|---|
+| `params/v1` | activations, cooldown, sensitivity, delay, mode — 5 bytes | on change only |
+| `access/v1` | day index + `next[8]` — 34 bytes | on day rollover and each accepted command |
+
+RRAM is rated 10,000 write/rewrite cycles per 128-bit word line with 10 years
+retention at 85 °C. **Never write state to a fixed RRAM address, and write only on
+change**, never per scan or per boot — NVS wear-levels across its partition, which
+is what makes a record rewritten per command acceptable.
+
+Arm state is **not** persisted: cold start is Inactive, and a reset invalidates the
+clock anyway.
 
 ### 7.1 Deferred: nPM2100 SCRATCHA for arm state
 
@@ -456,59 +579,88 @@ because it also survives a battery change, so a serviced device comes up armed.
 - brownout / watchdog / SoC reset → VBAT holds → SCRATCHA survives → **stays armed**
 - battery removal → SCRATCHA clears → **comes up Inactive**, fail-safe on service
 
-It also has zero wear and unlimited writes, which suits a value that changes far
-more often than a day code is consumed.
+It also has zero wear and unlimited writes.
 
-**It cannot hold the used-code mask**: ten codes need ten bits and SCRATCHA has
-eight. Spanning SCRATCHA plus the three sticky bits would give eleven, at the cost
-of two registers, two strobe sequences and an arbitrary split, for no gain.
+It cannot hold the access state (34 bytes). Since 2026-09-13 it has a second
+candidate use: retaining the clock offset across a soft reset, so a brownout does
+not need a provisioner visit (`docs/tan-scheme.md` §11). Eight bits cannot hold an
+offset directly; that design is open.
 
 ## 8. App design
 
 `../class_app` — one Flutter app for the device series.
 
 ```
-lib/protocol/      wire format, device types, geometric mappings  <- mirrors the C++ header
-lib/services/      advertiser.dart (wraps ble_peripheral)
-lib/devices/mfs1/  MFS_1 screen + settings model
-lib/main.dart      device picker -> device screen
+lib/protocol/tables.dart          generated encodings           <- tools/gen_protocol_tables.py
+lib/protocol/mfs_protocol.dart    plaintext layout, UUID string <- mirrors src/mfs_protocol.hpp
+lib/protocol/access_keys.dart     derivations, CCM seal         <- mirrors src/access_keys.cpp
+lib/services/advertiser.dart      wraps ble_peripheral, 30 s window
+lib/services/sequence_store.dart  next n per (device, day, slot), saved BEFORE advertising
+lib/services/key_source.dart      KeySource interface + BenchNetworkManager (bench only)
+lib/devices/mfs1/                 MFS_1 screen, settings model, command builder
+lib/devices/provisioner/          time-sync screen (bench provisioner)
+lib/main.dart                     device picker -> device screen
+test/access_vectors.dart          generated                     <- tools/gen_access_vectors.py
 ```
+
+Dependencies: `ble_peripheral` 2.4.0, `pointycastle` (AES-CCM — proven against the
+vectors at 4.0.0), `crypto` (HMAC-SHA256), `shared_preferences` (sequence store).
 
 Flutter rather than native because `docs/power-budget.md` §8.7.4 already chose
 **Android** as the production platform. One codebase serves the iOS test tool now
 and the Android production tool later, collapsing what was going to be two apps.
 
+### 8.0 Keys in this phase
+
+A `KeySource` gives the app today's day key and slot for a device. The only
+implementation this phase is `BenchNetworkManager`, which holds the bench device
+secret and derives keys locally — standing in for the real Network Manager so the
+rest of the app is written against the production interface. It also builds slot-0
+commands for the mode setting. **It is bench-only by construction**: the production
+app must never hold a device secret.
+
 ### 8.1 MFS_1 screen
 
-Arm toggle; a 1–16 selector for activations; a cooldown slider shown only when
-activations > 1, reading out mapped seconds; a sensitivity slider reading out mg,
-insensitive left to sensitive right; one Send button.
+Device picker (one bench device this phase); arm toggle; a 1–16 selector for
+activations; a cooldown slider shown only when activations > 1, reading out mapped
+seconds; a delay slider; a sensitivity slider reading out mg, insensitive left to
+sensitive right; one Send button.
 
-Send behaviour follows the toggle invisibly. **Toggle showing Deactivated → sends
-`0x00000000`** with the live slider values, so tuning costs no codes. **Moving the
-toggle prompts for a hex day code**, sent with the final settings in one payload.
+**Every Send is the same operation**: build the plaintext from the toggle and sliders
+with the current UTC minute, take the next `n` for the slot, **save `n + 1`**, seal,
+advertise for 30 s. No prompt, no code to pick, no used-code list.
+
+The operating mode lives in a separate **Network Manager (bench)** section, visibly
+distinct, because it sends a slot-0 command. In production that section is replaced
+by a request to the real Network Manager.
 
 ### 8.2 Workflow
 
-1. Engineer inspects the device. LED A off ⇒ assume armed.
-2. Move the toggle to Deactivate; the app prompts for a day code; Send.
-3. Device deactivates, LED A lights, the code is consumed.
-4. Adjust settings; Send. The app uses `0x00000000` automatically.
-5. Observe LED B simulating triggers at the chosen sensitivity.
-6. Move the toggle to Activate; the app prompts for a real code; Send with the
-   final settings. The device arms with exactly the settings just watched.
+1. Engineer picks the device.
+2. Toggle to Deactivated; Send. Watch LED A: **slow flash** — disarmed (or **double
+   blink** — a pending trigger was cancelled). No flash — send again.
+3. Adjust settings; Send. **Single blink** — applied.
+4. Observe LED B simulating triggers at the chosen sensitivity.
+5. Toggle to Armed; Send with the final settings. **Rapid flash** — armed with
+   exactly the settings just watched. **Three long pulses** — arming refused; check
+   the device.
 
 ### 8.3 What the app must be honest about
 
 The device is radio-silent by design, so:
 
-- **Send can never be confirmed.** The UI shows "Advertising… 30 s" with a
-  countdown and directs the engineer to the LED. The LED is the only feedback
-  channel that exists.
-- **The used-code list is a guess**, not device state. The device is the sole
-  arbiter. The list is advisory and has a manual reset.
+- **Send is never confirmed over the air.** The UI shows "Advertising… 30 s" with a
+  countdown and directs the engineer to LED A, which is the only feedback channel.
+- **Never resend a sequence number.** A retry is a new Send with a new `n`.
 - **No local name in the advertisement.** A covert device's counterpart must not
   broadcast a string.
+
+### 8.3.1 Provisioner screen (bench)
+
+Builds a time-sync payload from the phone's clock with the bench provisioning key and
+advertises it for 30 s. Used after every device reset (`docs/tan-scheme.md` §7.1).
+The phone's clock must be network-synced; a phone that is minutes out will make every
+subsequent command stale.
 
 ### 8.4 iOS constraints
 
@@ -525,6 +677,12 @@ The device is radio-silent by design, so:
    not become a tracking beacon. **Report modes cannot ship until this is
    answered**; Trigger-only is unaffected.
 3. ~~**Confirm the two `OutputSwitch` GPIOs.**~~ **RESOLVED 2026-09-12 — see §9.2.**
+4. ~~**AES-CCM with a 4-byte tag on Dart.**~~ **RESOLVED 2026-09-13** — `pointycastle`
+   4.0.0 reproduces every vector from `tools/gen_access_vectors.py` byte for byte.
+5. **AES-CCM with a 4-byte tag on the nRF54L05 (PSA / CRACEN).** Proven only when the
+   boot self-test passes on hardware. Until then, nothing downstream is trustworthy.
+6. **Trim `&lfxo` by measurement.** The clock is now a security component with a
+   10-minute freshness window riding on it.
 
 ### 9.1 PMIC GPIO0 / TIMER — proven on hardware, 2026-09-12
 
@@ -610,3 +768,24 @@ To be corrected as part of the work, not left to rot:
   trigger only when explicitly configured to.*
 - `CLAUDE.md` — the opening "this project is a fresh skeleton" paragraph, stale
   since 2026-08-17.
+
+Added 2026-09-13 (security). **Done in the amendment commit:**
+
+- `docs/tan-scheme.md` — rewritten as the day-key access scheme.
+- `docs/power-budget.md` §8.1–8.3 — requirement restated for day keys; the 4-byte
+  storage and six-digit guess-rate figures marked superseded.
+- `docs/power-budget.md` §8.5 — "no external RTC" reaffirmed on BOM grounds.
+- `docs/power-budget.md` §8.6 — the power-loss hole is closed by the invalid-on-boot
+  clock.
+- `docs/power-budget.md` §8.7.4 — the fixed 4-byte prefix and payload table replaced
+  by rotating IDs and the new layouts.
+- `CLAUDE.md` — the TAN rules restated for day keys.
+
+**Left for the implementation (plan Task 16):**
+
+- `docs/v1-scope.md` §1.0 — LED A is now the command acknowledgement, not only the
+  arm-state indicator.
+- `docs/v1-scope.md` §4 — "TAN (3) + version (1) + toggle (1) = 5 bytes" is obsolete.
+- `Kconfig`, `credentials.conf.template`, `prj.conf` comments — `MFS_TAN_SEED`
+  becomes `MFS_DEVICE_SECRET`, `MFS_DEVICE_ID` is added, `MFS_INSECURE_TOGGLE` is
+  deleted, and the "5-byte payload" comment goes.

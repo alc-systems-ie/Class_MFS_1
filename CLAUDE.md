@@ -19,7 +19,8 @@ There is **no `CMakeLists.txt`, `prj.conf`, `Kconfig`, `boards/` overlay or `sys
 
 **Project CLASS** — Covert Local Alarm Sensor System. MFS_1 is the Multi-Function
 Sensor 1. Firmware is a simplified `../alc_drawer_master` with the HMAC
-challenge/response authentication replaced by one-time TANs (bank-TAN style).
+challenge/response authentication replaced by **day keys** issued per engineer,
+per device, per day (`docs/tan-scheme.md`, rewritten 2026-09-13).
 
 Hardware is the `alc_drawer_master` board **minus the FEM**: **nRF54L05 + nPM2100
 + ADXL367**, board target `nrf54l15dk/nrf54l05/cpuapp`.
@@ -30,9 +31,9 @@ Hardware is the `alc_drawer_master` board **minus the FEM**: **nRF54L05 + nPM210
 | Scan | **100 ms passive every 6 s** (1.667% RX duty cycle) |
 | ADXL367 | Continuous measurement mode, 100 Hz ODR |
 | nRF21540 FEM | **Not fitted** — costs 3 dB TX (+7 dBm native vs +10 dBm) |
-| TANs | **Day-indexed**, 10/day, expire at day end — 4 bytes of state, horizon unbounded |
-| Day boundary | **04:00 local**, no multi-day validity window |
-| Timekeeping | **LFXO** 32.768 kHz (fitted), GRTC-sourced. No external RTC |
+| Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs |
+| Day boundary | **04:00 UTC**, no multi-day validity window |
+| Timekeeping | **LFXO** 32.768 kHz (fitted), GRTC-sourced. **No external RTC** (BOM, reaffirmed 2026-09-13). Invalid on every boot until provisioner sync |
 | Battery | CR123A, ~2.4 year expected life at ~69 µA average |
 
 Full derivation, component figures with citations, and the reasoning behind each
@@ -42,10 +43,9 @@ specific numeric constraint recorded there.
 
 **v1 is deliberately minimal** (`docs/v1-scope.md`): cold start, provisioner time
 sync, ADXL367 waking the SoC via INT1, an Active/Inactive arm state defaulting to
-Inactive, an engineer toggle, and two debug LEDs. **No BLE connection at all in v1**
-— TAN (3) + version (1) + toggle (1) = 5 bytes fits the advertising payload, so
-there is no GATT, no central role and no transmission. Everything else from Drawer
-Master is deferred.
+Inactive, engineer commands, and the LEDs. **No BLE connection at all in v1** — a
+command is one 16-byte encrypted service UUID, so there is no GATT, no central role
+and no transmission. Everything else from Drawer Master is deferred.
 
 **Hardware hazard — ADXL367 INT2 must never be driven** (`docs/v1-scope.md` §2).
 Drawer Master routes INT2 → nPM2100 SHPHLD for its Hibernate wake; MFS_1 does not
@@ -103,38 +103,45 @@ Constraints from that analysis that are easy to violate by accident:
 - **The counterpart must advertise at 20–50 ms.** A 100 ms passive window catches a
   20 ms advertiser with certainty; at 152.5 ms detection drops to ~65% per wake.
 
-Full TAN design — derivation, sheet issue, the BLE exchange, seed provisioning:
-**`docs/tan-scheme.md`**.
+Full access design — derivation, key issue, wire format, acceptance, time, threat
+review: **`docs/tan-scheme.md`**. The wire format and firmware units are in
+`docs/superpowers/specs/2026-09-12-app-control-design.md`.
 
-TAN-specific rules that follow from the threat model (engineer gets a paper sheet
-for one day; a lost sheet must compromise that day only — `docs/power-budget.md`
-§8.1):
+Access rules that follow from the threat model (an engineer's phone holds day keys
+for its assigned devices; a lost phone must compromise those devices until the
+next 04:00 UTC only — `docs/power-budget.md` §8.1):
 
-- **Never widen TAN validity to a multi-day window.** It would give a lost sheet
-  three days of life and let tomorrow's sheet work today. Drift is handled by the
-  04:00 day boundary, not by a window.
-- **Never accept the date from the presenter.** Validating a TAN against a
-  peer-supplied date defeats expiry completely. The device's own clock is the sole
-  arbiter, which makes it a security component.
-- **The day index must be monotonic** — persisted on rollover, `max(persisted,
-  synced)` on boot, never moved backwards.
-- **Counter-indexed (iTAN/HOTP) TANs are ruled out** — they never expire unused.
+- **Never widen key validity to a multi-day window.** It would give a lost phone
+  three days of life and let tomorrow's key work today. Drift is handled by the
+  04:00 day boundary and bounded trim, not by a window.
+- **Never accept the date from the presenter.** The day is an input to the key, and
+  the device derives it from its own clock. That makes the clock a security component.
+- **Every code must expire at the day boundary.** A sequence number nested under a
+  day key is fine; a bare HOTP/iTAN counter, which never expires unused, is not.
+- **Never reuse a sequence number.** It is the CCM nonce: the app saves `n + 1`
+  before advertising, and two phones never share a slot.
+- **The day index never moves backwards.** Persisted on rollover as a floor; syncs
+  below it are refused; trims may not cross below it.
+- **The clock is invalid on every boot** until an authenticated provisioner sync.
+  Never resume the day from NVS — that would revive a past day's keys.
 - **UTC only on the device, never local time.** Ireland's GMT/IST switch would put
   the device and the back office a day apart across every DST transition. The
   device has no timezone database and must not acquire one.
-- **The device never advertises.** It scans, and connects outward as central once a
-  valid TAN arrives. Advertising at any point forfeits covertness. Failures emit
-  nothing at all — not even an error.
+- **Only slot 0 (the Network Manager) may change the operating mode.**
+- **Persist before acting**, and **failures emit nothing** — no advert, no LED. LED A
+  acknowledges only *accepted* commands, never a failed authentication.
+- **The device never advertises to solicit contact.** It scans. Report modes are
+  documented exceptions (design spec §4.3). Advertising forfeits covertness.
 
 Battery-change recovery is by **trusted-provisioner time sync**
-(`docs/power-budget.md` §8.7): a provisioning key distinct from the TAN seed is
-flashed at manufacture, and its holder can set the clock and nothing else. Three
-rules there are load-bearing — provision a *key*, never a BLE address (addresses are
-spoofable and RPAs rotate); never accept a time earlier than the persisted floor;
-and bound forward jumps.
+(`docs/tan-scheme.md` §7.2): a provisioning key distinct from the device secret is
+flashed at manufacture, and its holder can set an *invalid* clock and nothing else.
+Load-bearing rules: provision a *key*, never a BLE address (addresses are spoofable
+and RPAs rotate); refuse syncs while the clock is valid; never below the persisted
+floor; never more than 400 days past it.
 
 **LFXO is the timebase and its accuracy is a security parameter** — the day
-boundary it defines is what makes a lost TAN sheet expire. The crystal is fitted,
+boundary it defines is what makes a lost day key expire. The crystal is fitted,
 and `CONFIG_CLOCK_CONTROL_NRF_K32SRC_XTAL` / `CONFIG_NRF_GRTC_TIMER_SOURCE_LFXO`
 are already the defaults for this target, so no Kconfig work is needed.
 
@@ -153,17 +160,18 @@ nRF52-era), so the crystal is the only accurate option.
 not measured; board stray shifts the optimum, and note `&hfxo` sits at 14000 fF
 against a nominally 8 pF crystal on this same board.
 
-**Tool platform: Android** (`docs/power-budget.md` §8.7.4). It can advertise
-arbitrary manufacturer data, so the device stays scan-only and never advertises.
-**Keep both advertising payloads within 12 bytes** — TAN is 4, time sync is 12 —
-so an iOS tool stays possible later without a protocol change (iOS
-`CBPeripheralManager` cannot send manufacturer data at all; a payload must be
-smuggled into a 128-bit service UUID).
+**Tool platform: Android in production, one Flutter app** (`docs/power-budget.md`
+§8.7.4). **Every payload is exactly one 128-bit service UUID — 16 bytes** — so the
+same protocol works from iOS (`CBPeripheralManager` cannot send manufacturer data at
+all). There is **no fixed prefix**: bytes 0–3 are a rotating ID only a key holder can
+produce.
 
-**Bench development uses an nRF52840 dongle or spare nRF54L15-DK as the
-advertiser, not a phone** (§8.7.5) — scriptable, and it can inject the malformed,
-replayed and out-of-range payloads needed to test the monotonic-floor and
-bounded-jump rules.
+**Malformed, replayed and out-of-range payloads are tested on the host** (plan
+Tasks 3–5), against
+`AccessControl` and `DeviceClock` with vectors from `tools/gen_access_vectors.py`,
+rather than injected from a dongle as `docs/power-budget.md` §8.7.5 originally
+planned — every rule lives in pure logic, so the host tests reach paths a
+well-behaved advertiser never would.
 
 ## Workspace context
 
