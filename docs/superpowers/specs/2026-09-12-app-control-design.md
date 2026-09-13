@@ -19,6 +19,8 @@ Three settable parameters, sent as one payload with an arm instruction:
 | Activations before triggering | 1–16 | 1 byte, literal |
 | Cooldown between activations | 0–3600 s | 1 byte, geometric |
 | Activation threshold sensitivity | 255 levels | 1 byte, geometric |
+| Delay before triggering | 0 s – 9 h | 7 bits of byte 9, piecewise |
+| Operating mode | 3 modes | 2 bits of byte 4 |
 
 Cooldown is meaningful only when activations > 1; the app hides the slider
 otherwise, and the device accepts the byte regardless.
@@ -47,6 +49,21 @@ next cycle. Derivation from the TAN seed is deferred to `docs/tan-scheme.md`.
 7. **NVS for all persisted state** this phase. nPM2100 SCRATCHA is the intended
    refinement for arm state — see §7.
 8. **One Flutter app for the whole device series**, in `../class_app`.
+
+Amended 2026-09-13:
+
+9. **Delay before triggering**, 0 s to 9 h, in bits 1–7 of byte 9. Runs on a
+   GRTC `k_timer`, never the PMIC timer, whose ±10 % would put a 9-hour delay
+   anywhere inside a 108-minute window.
+10. **A doubled delay interlock.** A software flag *and* the kernel timer must
+    both agree no delay is pending before the output can assert, checked
+    independently at the derivation point and again inside `OutputSwitch`.
+11. **Three operating modes** in bits 6–7 of byte 4: Trigger only (default),
+    Report and trigger, Report only. The latter two are **exceptions** to the
+    never-advertise rule, for use only when absolutely necessary.
+12. **The SoC stays awake for the whole delay** and shortens its scan period, so
+    the deactivate path is as responsive as possible. Battery life is explicitly
+    not a factor while a trigger is pending.
 
 ## 3. Spike result — advertising is proven, at a measured cost
 
@@ -94,17 +111,47 @@ the iPhone** before treating 187 ms as final.
 One 128-bit service UUID. On-air byte order — exactly what a scanner's hex dump
 shows:
 
-| Byte | Field | Notes |
+| Byte | Bits | Field | Notes |
+|---|---|---|---|
+| 0–1 | — | magic `'C' 'L'` (0x43 0x4C) | cheap reject |
+| 2–3 | — | device type, LE `uint16` | MFS_1 = `0x0001` |
+| 4 | 0–5 | protocol version | `0x01`; **6 bits, so the version check must mask** |
+| 4 | 6–7 | **operating mode** | device-level, all variants — §4.3 |
+| 5–8 | — | day code, LE `uint32` | `0x00000000` = settings-test |
+| 9 | 0 | desired arm state | `0` Inactive, `1` Active |
+| 9 | 1–7 | **delay before triggering** | device-level, all variants — §5.1 |
+| 10 | — | activations before trigger | 1–16; anything else rejects the payload |
+| 11 | — | cooldown | geometric byte, `0` = none |
+| 12 | — | sensitivity | geometric byte, 255 = most sensitive |
+| 13–15 | — | **per-variant extension** | **MFS_1 MUST ignore, never validate** |
+
+Bytes 4 and 9 carry the two device-level settings because they apply to **every**
+MFS variant, unlike bytes 13–15 which are per-variant. Packing them into existing
+bytes keeps the payload at nine used bytes with three still spare.
+
+### 4.3 Operating mode — bits 6–7 of byte 4
+
+| Value | Mode | Behaviour |
 |---|---|---|
-| 0–1 | magic `'C' 'L'` (0x43 0x4C) | cheap reject |
-| 2–3 | device type, LE `uint16` | MFS_1 = `0x0001` |
-| 4 | protocol version | `0x01` |
-| 5–8 | day code, LE `uint32` | `0x00000000` = settings-test |
-| 9 | desired arm state | `0x00` Inactive, `0x01` Active |
-| 10 | activations before trigger | 1–16; anything else rejects the payload |
-| 11 | cooldown | geometric byte, `0` = none |
-| 12 | sensitivity | geometric byte, 255 = most sensitive |
-| 13–15 | **per-variant extension** | **MFS_1 MUST ignore, never validate** |
+| `00` | **Trigger only** | **Default.** Fires the output. Emits nothing. |
+| `01` | Report and trigger | Broadcasts a trigger message immediately before firing |
+| `10` | Report only | Broadcasts, does not fire |
+| `11` | reserved | reject the payload |
+
+**These modes are exceptions to a standing rule and must be documented as such.**
+`CLAUDE.md` states that the device never advertises, and that rule stands as the
+general case. Report and Report-and-trigger are **optional exceptions, to be used
+only when deemed absolutely necessary**, because advertising forfeits covertness.
+The doctrine is therefore reworded rather than contradicted: *the device never
+advertises to solicit contact, and may emit a bounded burst on trigger only when
+explicitly configured to.*
+
+Reporting is connectionless — a bounded advertising burst to the hub, beacon-style,
+with no counter. It is the Drawer Master behaviour reduced to a beacon.
+
+**Never advertise unbounded** (`docs/power-budget.md` §8.7.1). Power is not the
+constraint here: a burst of a few seconds costs a fraction of one 6 s scan wake and
+triggers are rare. Covertness is the constraint.
 
 Bytes 0–3 are the 4-byte filter prefix reserved by §8.7.4; bytes 4–15 are the 12
 usable payload bytes, of which nine are used here.
@@ -159,6 +206,48 @@ cooldown_secs(c) = c == 0 ? 0 : round(3600^((c-1)/254))    # 1 s .. 3600 s
 cannot express a 5 s cooldown at all.
 
 The nPM2100 TIMER spans 16 ms to 3 days, so 1–3600 s fits with enormous margin.
+
+### 5.1 Delay before triggering — bits 1–7 of byte 9
+
+Seven bits, 0–127, piecewise and fully contiguous. Default 0 — no delay, which is
+the present behaviour.
+
+| Code | Meaning | Range |
+|---|---|---|
+| 0–59 | `V` seconds | 0 s … 59 s |
+| 60–118 | `V − 59` minutes | 1 min … 59 min |
+| 119–127 | `V − 118` hours | 1 h … 9 h |
+
+Contiguous at both seams: 59 → 59 s, 60 → 60 s; 118 → 3540 s, 119 → 3600 s. No
+value means two things and there are no gaps. Maximum delay 9 hours (32400 s),
+which fits `uint16_t` seconds.
+
+Generated into the shared table alongside the other two encodings, so the app and
+firmware cannot disagree.
+
+#### 5.1.1 The delay runs on the GRTC, not the PMIC timer
+
+| Timer | Error on a 9-hour delay |
+|---|---|
+| nPM2100 TIMER (±10 % over −10…60 °C) | **±54 minutes** |
+| Zephyr `k_timer` on the GRTC/LFXO (~50 ppm) | **±1.6 seconds** |
+
+A delay that lands anywhere inside a 108-minute window is not a delay. The
+cooldown stays on the PMIC timer, where ±10 % of a blanking window is irrelevant;
+the delay uses a `k_timer`. This is also forced by the datasheet's *"TIMER only
+runs one configuration at a time"* — sharing the block would stop a cooldown and a
+delay ever coexisting.
+
+#### 5.1.2 The SoC stays awake for the whole delay
+
+**Battery life is explicitly not a factor during a pending trigger.** The device
+holds a PM policy lock so it cannot enter a deeper state, and **shortens its scan
+period** for the duration.
+
+The scan change is the safety-relevant part. At the normal 6 s cadence a deactivate
+payload takes ~30 s to be heard with confidence (§3), and during a pending trigger
+that abort path is the most important thing the device does. Shortening the scan
+collapses that latency at a power cost the operator has already accepted.
 
 ## 6. Firmware design
 
@@ -252,6 +341,83 @@ tuning can continue.
 `0x00000000` is accepted **only while Inactive**, applies settings immediately, is
 never consumed, and is **rejected outright if the payload asks for Active**. The
 test code can never arm the device. This property holds even in a bench build.
+
+### 6.5.1 THE DELAY INTERLOCK — safety critical
+
+**A trigger that fires after the engineer has deactivated the device is the worst
+failure this product has.** With a delay of up to nine hours between the
+activation and the firing, that window is now enormous, so the guard is explicit
+and doubled rather than implied by the arm boolean alone.
+
+**Two independent conditions must both agree that no delay is pending**, and they
+are deliberately derived from different things — a software flag and the kernel
+timer itself — so that one being wrong cannot fire the device:
+
+```cpp
+// App - both must say "no delay running" before firing is permitted.
+bool App::delayPermitsFiring() const
+{
+  return !m_delay_pending && k_timer_remaining_ticks(&m_delay_timer) == 0;
+}
+```
+
+A flag left set with a dead timer blocks firing; a running timer with a cleared
+flag also blocks firing. **Both failure directions are safe**, which is the point
+of choosing these two particular witnesses.
+
+**`OutputSwitch` does not learn about delays.** Coupling it to one feature would
+destroy its value as a general containment. Instead it gains an **interlock** it
+consults immediately before driving the gates:
+
+```cpp
+// output_switch.hpp
+using InterlockFn = bool (*)(void* context);
+
+/** Refuses to assert unless the interlock returns true. */
+void SetInterlock(InterlockFn interlock, void* context);
+```
+
+App installs `delayPermitsFiring()` as that interlock at startup. The result is
+**two independent layers**, not the same test written twice:
+
+| Layer | Where | What it stops |
+|---|---|---|
+| 1 | `updateOutputState()` folds the delay into `m_output_active` | the condition ever becoming true |
+| 2 | `OutputSwitch::Set()` re-checks via the interlock | a caller asserting anyway |
+
+Layer 2 fires a `LOG_ERR` and latches faulty if it ever refuses, because reaching
+it means layer 1 has already failed and that is a bug, not a routine condition.
+
+**Deactivating cancels a pending delay unconditionally.** `setArmState(Inactive)`
+stops the timer, clears the flag, zeroes the activation count and re-derives the
+output. A delay does not survive disarming, and it does not survive a reset either
+— the pending state is deliberately **not** persisted, so a reboot loses the
+trigger, which is the fail-safe direction.
+
+**Activations during the delay are ignored.** The trigger is already committed;
+re-counting would let a continuing disturbance postpone or duplicate it.
+
+### 6.5.2 Operating modes
+
+`TriggerOnly` is the default and the current behaviour. The other two are
+exceptions to the never-advertise rule (§4.3) and are gated behind the mode field:
+
+```
+count reaches N
+  -> delay (if configured) with the interlock armed
+  -> re-check the interlock
+  -> mode == ReportOnly or ReportAndTrigger: emit the bounded report burst
+  -> mode == TriggerOnly or ReportAndTrigger: OutputSwitch::Set(true)
+```
+
+The report goes out **immediately before firing**, after the delay, not when the
+count completes. In `ReportOnly` the output is never asserted at all.
+
+**OPEN — the report payload is not yet specified.** It needs a device identifier
+so the hub knows which sensor fired, and a stable identifier in a repeated
+broadcast is a tracking beacon for anyone listening. That is a covertness decision,
+not a formatting one, and it is deferred rather than guessed. Report modes cannot
+ship until it is answered.
 
 ### 6.6 Failures are silent
 
@@ -355,6 +521,9 @@ The device is radio-silent by design, so:
 1. ~~**PMIC GPIO0 has never been driven on this project.**~~ **RESOLVED 2026-09-12
    on hardware — see §9.1.**
 2. **Re-measure the advertising interval on the iPhone.** 187 ms is a macOS figure.
+2a. **Specify the report payload** (§6.5.2). Needs a device identifier that does
+   not become a tracking beacon. **Report modes cannot ship until this is
+   answered**; Trigger-only is unaffected.
 3. ~~**Confirm the two `OutputSwitch` GPIOs.**~~ **RESOLVED 2026-09-12 — see §9.2.**
 
 ### 9.1 PMIC GPIO0 / TIMER — proven on hardware, 2026-09-12
@@ -434,5 +603,10 @@ To be corrected as part of the work, not left to rot:
 - `CLAUDE.md` — "The counterpart must advertise at 20–50 ms" is **disproved**. A
   phone advertises at ~187 ms and the interval is not ours to set.
 - `CLAUDE.md` — the Thingy:53 toggle tool section, for its retirement.
+- `CLAUDE.md` — **"The device never advertises"** must be reworded, not deleted.
+  It stands as the general rule; Report and Report-and-trigger are documented
+  exceptions for use only when absolutely necessary. Proposed wording: *the
+  device never advertises to solicit contact, and may emit a bounded burst on
+  trigger only when explicitly configured to.*
 - `CLAUDE.md` — the opening "this project is a fresh skeleton" paragraph, stale
   since 2026-08-17.
