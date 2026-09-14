@@ -1226,7 +1226,17 @@ namespace alc
     // THE SINGLE PATH. Everything below acts on `decision` and on nothing else -
     // see DecideCommand(). On command, an armed device only ever disarms.
     if (decision.action == ArmAction::Ignore) {
-      LOG_WRN("Armed: command slot %u n %u ignored - only a disarm is accepted while armed.", evaluation.slot, evaluation.n);
+      LOG_WRN("Command slot %u n %u has a reserved type - ignored.", evaluation.slot, evaluation.n);
+      return;
+    }
+
+    // Armed, and not a disarm: nothing changes - no settings, mode or trim - but
+    // LED A replays Armed so an engineer who did not know the state learns it.
+    // The command authenticated, so this is not a breach of silence on failure.
+    if (decision.action == ArmAction::ReplayArmed) {
+      LOG_INF("Armed: %s from slot %u n %u changes nothing - replaying Armed.", protocol::CommandTypeName(command.type), evaluation.slot,
+              evaluation.n);
+      playLedPattern(LedPattern::Armed);
       return;
     }
 
@@ -1255,14 +1265,18 @@ namespace alc
 
     switch (decision.action) {
       case ArmAction::Disarm:
-        // Nothing but the disarm. The settings this command carries were not
-        // applied above; the engineer sends them once the device is Inactive.
+        // Armed or not. From Active this is the only state change a command can
+        // make; from Inactive it is the same deactivation - count, latch,
+        // cooldown cleared, ADXL367 to standby - which ends a tuning session. A
+        // disarm carries no settings.
         setArmState(ArmState::Inactive);
         pattern = delayWasPending ? LedPattern::DisarmedDelayCancelled : LedPattern::Disarmed;
         if (delayWasPending) { LOG_WRN("Disarmed with a trigger PENDING - the trigger is cancelled."); }
         break;
 
       case ArmAction::Arm:
+        // The command carries no settings; arming uses m_settings exactly as
+        // already stored, never the command's own settings fields.
         m_activation_count = 0;
         m_detection_met    = false;
 
