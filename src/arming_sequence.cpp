@@ -94,6 +94,19 @@ namespace alc
     return true;
   }
 
+  bool ArmingSequence::ServiceScannerHealth()
+  {
+    if (m_state == ArmState::Inactive) { return false; }
+    if (m_actions.ScannerRunning()) { return false; }
+
+    // ALWAYS FAIL SAFE (owner rule 2026-09-14). Commands arrive only by scanning,
+    // so a device Arming or Active that cannot hear a Disarm must not keep any
+    // path to firing. The ordinary disarm order - pins first - then the warning.
+    failSafe();
+    raiseFailure(ArmingStep::ScannerLost, M_SCANNER_NOT_RUNNING);
+    return true;
+  }
+
   bool ArmingSequence::Disarm()
   {
     bool cancelled { m_state == ArmState::Arming };

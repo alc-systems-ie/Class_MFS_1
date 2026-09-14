@@ -159,6 +159,8 @@ namespace alc
           return "arming failed - fire pins would not enable";
         case ArmingStep::ScannerCheck:
           return "scanner not running - a disarm could not be heard";
+        case ArmingStep::ScannerLost:
+          return "scanner not running while arming or armed - a disarm could not be heard";
       }
       return "unknown arming step"; // Unreachable while every ArmingStep is handled above - -Wswitch warns if a new one is added.
     }
@@ -367,22 +369,21 @@ namespace alc
       // serviceScanHealth()'s throttled retry rather than retried every tick.
       if (DesiredFastScan(m_arming.State(), m_trigger_pending_scan) != m_scanner.IsFastRequested()) { (void)applyScanCadence(); }
 
-      // FAIL SAFE ON SCANNER LOSS WHILE ARMED (owner rule 2026-09-14: always fail
-      // safe). A device that cannot scan cannot hear a disarm, so it must not stay
-      // armed - idle, or with a trigger delay pending. IsScanning() is false only
-      // when a scan start and its fallback have both failed; a scan stuck at the
-      // fallback cadence still hears a disarm and is serviceScanHealth()'s to
-      // retry. Checked after every scanner call above and BEFORE the output is
-      // derived, so a deaf armed device never ticks the engine armed and cannot
-      // fire on this tick. The loop is only reached once Start() has succeeded,
-      // so "not scanning" here is a genuine loss, never "not yet started". This
-      // is the ordinary disarm - pins isolated first, Inactive, any pending
-      // trigger cancelled, test restarted - with the warning and no LED A
-      // acknowledgement. Once per event: the disarm ends the Active state.
-      if (m_arming.State() == ArmState::Active && !m_scanner.IsScanning()) {
-        signalWarning("scanner not running while armed - a disarm could not be heard", -ENODEV);
-        (void)disarmDevice();
-        LOG_ERR("Scanner not running while armed - disarmed (fail safe)!");
+      // ALWAYS FAIL SAFE ON SCANNER LOSS (owner rule 2026-09-14). A device that
+      // cannot scan cannot hear a disarm, so it must not stay Arming or Active -
+      // idle, mid exit delay, or with a trigger delay pending. Decided in the
+      // host-tested ArmingSequence::ServiceScannerHealth(): pins isolated first,
+      // Inactive (arming and any pending trigger cancelled), test restarted, then
+      // the warning. No LED A acknowledgement. IsScanning() is false only when a
+      // scan start and its fallback have both failed; a scan stuck at the fallback
+      // cadence still hears a disarm and is serviceScanHealth()'s to retry.
+      // Checked after every scanner call above and BEFORE the output is derived,
+      // so a deaf armed device never ticks the engine armed and cannot fire on
+      // this tick. The loop is only reached once Start() has succeeded, so "not
+      // scanning" here is a genuine loss, never "not yet started".
+      if (m_arming.ServiceScannerHealth()) {
+        logArmingFailure(false);
+        LOG_INF("Arm state: Inactive (uptime %lld ms).", k_uptime_get());
       }
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
@@ -797,6 +798,10 @@ namespace alc
           LOG_ERR("Arming failed at the scanner check (%d) - device Inactive, fire pins disabled, no acknowledgement!", result);
         }
         break;
+
+      case ArmingStep::ScannerLost:
+        LOG_ERR("Scanner not running while arming or armed - disarmed (fail safe)!");
+        break;
     }
   }
 
@@ -914,9 +919,9 @@ namespace alc
 
     // Throttled - the Bluetooth stack's own stop/start churn is not free, and a
     // genuine outage does not need a 100 ms retry rate to recover promptly.
-    // Scanner loss while armed is not acted on here: Run() disarms on it every
-    // tick (always fail safe), and the detection engine also checks
-    // ScannerRunning() itself during an armed delay.
+    // Scanner loss while arming or armed is not acted on here: Run() fails safe
+    // on it every tick through ArmingSequence::ServiceScannerHealth(), and the
+    // detection engine also checks ScannerRunning() itself during an armed delay.
     if (uptimeMs - m_last_scan_service_ms < M_SCAN_SERVICE_INTERVAL_MS) { return; }
     m_last_scan_service_ms = uptimeMs;
 

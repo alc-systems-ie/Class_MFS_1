@@ -294,9 +294,10 @@ namespace alc
 
       // Set if the scanner was not running at the start of an ARMED delay, or on
       // any tick thereafter while it is pending. Owner rule 2026-09-14: always
-      // fail safe - an armed delay that expires with this set does NOT fire (no
-      // detection, no hold) and is reported as suppressed. App normally disarms
-      // first, the moment the scanner is down while Active; this is the guard.
+      // fail safe - an armed delay that expires with this set, or with the
+      // scanner down at expiry, does NOT fire (no detection, no hold) and is
+      // reported as suppressed. App normally fails safe first, the moment the
+      // scanner is down while arming or armed; this is the guard.
       bool m_delay_scan_lost;
 
       // Uptime until which a DELAYED detection holds regardless of AWAKE. Zero for

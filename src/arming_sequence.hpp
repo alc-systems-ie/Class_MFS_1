@@ -23,8 +23,14 @@ namespace alc
    */
   enum class ArmState : uint8_t { Inactive = 0, Arming = 1, Active = 2 };
 
-  /** @brief The step a failure or warning belongs to. */
-  enum class ArmingStep : uint8_t { DisablePins, RestartDetection, EnablePins, ScannerCheck };
+  /**
+   * @brief The step a failure or warning belongs to.
+   *
+   * ScannerCheck: the scanner was not running when an Arm was accepted or at the
+   * end of the exit delay. ScannerLost: it stopped while Arming or Active and
+   * ServiceScannerHealth() failed safe.
+   */
+  enum class ArmingStep : uint8_t { DisablePins, RestartDetection, EnablePins, ScannerCheck, ScannerLost };
 
   /**
    * @brief The hardware effects the arming sequence drives. Implemented by App.
@@ -75,6 +81,8 @@ namespace alc
    *   attempted if the restart failed.
    * - Any arming-step failure: DisableFirePins() -> Inactive ->
    *   RestartDetection(false) -> SignalWarning(step, result).
+   * - Scanner lost while Arming or Active (ServiceScannerHealth()): the same
+   *   fail-safe order, with step ScannerLost.
    * - Disarm, from ANY state: DisableFirePins() FIRST -> Inactive ->
    *   RestartDetection(false). A disable failure does not stop the disarm; it is
    *   warned after the disarm completes.
@@ -120,6 +128,22 @@ namespace alc
       bool Service(int64_t nowMs);
 
       /**
+       * @brief ALWAYS FAIL SAFE on scanner loss (owner rule 2026-09-14). Call every main-loop tick.
+       *
+       * No-op returning false when Inactive, or when the scanner is running. While
+       * Arming or Active with the scanner not running - a Disarm could not be
+       * heard - fails safe at once through the disarm order: DisableFirePins() ->
+       * Inactive (arming cancelled, any pending trigger cancelled by the disarmed
+       * restart) -> RestartDetection(false) -> SignalWarning(ScannerLost, -ENODEV),
+       * also recorded for TakeFailure(). Returns true on that call only; once
+       * Inactive it raises nothing more, so the warning is once per event.
+       *
+       * Calls only ScannerRunning() and the fail-safe callbacks, none of which may
+       * re-enter the sequence, so no session check follows.
+       */
+      bool ServiceScannerHealth();
+
+      /**
        * @brief From any state: DisableFirePins() FIRST, then Inactive, then RestartDetection(false).
        *
        * The restart's own result is not a warning (amendment section 4); the
@@ -132,8 +156,8 @@ namespace alc
       /**
        * @brief The last failure, if any since the last read. Cleared by the read.
        *
-       * Records arming-step failures (ScannerCheck, RestartDetection, EnablePins) and a
-       * DisablePins failure, whether in Disarm() or in an arming fail-safe. A
+       * Records arming-step failures (ScannerCheck, RestartDetection, EnablePins), a
+       * ScannerLost fail-safe and a DisablePins failure, whether in Disarm() or in an arming fail-safe. A
        * DisablePins failure is sticky: a later arming-step failure does not
        * overwrite it before it is read, because the pins may not be isolated.
        *

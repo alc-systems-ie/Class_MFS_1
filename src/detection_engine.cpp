@@ -166,16 +166,22 @@ namespace alc
     // and m_delay_deadline_ms is what tells the two apart.
     if (m_delay_pending && !m_hardware.DelayTimerRunning() && nowMs >= m_delay_deadline_ms) {
       delayWasArmed = m_delay_armed;
-      scanWasLost   = m_delay_scan_lost;
       cancelDelay(armed); // clears the flag and restores duty-cycled scanning
+
+      // Checked AFTER cancelDelay(): restoring duty-cycled scanning can itself
+      // take the scanner down (the restore and its fallback both failing), and
+      // the output is derived straight after this tick - so a loss known now
+      // must suppress now, not one tick later when App disarms.
+      scanWasLost = m_delay_scan_lost || !m_hardware.ScannerRunning();
 
       if (delayWasArmed && scanWasLost) {
         // Owner rule 2026-09-14: always fail safe. An ARMED delay that ran
-        // without a scanner may have missed a disarm, so it must not fire - no
-        // detection, no hold. App disarms as soon as the scanner is down while
-        // Active, so on target this is a defensive guard for a disarm that did
-        // not happen. A disarmed test delay never reaches here: it has no fire
-        // pins and does not track the scanner.
+        // without a scanner - or whose scanner is down at expiry - may have
+        // missed a disarm, so it must not fire: no detection, no hold. App
+        // disarms as soon as the scanner is down while arming or armed, so on
+        // target this is a defensive guard for a disarm that did not happen. A
+        // disarmed test delay never reaches here: it has no fire pins and does
+        // not track the scanner.
         report(DetectionEventType::DelayExpiredScanLostSuppressed, armed);
       } else {
         m_detection_met = true;

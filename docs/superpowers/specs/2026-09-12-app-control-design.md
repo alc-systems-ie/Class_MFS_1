@@ -567,12 +567,14 @@ proceed.
 **Owner rule, 2026-09-14: always fail safe — a trigger never fires if the scanner
 was lost during the delay.** This supersedes the 2026-09-13 ruling that prioritised
 the alarm over a missed disarm. A device that cannot scan cannot hear a disarm, so
-`App::Run()` disarms the moment the scanner is not running while Active — warning
-raised, pins isolated first, Inactive, the pending trigger cancelled, logged
-`Scanner not running while armed - disarmed (fail safe)!` (arming sequence amendment
-§4.2). Behind that, the detection engine still tracks whether the scanner was running
-for the whole armed delay (`m_delay_scan_lost`); if it was not, the expiry commit
-does **not** fire — no detection, no hold — and reports
+`App::Run()` fails safe the moment the scanner is not running while Arming or Active
+(`ArmingSequence::ServiceScannerHealth()`) — pins isolated first, Inactive, the
+pending trigger cancelled, warning raised, logged
+`Scanner not running while arming or armed - disarmed (fail safe)!` (arming sequence
+amendment §4.2). Behind that, the detection engine still tracks whether the scanner
+was running for the whole armed delay (`m_delay_scan_lost`) and checks it again at
+expiry, after restoring duty-cycled scanning; if it was lost or is down, the expiry
+commit does **not** fire — no detection, no hold — and reports
 `Trigger suppressed: the scanner was not running during the delay (fail safe)!`. A
 disarmed test delay is unaffected: it drives no fire pins.
 

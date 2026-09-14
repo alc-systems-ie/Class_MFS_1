@@ -35,6 +35,10 @@ namespace
   // that was going to fire has certainly done so.
   constexpr int64_t M_DERIVED_HOLD_MARGIN_MS { 10000 };
 
+  // Upper bound on any wait for detection in these tests: the longest delay plus
+  // a generous margin. A regression then fails an assert instead of hanging.
+  constexpr int64_t M_DETECTION_BOUND_MS { (M_DELAY_SECS * M_MSEC_PER_SEC) + M_DERIVED_HOLD_MARGIN_MS };
+
   class FakeHardware : public DetectionHardware
   {
     public:
@@ -105,6 +109,9 @@ namespace
           fastScanOnCalls++;
         } else {
           fastScanOffCalls++;
+          // Models SetFastScan(false) failing twice over (the restore and its
+          // fallback), which leaves the scanner down.
+          if (dropScannerOnRestore) { scannerRunning = false; }
         }
         fastScan = fast;
         return 0;
@@ -148,6 +155,7 @@ namespace
       uint32_t fastScanOffCalls { 0 };
       bool fastScan { false };
       bool scannerRunning { true };
+      bool dropScannerOnRestore { false };
       std::vector<DetectionEvent> events;
   };
 
@@ -198,6 +206,18 @@ namespace
       void idleUntil(int64_t untilMs)
       {
         while (hardware.nowMs < untilMs) {
+          tick(false);
+        }
+      }
+
+      // Idle ticks until detection is met, failing - rather than hanging - if it
+      // is not met within M_DETECTION_BOUND_MS.
+      void idleUntilDetectionMet()
+      {
+        int64_t boundMs { hardware.nowMs + M_DETECTION_BOUND_MS };
+
+        while (!engine.DetectionMet()) {
+          assert(hardware.nowMs < boundMs);
           tick(false);
         }
       }
@@ -657,8 +677,10 @@ namespace
       assert(rig.engine.DetectionMet());
       activations = rig.hardware.countEvents(DetectionEventType::Activation);
 
-      // No counting during the detection period, armed or not.
+      // No counting during the detection period, armed or not. Bounded so a
+      // detection that never ends fails instead of hanging.
       while (rig.engine.DetectionMet()) {
+        assert(rig.hardware.nowMs < rig.hardware.delayEndMs + M_DETECTION_BOUND_MS);
         rig.tick(rig.hardware.nowMs % M_FAST_TOGGLE_MS == 0);
         if (rig.engine.DetectionMet()) { assert(!rig.engine.TakeTriggerComplete()); }
       }
@@ -784,6 +806,24 @@ namespace
       assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLostSuppressed) == 1);
     }
 
+    // The scanner is healthy for the whole delay, but restoring duty-cycled
+    // scanning at expiry takes it down. The loss is known before the output is
+    // derived on that same tick, so the trigger must not fire even for one tick.
+    {
+      Rig rig(M_ONE, 0, M_DELAY_SECS);
+
+      assert(rig.restart(true) == 0);
+      rig.tap();
+      assert(rig.engine.DelayPendingArmed());
+      rig.hardware.dropScannerOnRestore = true;
+      rig.idleUntil(rig.hardware.delayEndMs + M_DERIVED_HOLD_MARGIN_MS);
+      assert(!rig.hardware.scannerRunning);
+      assert(!rig.engine.DelayPendingArmed());
+      assert(!rig.engine.DetectionMet() && !rig.everOutput);
+      assert(rig.hardware.countEvents(DetectionEventType::DelayExpired) == 0);
+      assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLostSuppressed) == 1);
+    }
+
     // A suppressed delay leaves the engine counting: the next genuine delay, with
     // a healthy scanner, fires as normal.
     {
@@ -800,9 +840,7 @@ namespace
       rig.tap();
       assert(rig.engine.DelayPendingArmed());
       rig.idleUntil(rig.hardware.delayEndMs);
-      while (!rig.engine.DetectionMet()) {
-        rig.tick(false);
-      }
+      rig.idleUntilDetectionMet();
       assert(rig.everOutput);
       assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLostSuppressed) == 1);
     }
@@ -817,9 +855,7 @@ namespace
       rig.tap();
       rig.tick(false);
       rig.idleUntil(rig.hardware.delayEndMs);
-      while (rig.engine.DelayPendingArmed() || !rig.engine.DetectionMet()) {
-        rig.tick(false);
-      }
+      rig.idleUntilDetectionMet();
       assert(rig.engine.DetectionMet() && !rig.everOutput);
       assert(rig.hardware.countEvents(DetectionEventType::DelayExpired) == 1);
       assert(rig.hardware.countEvents(DetectionEventType::DelayScanLost) == 0);
@@ -833,9 +869,7 @@ namespace
       assert(rig.restart(true) == 0);
       rig.tap();
       rig.idleUntil(rig.hardware.delayEndMs);
-      while (!rig.engine.DetectionMet()) {
-        rig.tick(false);
-      }
+      rig.idleUntilDetectionMet();
       assert(rig.everOutput);
       assert(rig.hardware.countEvents(DetectionEventType::DelayScanLost) == 0);
       assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLostSuppressed) == 0);

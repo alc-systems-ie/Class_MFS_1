@@ -640,6 +640,118 @@ namespace
     printf("arming sequence: scanner queried at begin and deadline: OK\n");
   }
 
+  // 13. Always fail safe (owner rule 2026-09-14): the scanner stops while Active.
+  // Pins disabled before Inactive, the disarmed restart, then the warning - once.
+  void testScannerLostWhileActive()
+  {
+    Fixture fixture;
+    ArmingStep step { ArmingStep::DisablePins };
+    int result { 0 };
+
+    armFully(fixture, M_START_MS);
+
+    // Healthy: nothing.
+    assert(!fixture.sequence.ServiceScannerHealth());
+    assert(fixture.actions.log.empty() && fixture.sequence.State() == ArmState::Active);
+
+    fixture.actions.scannerRunning = false;
+    assert(fixture.sequence.ServiceScannerHealth());
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(fixture.actions.log.size() == 3);
+    assert(fixture.actions.log[0].call == Call::DisablePins);
+    assert(fixture.actions.log[0].stateAtCall == ArmState::Active);
+    assert(fixture.actions.log[1].call == Call::RestartDisarmed);
+    assert(fixture.actions.log[1].stateAtCall == ArmState::Inactive);
+    assert(fixture.actions.log[2].call == Call::Warning);
+    assert(fixture.actions.log[2].step == ArmingStep::ScannerLost);
+    assert(fixture.actions.log[2].result == M_SCANNER_FAILURE);
+    assert(fixture.sequence.TakeFailure(step, result));
+    assert(step == ArmingStep::ScannerLost && result == M_SCANNER_FAILURE);
+
+    // Once per event: Inactive now, so a still-dead scanner raises nothing more.
+    assert(!fixture.sequence.ServiceScannerHealth());
+    assert(fixture.actions.log.size() == 3);
+    assert(!fixture.sequence.TakeFailure(step, result));
+
+    printf("arming sequence: scanner lost while Active fails safe: OK\n");
+  }
+
+  // 14. The scanner stops mid exit delay: arming is cancelled at once, and the
+  // deadline passing afterwards never restarts armed, enables or goes Active.
+  void testScannerLostWhileArming()
+  {
+    Fixture fixture;
+    ArmingStep step { ArmingStep::DisablePins };
+    int result { 0 };
+
+    fixture.actions.forbidActiveOnDisable = true;
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    assert(!fixture.sequence.ServiceScannerHealth());
+    assert(fixture.actions.log.empty() && fixture.sequence.State() == ArmState::Arming);
+
+    fixture.actions.scannerRunning = false;
+    assert(fixture.sequence.ServiceScannerHealth());
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(fixture.actions.log.size() == 3);
+    assert(fixture.actions.log[0].call == Call::DisablePins);
+    assert(fixture.actions.log[0].stateAtCall == ArmState::Arming);
+    assert(fixture.actions.log[1].call == Call::RestartDisarmed);
+    assert(fixture.actions.log[1].stateAtCall == ArmState::Inactive);
+    assert(fixture.actions.log[2].call == Call::Warning);
+    assert(fixture.actions.log[2].step == ArmingStep::ScannerLost);
+    assert(fixture.sequence.TakeFailure(step, result));
+    assert(step == ArmingStep::ScannerLost && result == M_SCANNER_FAILURE);
+
+    // The scanner recovers and the old deadline passes: nothing happens.
+    fixture.actions.scannerRunning = true;
+    assert(!fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+    assert(!fixture.sequence.Service(M_START_MS + M_WELL_PAST_MS));
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(fixture.actions.log.size() == 3);
+    assert(!logContains(fixture.actions, Call::RestartArmed));
+    assert(!logContains(fixture.actions, Call::EnablePins));
+
+    printf("arming sequence: scanner lost while Arming cancels at once: OK\n");
+  }
+
+  // 15. Inactive: the scanner's health is not the sequence's concern - no action.
+  void testScannerHealthIgnoredWhileInactive()
+  {
+    Fixture fixture;
+    ArmingStep step { ArmingStep::DisablePins };
+    int result { 0 };
+
+    fixture.actions.scannerRunning = false;
+    assert(!fixture.sequence.ServiceScannerHealth());
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(fixture.actions.log.empty());
+    assert(!fixture.sequence.TakeFailure(step, result));
+
+    printf("arming sequence: scanner health ignored while Inactive: OK\n");
+  }
+
+  // 16. A pin disable failure in the scanner fail-safe outranks the scanner
+  // failure in TakeFailure(), and both are warned.
+  void testScannerLostKeepsDisableFailure()
+  {
+    Fixture fixture;
+    ArmingStep step { ArmingStep::ScannerLost };
+    int result { 0 };
+
+    armFully(fixture, M_START_MS);
+    fixture.actions.disableResult  = M_DISABLE_FAILURE;
+    fixture.actions.scannerRunning = false;
+    assert(fixture.sequence.ServiceScannerHealth());
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(fixture.actions.log.size() == 4);
+    assert(fixture.actions.log[2].call == Call::Warning && fixture.actions.log[2].step == ArmingStep::DisablePins);
+    assert(fixture.actions.log[3].call == Call::Warning && fixture.actions.log[3].step == ArmingStep::ScannerLost);
+    assert(fixture.sequence.TakeFailure(step, result));
+    assert(step == ArmingStep::DisablePins && result == M_DISABLE_FAILURE);
+
+    printf("arming sequence: scanner lost keeps a disable failure: OK\n");
+  }
+
 }
 
 void run_arming_sequence_tests()
@@ -660,5 +772,9 @@ void run_arming_sequence_tests()
   testScannerDownAtDeadline();
   testScannerRefusalKeepsDisableFailure();
   testScannerQueriedAtBeginAndDeadline();
+  testScannerLostWhileActive();
+  testScannerLostWhileArming();
+  testScannerHealthIgnoredWhileInactive();
+  testScannerLostKeepsDisableFailure();
   printf("arming sequence: OK\n");
 }
