@@ -48,3 +48,16 @@
 - [ ] **Step 1: Failing tests:** lifecycle `hidden`/`paused` while advertising → advertiser stop called, message "Advertising stopped - keep the app open while sending." shown, Send disabled until `resumed`; `inactive` while advertising → no stop; lifecycle not resumed → Send disabled; a pending start interrupted by `paused` → no advert, no "Not sent" error, no disarm prompt.
 - [ ] **Step 2:** implement with `WidgetsBindingObserver`/`AppLifecycleListener` in one shared place (prefer a single app-level guard that calls `advertiser.stop()` and exposes `isForeground` to the pages) rather than duplicating per page.
 - [ ] **Step 3:** `flutter test -j 1`, `flutter analyze`; commit (stage only changed files) `Send only while the app is in the foreground`.
+
+---
+
+### Task 4: Firmware — always fail safe on scanner loss while armed
+
+**Owner rule 2026-09-14: always fail safe.** Supersedes the 2026-09-13 "prioritise fire" ruling (fire anyway when the scanner is lost during a pending armed delay).
+
+**Files:** `src/app.hpp`, `src/app.cpp`, `src/detection_engine.hpp`, `src/detection_engine.cpp`, `tests/test_detection_engine.cpp`, `docs/superpowers/specs/2026-09-12-app-control-design.md` (~571), `docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md` (§4 warning sources), `docs/superpowers/plans/2026-09-13-bench-checklist.md` (~93), `CLAUDE.md` (general rule).
+
+- [ ] **Step 1:** In `App::Run()` after `serviceScanHealth()` and command handling, if `m_arming.State() == ArmState::Active && !m_scanner.IsScanning()` → set a pending flag; handle it at the same point as the switch-fault disarm: `signalWarning("scanner not running while armed - a disarm could not be heard", -ENODEV)` then `disarmDevice()` (pins isolated first, Inactive, any pending trigger cancelled), log `LOG_ERR("Scanner not running while armed - disarmed (fail safe)!")`. No LED A. Once per event (the disarm ends it).
+- [ ] **Step 2:** Remove "prioritise fire": the engine must no longer fire an armed delay that ran without a scanner. Since App disarms as soon as the scanner is down while Active, keep the engine's scan-lost tracking only as a defensive guard: if an armed delay expires with `m_delay_scan_lost`, the engine does NOT set DetectionMet (no fire) and reports a renamed event `DelayExpiredScanLostSuppressed` → App `LOG_ERR("Trigger suppressed: the scanner was not running during the delay (fail safe)!")`. Update the event docs, the "Andy's ruling" comments (→ "Owner rule 2026-09-14: always fail safe"), and the host test that asserted firing despite scan loss so it asserts no fire.
+- [ ] **Step 3:** Docs: design spec ~571 and checklist ~93 → fail safe (trigger cancelled, disarmed, warning); arming-sequence amendment §4 adds warning source "scanner not running while armed"; CLAUDE.md adds under the arm invariant: "**Always fail safe** (owner rule 2026-09-14): any fault the device depends on — fire switch, arming step, command scanner, while arming or armed, including a pending trigger delay — isolates the pins, disarms, cancels any pending trigger and raises the warning. Never keep firing capability through a fault."
+- [ ] **Step 4:** make test green; firmware build zero warnings; clang-format; commit `Always fail safe: disarm when the scanner is lost while armed, never fire a delay that ran deaf`.
