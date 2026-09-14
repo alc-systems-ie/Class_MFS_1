@@ -79,7 +79,8 @@ namespace alc
     // expands to a braced initialiser list, and wrapping it in further braces makes
     // the compiler try to initialise the first member from the whole list.
 
-    // LED A — on while Inactive. LED B — on while Active and triggered.
+    // LED A — on while Inactive. LED B (bench only) — on while detection is met,
+    // in either arm state; see the disarmed test mode amendment section 2.
     const struct gpio_dt_spec s_led_a = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
     const struct gpio_dt_spec s_led_b = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
 
@@ -496,8 +497,9 @@ namespace alc
     // Bring the rail up in HIGH POWER, not Ultra-Low Power. The ADXL367 datasheet
     // requires supply current above 250 uA during power-up for correct fuse
     // loading; ULP is built for uA-level loads and is the wrong mode to power up
-    // into. LDOSW drops to ULP once the accelerometer is configured — see
-    // App::Run() — so the idle saving is kept.
+    // into. LDOSW drops to ULP right after the probe below, before the
+    // accelerometer is ever configured — see App::lowerLsoutToUlp(), called from
+    // App::Run() straight after initAccelerometer() — so the idle saving is kept.
     result = m_pmic.LdoSwSetOutputMode(Npm2100::LdoSwOutputMode::Ldo);
     if (result == 0) { result = m_pmic.LdoSwSetVoltage(M_LSOUT_MILLIVOLTS); }
     if (result == 0) { result = m_pmic.LdoSwSetPowerMode(Npm2100::LdoSwPowerMode::Hp); }
@@ -516,10 +518,14 @@ namespace alc
 
   int App::lowerLsoutToUlp()
   {
-    // The ADXL367 is configured and drawing ~1 uA, so LDOSW no longer needs High
-    // Power. ULP still supplies up to 2 mA. Auto is not used: it follows the device
-    // mode, and MFS_1 stays in Active mode permanently, so Auto would hold High
-    // Power for the device's whole life.
+    // Called right after initAccelerometer(), which only probes the part and
+    // parks it in standby - well before the detection engine's first loop-mode
+    // configure in setArmState(Inactive) below. Standby current is already
+    // uA-level, so LDOSW no longer needs High Power here; the loop-mode current
+    // once configured stays within ULP's headroom too. ULP still supplies up to
+    // 2 mA. Auto is not used: it follows the device mode, and MFS_1 stays in
+    // Active mode permanently, so Auto would hold High Power for the device's
+    // whole life.
     int result { m_pmic.LdoSwSetPowerMode(Npm2100::LdoSwPowerMode::Ulp) };
 
     if (result < 0) {
@@ -1176,7 +1182,7 @@ namespace alc
         // change - sending the same settings again is the engineer's way to
         // reset a long cooldown or delay (amendment section 3.1).
         result = restartEngine(false);
-        if (result < 0) { LOG_ERR("Could not start the engine for tuning - retrying every %u ms!", M_ENGINE_RETRY_MS); }
+        if (result < 0) { LOG_ERR("Could not start the engine for the test - retrying every %u ms!", M_ENGINE_RETRY_MS); }
         pattern = (m_settings.OperatingMode() != previousMode) ? LedPattern::ModeChanged : LedPattern::SettingsApplied;
         break;
 

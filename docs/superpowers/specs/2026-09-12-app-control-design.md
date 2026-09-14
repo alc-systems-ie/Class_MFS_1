@@ -384,13 +384,14 @@ Runs in **both** arm states. The arm boolean selects the consumer, nothing else.
 
 The ADXL367 is no longer held in standby while Inactive. Cold start boots
 Inactive, **testing** at the stored settings from the first tick — the engine
-is not waiting for a Tune command to start it. Every restart — arming,
-disarming, a Settings command, a cooldown re-arm — reconfigures the part
-afresh through the loop-mode bootstrap and clears the detection latch; a
-disarm or Settings command also clears the activation count and any pending
-cooldown or delay, so nothing counted or latched in one session can reach the
-output — or a later armed session — in the next. (Amended 2026-09-13, revised
-2026-09-14.)
+is not waiting for a Tune command to start it. Every restart — **a disarm, a
+Settings command or an arm restarts** the test from zero, along with a cooldown
+re-arm — reconfigures the part afresh through the loop-mode bootstrap and
+clears the detection latch; a disarm or Settings command also clears the
+activation count and any pending cooldown or delay, so nothing counted or
+latched in one session can reach the output — or a later armed session — in
+the next. The safety guarantees for arming mid-test specifically are the
+amendment's section 3.2. (Amended 2026-09-13, revised 2026-09-14.)
 
 ```
 AWAKE rising edge
@@ -805,6 +806,10 @@ subsequent command stale.
    get implicitly. Fixed with `CONFIG_MBEDTLS_ENABLE_HEAP=y` in `prj.conf`.
 6. **Trim `&lfxo` by measurement.** The clock is now a security component with a
    10-minute freshness window riding on it.
+7. **ADXL367 reset while armed is undetected** — a brown-out or spontaneous reset
+   of the ADXL367 leaves INT1 quiet with no signal, so the device is deaf and
+   nothing reports it. Candidate: periodic readback of POWER_CTL/INTMAP1 while
+   armed, reconfigure on mismatch.
 
 ### 9.1 PMIC GPIO0 / TIMER — proven on hardware, 2026-09-12
 

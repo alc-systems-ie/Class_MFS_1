@@ -97,13 +97,22 @@ RTT expectations below are the engine's log texts as implemented — see
 `App::OnDetectionEvent` and the Detection met/cleared and Output lines in
 `App::Run()` (`src/app.cpp`).
 
-1. [ ] Flash without `--recover`, provision the clock. With no command sent, tap
-   the device three times: LED B lights on the third tap (`Detection met (test) -
-   LED B on.`), at the settings already stored from boot - no Settings command is
-   needed to start the test.
+1. [ ] Flash **without** `--recover` (keeps `access/v1` and the stored settings, so
+   the app's slot stays in sync with the device's sequence window - a `--recover`
+   flash erases them, forcing a slot change or a wait for the 04:00 rollover per
+   the bench log below), provision the clock. With no command sent, tap the device
+   three times: LED B lights on the third tap (`Detection met (test) - LED B
+   on.`), at the settings already stored from boot - no Settings command is needed
+   to start the test. **This is the new-image check**: the old image held the
+   ADXL in standby while Inactive and would not react to any tap here, so LED B
+   lighting on the third tap with nothing sent proves the new image is running.
 2. [ ] Disarm (Arm page, Send Disarmed): slow flash, then the test restarts from
    zero. Count the restarts: the next tap after the disarm logs `Activation 1 of
    N.`, not a continuation of whatever was counted before.
+   - (a) [ ] Disarm while shaking the device continuously: the loop-mode
+     bootstrap waits for AWAKE to clear before returning, so LED A's slow flash
+     can arrive late - up to about 8 s at the default 5 s inactivity period. Do
+     not resend before about 10 s on the strength of a missing acknowledgement.
 3. [ ] Settings page: 1 activation, 30 s delay, Send (single blink). Tap once: LED
    B lights only after about 30 s; RTT shows `TEST trigger pending: LED B in 30
    s.` then `TEST delay elapsed - LED B on.` - never `TRIGGER PENDING`. No
@@ -126,6 +135,9 @@ RTT expectations below are the engine's log texts as implemented — see
    - (d) [ ] Shake the device continuously while sending Arm: no fire until
      motion stops and a fresh, complete edge finishes the count (`Activation 1 of
      3.` logs only once AWAKE has cleared and reasserted after arming).
+   - (e) [ ] Arm while LED B is lit (a live test detection, or held by a pending
+     test delay): no fire; the next count starts at `Activation 1 of 3.`, not a
+     continuation of the test in progress.
 6. [ ] Armed trigger fires once (`Output ASSERTED`, fire GPIOs and LED B for
    about 5 s), then `Output cleared` and `Trigger complete - latched Inactive.
    Re-arming needs an engineer command.`. The test resumes on its own with no
@@ -137,8 +149,9 @@ RTT expectations below are the engine's log texts as implemented — see
    the same loop-mode engine in both states.
 8. [ ] Cold-cell boot: after a battery insert, confirm the boot log shows the
    accelerometer configured at boot - no configure-failure or retry line
-   (`Accelerometer would not configure`, `ADXL re-arm failed`) - before the first
-   tap.
+   (`Accelerometer would not configure`, `Detection test could not start -
+   retrying the accelerometer every N ms!`, `Failed to reconfigure the ADXL -
+   retrying every N ms!`) - before the first tap.
 
 ## 9. Bench log
 

@@ -61,6 +61,11 @@ when an **armed** delay was pending. Cancelling a test delay is not a cancelled 
 so it plays the ordinary slow flash. Log lines for a disarmed delay say it is a test
 (e.g. `TEST trigger pending: LED B in N s.`), never `TRIGGER PENDING`.
 
+**Acknowledgement latency:** because the restart's loop-mode bootstrap waits for AWAKE to
+clear before returning (up to about the configured inactivity period plus 3 s — ~8 s at
+the 5 s default), a Disarm or Settings acknowledgement on LED A can be delayed that long
+while the device is being handled, even though the output is already off.
+
 ### 3.1 Resetting a long test
 
 **Send Disarm.** It restarts the test from zero at any point — mid-count, mid-cooldown

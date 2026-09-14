@@ -26,8 +26,16 @@ namespace alc
    * Every event is delivered SYNCHRONOUSLY through
    * DetectionHardware::OnDetectionEvent(), at the exact point in the engine's
    * sequence where App logged the same thing before the extraction, so the
-   * order of log lines against hardware calls is unchanged. The mapping below
-   * is to App's messages as of 994e11d; "armed" is DetectionEvent::armed.
+   * order of log lines against hardware calls is unchanged.
+   *
+   * The log LEVEL and WORDING for every event are owned entirely by
+   * App::OnDetectionEvent() (src/app.cpp) - this engine only classifies what
+   * happened and hands over the armed flag and any numeric fields. The
+   * comments below are illustrative, not a contract: several events carry two
+   * different wordings depending on `event.armed` or on App's own
+   * m_logging_cooldown bookkeeping, and this header does not attempt to keep
+   * every exact string in sync with App - read App::OnDetectionEvent for the
+   * words actually logged today.
    *
    * The configure and AWAKE-read failures inside ConfigureAccelerometer() are
    * NOT events - the implementation logs them itself ("Accelerometer would not
@@ -36,27 +44,27 @@ namespace alc
    */
   enum class DetectionEventType : uint8_t {
     StaleAwakeSuppressed,      ///< WRN "ADXL still awake after configuring - suppressing until it clears!"
-    StaleAwakeReleased,        ///< INF "ADXL cleared after arming - device is now live."
+    StaleAwakeReleased,        ///< INF, worded by App per event.armed - "device is now live" vs "test is now live".
     Activation,                ///< INF "Activation %u of %u." - count, limit.
     CooldownStarted,           ///< INF "Cooldown started: %u s." - seconds.
-    CooldownStandbyFailed,     ///< ERR "Failed to stand the ADXL down for cooldown: %d!" - result.
+    CooldownStandbyFailed,     ///< ERR, App appends its own retry wording - result.
     CooldownTimerFailed,       ///< ERR "Failed to start the cooldown timer: %d!" - result.
     CooldownTimerStopFailed,   ///< WRN "Could not stop the cooldown timer after a failure." - result.
-    CooldownRestoreFailed,     ///< ERR "Could not restore detection after the cooldown timer failed!" - result.
+    CooldownRestoreFailed,     ///< ERR, App appends its own retry wording - result.
     CooldownForced,            ///< WRN "Cooldown forced over by the deadline - the PMIC timer did not report expiry!"
     CooldownClearEventFailed,  ///< WRN "Failed to clear the cooldown timer expiry event!" - result.
-    RearmFailed,               ///< ERR "Failed to re-arm the ADXL after cooldown - retrying!" - once per failing run.
-    CooldownElapsed,           ///< INF "Cooldown elapsed - detection re-armed."
+    RearmFailed,               ///< ERR, worded by App per its own m_logging_cooldown - cooldown re-arm vs plain reconfigure.
+    CooldownElapsed,           ///< INF, worded by App per its own m_logging_cooldown - cooldown elapsed vs reconfigured.
     DelayStarted,              ///< armed: WRN "TRIGGER PENDING: firing in %u s. Deactivating cancels it."; else a TEST line - seconds.
     DelayScanLost,             ///< ERR "Scanner not running at the start of a delay - a disarm may not be heard!" (armed only).
     DelayFastScanFailed,       ///< WRN "Continuous scan unavailable at the start of a delay - retrying; ..." (armed only) - result.
     DelayScanRestoreFailed,    ///< ERR "Failed to restore duty-cycled scanning: %d!" - result.
-    DelayExpired,              ///< No log today; a disarmed test delay may log its expiry.
+    DelayExpired,              ///< Armed: no log of its own. Disarmed: INF "TEST delay elapsed - LED B on."
     DelayExpiredScanLost,      ///< WRN "Trigger firing although the scanner was not running during the delay - ..." (armed only).
     WatchdogRearm,             ///< ERR "ADXL stuck AWAKE for %u s - re-arming the loop engine!" - seconds.
     WatchdogRearmFailed,       ///< ERR "ADXL re-arm failed!" - result.
-    RestartCooldownStopFailed, ///< Context-worded by App: "Failed to stop the cooldown timer on deactivation!" et al. - result.
-    RestartStandbyFailed,      ///< WRN "Could not stand the accelerometer down after a refused arm." - result.
+    RestartCooldownStopFailed, ///< WRN or ERR, worded by App per event.armed - see App::OnDetectionEvent - result.
+    RestartStandbyFailed,      ///< WRN, worded by App per event.armed - refused arm vs failed test restart.
   };
 
   /** @brief One engine event. Fields not named for the type are zero. */
