@@ -332,9 +332,9 @@ namespace alc
     // value of 0x00 does not set it. ConfigureLoopMode() writes it, but a part
     // whose configure keeps failing - it is stood down after every failed
     // attempt while the detection engine retries - would otherwise sit at the
-    // reset default indefinitely. A
-    // hazard the datasheet calls out must not depend on how soon someone happens
-    // to arm the device - see docs/v1-scope.md section 2.
+    // reset default indefinitely. The hazard the datasheet calls out must not
+    // depend on how soon someone happens to arm the device - see
+    // docs/v1-scope.md section 2.
     //
     // Observed 2026-08-18: an unmapped INT1 read physically HIGH at 0x00, so the
     // reset default may well be harmless in practice. That is an inference from

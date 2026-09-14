@@ -70,9 +70,11 @@ namespace alc
       // path, and brings up LSOUT at 1.8 V in Ultra-Low Power mode for the ADXL367.
       int initPmic();
 
-      // Drops LDOSW to Ultra-Low Power once the ADXL367 is configured. The rail is
-      // brought up in High Power because the ADXL367 needs >250 uA during power-up
-      // for correct fuse loading.
+      // Drops LDOSW to Ultra-Low Power once the ADXL367 has been probed and
+      // parked in standby - the loop-mode configure that actually needs power
+      // happens afterwards, when setArmState() starts the detection test. The
+      // rail is brought up in High Power because the ADXL367 needs >250 uA
+      // during power-up for correct fuse loading.
       int lowerLsoutToUlp();
 
       int initAccelerometer();

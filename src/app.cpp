@@ -38,7 +38,7 @@ namespace alc
     constexpr int64_t M_ADVANCE_INTERVAL_SECS { 60 };
 
     // The detection engine's configure retry spacing, for log messages.
-    constexpr unsigned M_ENGINE_RETRY_MS { static_cast<unsigned>(DetectionEngine::M_COOLDOWN_RETRY_MS) };
+    constexpr uint32_t M_ENGINE_RETRY_MS { static_cast<uint32_t>(DetectionEngine::M_COOLDOWN_RETRY_MS) };
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
     // Liveness blink for the battery test, at the scan period.
