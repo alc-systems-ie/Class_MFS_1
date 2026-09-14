@@ -140,7 +140,7 @@ Settings become separate command types, settings only behind a confirmed disarm 
 app — `docs/superpowers/specs/2026-09-14-command-types-amendment.md`. §5 and §6 resume
 on the new build.
 
-**DECISION NEEDED — store each device's settings in the app.** Useful, but a lost phone
+**DECIDED (Option A, 2026-09-14) — device settings are never stored in the app.** Useful, but a lost phone
 would carry every sensor's sensitivity, activations, cooldown and delay with no expiry.
-Options in the amendment §4; until decided, the app does not store them. Also flagged
+Options in the amendment §4; the owner chose A. Also flagged
 in `docs/tan-scheme.md` §11.

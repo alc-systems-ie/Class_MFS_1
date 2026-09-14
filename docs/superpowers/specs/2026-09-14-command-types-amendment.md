@@ -178,11 +178,11 @@ makes a decision on the strength of that countdown, so:
   sequence number is still spent — never reused);
 - the disarm prompt is shown only for a Send that actually started advertising.
 
-## 4. DECISION NEEDED — remember each device's settings in the app
+## 4. DECIDED — do not remember device settings in the app (Option A, 2026-09-14)
 
 It would help the engineer to see a device's last-applied settings on the Settings
 page instead of defaults. **It is a major security flaw**, and is not being built
-without an explicit decision from the end user:
+without an explicit decision from the end user. The decision is recorded at the end of this section.
 
 - **A lost or stolen phone becomes a map of the installation**: which devices exist,
   and for each, how sensitive it is, how many activations it needs, its cooldown and
@@ -205,7 +205,7 @@ Options for the end user:
   the key has expired. Still exposes them for the rest of the day on a lost phone,
   and still goes stale.
 
-Until decided, **A** stands.
+**Decided by the owner, 2026-09-14: Option A.** The app never stores device settings. B and C are recorded for a future review, not scheduled.
 
 ## 5. Impact
 
