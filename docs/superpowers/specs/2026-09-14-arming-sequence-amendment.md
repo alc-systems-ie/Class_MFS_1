@@ -22,6 +22,7 @@ input and output buffers both disconnected, so only the resistors hold the lines
 | Last step of arming | configured `GPIO_OUTPUT_INACTIVE` with read-back, verified low |
 | Active | outputs, driven only by `OutputSwitch::Set()` from the single derivation point |
 | Disarm, trigger latch, any failure | **first action:** both driven low, then disconnected |
+| Fire switch fault while Active (failed assert, failed clear or clear read-back not low) | isolated at once by the latch, then the ordinary disarm (§4.1) |
 
 "Disable" drives both lines low for an instant before disconnecting, so a line that was
 high is emptied at once rather than at the resistors' RC rate.
@@ -38,7 +39,8 @@ bypassed derivation point is a bug.
 3. Re-derive the output through the single derivation point (it is now false).
 4. Restart the detection test from zero.
 
-The one-shot trigger latch (armed trigger complete → Inactive) uses this same order.
+The one-shot trigger latch (armed trigger complete → Inactive) and the fire switch fault
+fail-safe (§4.1) use this same order.
 This replaces the disarmed-test-mode amendment §3.3 disarm order, which cleared the
 boolean first: the pins now go safe before any state changes.
 
@@ -84,7 +86,8 @@ enabled and the boolean is set.
 
 ### 3.2 Unchanged
 
-Active behaviour, ReplayArmed for Arm/Settings while **Active**, the one-shot, the delay
+Active behaviour (except that a fire switch fault now disarms — §4.1), ReplayArmed for
+Arm/Settings while **Active**, the one-shot, the delay
 interlock, the single output derivation and `IsOutputActive()` as the only sanctioned
 read are unchanged. The command's minute still trims the clock only as before (an Arm
 accepted while Inactive trims; ignored commands during Arming do not).
@@ -112,9 +115,28 @@ It is raised by:
 2. a boot pin check reading high, or not completing (§1);
 3. a fire-pin disable failure;
 4. **a fire switch failure while Active** — `OutputSwitch::Set()` returning an error from
-   the single derivation point (a failed write or read-back, a refused assert). Raised
-   **at most once per boot**: the switch latches faulty and every later `Set()` keeps
-   failing, so a per-tick warning would never end.
+   the single derivation point (a failed write or read-back, a refused assert) — **raises
+   the warning and fails safe to disarmed** (§4.1). Raised at most once per Active session.
+
+### 4.1 Fire switch faults (owner decisions, 2026-09-14)
+
+**(a) A failed clear latches.** `Set(false)` on an enabled switch fails if either pin's
+write fails **or** its read-back is not low. Either way the switch goes safe exactly as
+every other `OutputSwitch` failure does: both pins driven low then disconnected
+(`enterFaultState()`), the switch **latched faulty**, and the failure logged once. Both
+gates failing — both writes, or both reading back high — is the emergency
+`BOTH FIRE GATES FAILED TO CLEAR … THE DEVICE MAY BE FIRING!`; one gate is
+`Fire gate N failed to clear … redundancy is LOST!`. The latched switch is disabled, so
+later `Set(false)` calls return 0 without logging again.
+
+**(b) A switch fault while Active disarms.** When `Set()` returns an error while Active,
+`App::updateOutputState()` raises the warning and flags the fault. The main loop, at the
+same point as the one-shot trigger latch (the disarm path re-enters
+`updateOutputState()`), logs `Fire switch fault while armed - disarmed (fail safe).` and
+runs the ordinary disarm (§2): pins disabled first, Inactive, the test restarted. **No
+LED A acknowledgement.** The switch stays latched faulty, so a later Arm fails at the
+enable step (§3 step 3) and raises its own arming-failure warning (source 1) — always,
+independent of source 4.
 
 ## 5. Host-testable arming sequence
 

@@ -90,7 +90,13 @@ firing while deactivated is dangerous.
   LED B in every build** (production included), overriding the bench detection
   level while it plays. Sources: an arming-step failure, the boot pin check, a
   fire-pin disable failure, and a fire switch `Set()` failure while Active (once
-  per boot). An arming failure shows **no** LED A acknowledgement.
+  per Active session). An arming failure shows **no** LED A acknowledgement.
+  **A fire switch fault while Active fails safe to disarmed** — the main loop runs
+  the ordinary disarm beside the trigger latch and logs `Fire switch fault while
+  armed - disarmed (fail safe).`, with no LED A acknowledgement (amendment §4.1).
+  `Set(false)` **latches and isolates** on a failed clear write *or* a clear
+  read-back that is not low, logging once (both gates = the `BOTH FIRE GATES
+  FAILED TO CLEAR` emergency, one = lost redundancy).
   `OutputSwitch::Disable()` **latches the switch faulty on any failure**,
   including a disconnect-only failure that leaves both gates safely low — so a
   device that will not arm after a "Fire output LATCHED FAULTY" log is expected,

@@ -202,9 +202,10 @@ fire line **is low / is not high**.
    - **Timing near the deadline.** The armed restart at 10 s reconfigures the
      accelerometer and waits for AWAKE to clear, so it can block the main loop
      for up to about 8 s while the device is being disturbed. A Disarm heard
-     during that block is acted on just after Active: expect a brief rapid flash,
-     then the slow flash, with `Arm state: Active` followed at once by `Arm state:
+     during that block is acted on just after Active: RTT shows `Arm state:
+     Active - fire pins enabled (uptime ... ms).` followed at once by `Arm state:
      Inactive (uptime ... ms).` That is correct behaviour, not a failed cancel.
+     Judge it from those RTT lines, not LED A.
 4. [ ] **Arm or Settings during the 10 s.** The arming phone cannot do this step:
    the app keeps Arm waiting for its advertising window, and the Settings page is
    unreachable without a confirmed disarm. Use **a second phone on another slot**:
