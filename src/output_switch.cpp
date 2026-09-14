@@ -15,9 +15,9 @@ namespace alc
     //
     // File-scope static, so no other translation unit can reach them. The only
     // ways to move these lines are OutputSwitch::Enable(), Set() and Disable().
-    // Do not add an accessor, do
-    // not pass these out, and do not declare a second handle to the same pins
-    // elsewhere - in the product this output switches a voltage.
+    // Do not add an accessor, do not pass these out, and do not declare a
+    // second handle to the same pins elsewhere - in the product this output
+    // switches a voltage.
     //
     // `=` rather than brace initialisation: GPIO_DT_SPEC_GET already expands to a
     // braced initialiser list, and wrapping it in further braces makes the

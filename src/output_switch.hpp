@@ -28,8 +28,9 @@ namespace alc
    *
    * - The pin handles are file-scope `static` in `output_switch.cpp`, so no other
    *   translation unit can take a handle and drive them. The only ways to move
-   *   these lines are Enable(), Set() and Disable(). This is the same containment `s_adxl_int1` uses in
-   *   `app.cpp`, applied to a more dangerous signal.
+   *   these lines are Enable(), Set() and Disable(). This is the same
+   *   containment `s_adxl_int1` uses in `app.cpp`, applied to a more dangerous
+   *   signal.
    * - Fire1 and Fire2 are **one logical channel**, never addressable separately.
    *   Both writes are always attempted, so a gate is never left energised because
    *   an earlier call bailed out.
@@ -125,10 +126,10 @@ namespace alc
       int Set(bool assert);
 
       /**
-       * @brief Drive both lines low unconditionally, for fault and shutdown paths.
+       * @brief Drive both lines low, for fault and shutdown paths.
        *
-       * Does nothing and returns 0 while disabled - the pins then have no driver.
-       * Safe to call before Init() and safe to call repeatedly.
+       * Does nothing and returns 0 while disabled - the pins then have no driver
+       * to drive low. Safe to call before Init() and safe to call repeatedly.
        *
        * @return 0 on success; negative errno if a pin write failed.
        */

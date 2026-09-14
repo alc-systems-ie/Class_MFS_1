@@ -1291,6 +1291,13 @@ namespace alc
           LOG_ERR("Arming not started - device was not Inactive!");
           return;
         }
+
+        // Stop any pattern still playing (e.g. a Disarmed flash from an
+        // earlier command) so LED A shows nothing for the whole exit delay -
+        // same stop-then-touch order as playLedPattern().
+        k_timer_stop(&m_led_timer);
+        m_led_sequencer.Stop();
+
         LOG_INF("Arming: fire pins isolated, arming in %u s.", static_cast<unsigned>(ArmingSequence::M_EXIT_DELAY_MS / MSEC_PER_SEC));
         break;
 
