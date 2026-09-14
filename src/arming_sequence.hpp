@@ -25,7 +25,15 @@ namespace alc
   /** @brief The step a failure or warning belongs to. */
   enum class ArmingStep : uint8_t { DisablePins, RestartDetection, EnablePins };
 
-  /** @brief The hardware effects the arming sequence drives. Implemented by App. */
+  /**
+   * @brief The hardware effects the arming sequence drives. Implemented by App.
+   *
+   * RE-ENTRANCY: RestartDetection(true) and EnableFirePins() may re-enter
+   * ArmingSequence::Disarm() (a disarm command handled while they run), and may
+   * follow it with BeginArming(). The disarm wins - see ArmingSequence::Service().
+   * DisableFirePins(), RestartDetection(false) and SignalWarning() must not call
+   * back into the sequence: they run inside the fail-safe itself.
+   */
   class ArmingActions
   {
     public:
@@ -40,7 +48,11 @@ namespace alc
       /** @brief Configure the fire pins as outputs, inactive, verified low. 0 or negative errno. */
       virtual int EnableFirePins() = 0;
 
-      /** @brief Raise the warning for a failed step (amendment section 4). */
+      /**
+       * @brief Raise the warning for a failed step (amendment section 4).
+       *
+       * Must not call back into ArmingSequence.
+       */
       virtual void SignalWarning(ArmingStep step, int result) = 0;
   };
 
@@ -58,6 +70,13 @@ namespace alc
    * - Disarm, from ANY state: DisableFirePins() FIRST -> Inactive ->
    *   RestartDetection(false). A disable failure does not stop the disarm; it is
    *   warned after the disarm completes.
+   *
+   * RE-ENTRANCY: if a callback re-enters Disarm() during Service(), the disarm
+   * wins. Service() checks after each callback whether its arming is still the
+   * current one (state Arming and the same arming session); if not it returns
+   * false at once, never enables or goes Active and raises no warning. A disarm
+   * inside EnableFirePins() is followed by one more DisableFirePins(), because
+   * the enable may have configured the pins after the nested disable.
    *
    * The sequence has no output-derivation hook: the disarm order's "re-derive
    * the output" step (between Inactive and the restart) belongs at the start of
@@ -99,8 +118,9 @@ namespace alc
        * @brief The last failure, if any since the last read. Cleared by the read.
        *
        * Records arming-step failures (RestartDetection, EnablePins) and a
-       * DisablePins failure, whether in Disarm() or in an arming fail-safe. Where
-       * one fail-safe raises two, the arming step is recorded last and wins.
+       * DisablePins failure, whether in Disarm() or in an arming fail-safe. A
+       * DisablePins failure is sticky: a later arming-step failure does not
+       * overwrite it before it is read, because the pins may not be isolated.
        *
        * @return false, outputs untouched, when there is none.
        */
@@ -111,11 +131,16 @@ namespace alc
       // failure is warned and recorded here, after the restart.
       void failSafe();
 
+      // Whether the arming Service() captured as `session` has been cancelled or
+      // replaced by a callback re-entering Disarm() (and perhaps BeginArming()).
+      bool superseded(uint32_t session) const;
+
       void raiseFailure(ArmingStep step, int result);
 
       ArmingActions& m_actions;
       ArmState m_state;
       int64_t m_deadline_ms;
+      uint32_t m_session;
       bool m_failure_pending;
       ArmingStep m_failure_step;
       int m_failure_result;
