@@ -6,11 +6,13 @@ config MFS_SCAN_PERIOD_MS
 	range 1000 10240
 	help
 	  How often the device wakes to scan. Valid range 1000-10240 ms: the
-	  upper bound is the nRF54L HCI scan interval maximum (also enforced by
-	  the range above), and the millisecond-to-0.625-ms-unit conversion in
-	  src/command_scanner.cpp (value * 8 / 5 into a uint16_t) wraps silently
-	  above 40959 ms, well past that ceiling. Above a few thousand ms the
-	  cell's shelf life, not the radio, becomes the limiting factor.
+	  upper bound is the nRF54L HCI scan interval maximum, enforced by the
+	  range above. A value past the uint16_t unit range would not even build:
+	  the millisecond-to-0.625-ms-unit conversion in src/command_scanner.cpp
+	  (value * 8 / 5 into a uint16_t) is a narrowing conversion inside a
+	  braced initialiser, so a value whose converted result does not fit
+	  fails to compile rather than wrapping silently. Above a few thousand ms
+	  the cell's shelf life, not the radio, becomes the limiting factor.
 
 	  The default 5906 ms (9449 BLE units, 5905.625 ms) replaces preset 5's
 	  6000 ms from the ladder in docs/v1-scope.md section 7.1. 6000 ms is
@@ -112,8 +114,8 @@ config MFS_BATTERY_TEST
 	  is still armed by the engineer toggle.
 
 	  READ THIS BEFORE TRUSTING THE RESULT: the blink dominates the power
-	  budget. At an assumed 2 mA of LED current, 500 ms every 6000 ms is 8.3%
-	  duty, i.e. ~167 uA against a ~69 uA operating budget - so the measurement
+	  budget. At an assumed 2 mA of LED current, 500 ms every 5906 ms is 8.47%
+	  duty, i.e. ~169 uA against a ~69 uA operating budget - so the measurement
 	  becomes mostly a measurement of the LED. See docs/battery-test.md.
 
 config MFS_BLINK_MS
@@ -128,8 +130,8 @@ config MFS_BLINK_MS
 	  LED B still works, so arming the device and nudging it is the liveness
 	  check.
 
-	  500 ms is highly visible but costs ~167 uA at 2 mA LED current. 100 ms
-	  costs ~33 uA and is still clearly visible; 10 ms would cost ~3 uA but
+	  500 ms is highly visible but costs ~169 uA at 2 mA LED current. 100 ms
+	  costs ~34 uA and is still clearly visible; 10 ms would cost ~3 uA but
 	  needs the loop poll shortened to resolve it. Lower this if the aim is to
 	  measure the scan rather than the LED.
 

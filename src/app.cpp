@@ -51,7 +51,7 @@ namespace alc
     // duty-cycles the scan itself from the interval/window pair and gives the
     // application no callback at window start, so this is a software tick of the
     // same period running independently. It shows the device is alive and running
-    // its 6 s cycle; it does not mark the exact instant the receiver opens.
+    // its scan period; it does not mark the exact instant the receiver opens.
     constexpr uint32_t M_BLINK_PERIOD_TICKS { CONFIG_MFS_SCAN_PERIOD_MS / M_POLL_INTERVAL_MS };
     constexpr uint32_t M_BLINK_ON_TICKS { CONFIG_MFS_BLINK_MS / M_POLL_INTERVAL_MS };
 #endif
@@ -1003,8 +1003,8 @@ namespace alc
 
     // Scan continuously while armed and pending. The deactivate path is the most
     // important thing the device does while a trigger is pending, and at the
-    // normal ~6 s cadence an abort takes ~30 s to be heard with confidence. The
-    // request is one input to the cadence arbiter - Arming also scans
+    // duty-cycled 5906 ms cadence an abort takes ~30 s to be heard with
+    // confidence. The request is one input to the cadence arbiter - Arming also scans
     // continuously - so the result returned is that of the COMBINED cadence. A
     // failure is reported by the engine (DelayFastScanFailed or
     // DelayScanRestoreFailed) and retried by serviceScanHealth().

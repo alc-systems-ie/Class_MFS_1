@@ -236,11 +236,14 @@ battery-constrained, so this is the cheap half of the trade. At 100 ms the desig
 does not *depend* on that cooperation the way a 60 ms window would have.
 
 **Amendment, 2026-09-13:** that specification was never honoured and cannot be —
-a phone advertises at ~187 ms (macOS measurement; an iPhone re-measure is pending,
-`docs/superpowers/plans/2026-09-13-bench-checklist.md` §7), and iOS/macOS do not
-expose the advertising interval as something an app can set. The table above is
-kept for the detection-probability method; read its rows against 187 ms, not
-20–50 ms. The app compensates with a 30 s advertising window instead
+a phone advertises at ~187 ms (macOS measurement). **Amendment, 2026-09-14:** the
+iPhone re-measure is done — ~35 ms, steady for the full 30 s
+(`docs/superpowers/plans/2026-09-13-bench-checklist.md` §7,
+`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` §1) — and
+iOS/macOS do not expose the advertising interval as something an app can set.
+The table above is kept for the detection-probability method; read its rows
+against 187 ms (Mac) or 35 ms (iPhone), not 20–50 ms. The app compensates with a
+30 s advertising window instead
 (`docs/superpowers/specs/2026-09-12-app-control-design.md` §3), which is the
 mitigation actually in place.
 

@@ -413,12 +413,22 @@ Derived from `docs/power-budget.md` §3: per-wake cost 393 µC (380 µC scan +
 | 2 | 2 s | 200 µA | 10 months |
 | 3 | 3 s | 135 µA | 1.2 years |
 | 4 | 4 s | 102 µA | 1.6 years |
-| 5 | **6 s** | **69 µA** | **2.4 years** — default |
+| 5 | **6 s** | **69 µA** | **2.4 years** — default at the time this ladder was written |
 | 6 | 8 s | 53 µA | 3.1 years |
 | 7 | 10 s | 43 µA | 3.8 years |
 | 8 | 15 s | 30 µA | 5.5 years |
 | 9 | 20 s | 23 µA | 7.1 years |
 | 10 | 30 s | 17 µA | 9.8 years |
+
+**Amended 2026-09-14:** the actual default is now **5906 ms** (5.906 s), not
+preset 5's 6000 ms — 6000 ms is exactly 32 × 187.5 ms, a Mac's measured
+advertising interval, so every scan landed at the same phase of its cycle and
+whole commands were missed; 5906 ms samples opposite halves instead. Average
+current at 5906 ms recomputes to **~69.5 µA**, still ~2.4 years on a CR123A.
+See `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` and
+`docs/power-budget.md` §3. The ladder above is otherwise unaffected — it is
+kept as the derivation record for the other nine cadences, none of which
+changed.
 
 ### 7.2 Why the ladder stops at 30 s
 

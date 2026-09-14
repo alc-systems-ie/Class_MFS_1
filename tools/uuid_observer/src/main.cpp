@@ -61,7 +61,10 @@ namespace alc
 int main()
 {
   const struct bt_le_scan_param scanParam {
-    .type = BT_LE_SCAN_TYPE_PASSIVE, .options = BT_LE_SCAN_OPT_NONE, .interval = alc::M_SCAN_INTERVAL, .window = alc::M_SCAN_WINDOW,
+    .type     = BT_LE_SCAN_TYPE_PASSIVE,
+    .options  = BT_LE_SCAN_OPT_NONE,
+    .interval = alc::M_SCAN_INTERVAL,
+    .window   = alc::M_SCAN_WINDOW,
   };
   int result { bt_enable(nullptr) };
 
