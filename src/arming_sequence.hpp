@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cerrno>
 #include <cstdint>
 
 // Pure: no Zephyr headers, so the sequence compiles and is tested on the host.
@@ -23,7 +24,7 @@ namespace alc
   enum class ArmState : uint8_t { Inactive = 0, Arming = 1, Active = 2 };
 
   /** @brief The step a failure or warning belongs to. */
-  enum class ArmingStep : uint8_t { DisablePins, RestartDetection, EnablePins };
+  enum class ArmingStep : uint8_t { DisablePins, RestartDetection, EnablePins, ScannerCheck };
 
   /**
    * @brief The hardware effects the arming sequence drives. Implemented by App.
@@ -47,6 +48,13 @@ namespace alc
 
       /** @brief Configure the fire pins as outputs, inactive, verified low. 0 or negative errno. */
       virtual int EnableFirePins() = 0;
+
+      /**
+       * @brief Whether the command scanner is running, so a Disarm could be heard.
+       *
+       * A query only: must not call back into ArmingSequence.
+       */
+      virtual bool ScannerRunning() const = 0;
 
       /**
        * @brief Raise the warning for a failed step (amendment section 4).
@@ -91,13 +99,20 @@ namespace alc
 
       ArmState State() const { return m_state; }
 
-      /** @brief Inactive -> Arming, deadline now + M_EXIT_DELAY_MS. Ignored (returns false) unless Inactive. */
+      /**
+       * @brief Inactive -> Arming, deadline now + M_EXIT_DELAY_MS. Ignored (returns false) unless Inactive.
+       *
+       * Refused (returns false, still Inactive, nothing started) when the scanner
+       * is not running: SignalWarning(ScannerCheck, -ENODEV) and recorded for
+       * TakeFailure().
+       */
       bool BeginArming(int64_t nowMs);
 
       /**
        * @brief Services the exit delay. No-op returning false unless Arming.
        *
-       * Does nothing before the deadline. At or after it runs restart -> enable ->
+       * Does nothing before the deadline. At or after it checks the scanner is
+       * running (else fails safe, step ScannerCheck), then runs restart -> enable ->
        * Active. Returns true on the call that went Active, false otherwise
        * (including a failed arming, which is reported through SignalWarning()
        * and TakeFailure()).
@@ -117,7 +132,7 @@ namespace alc
       /**
        * @brief The last failure, if any since the last read. Cleared by the read.
        *
-       * Records arming-step failures (RestartDetection, EnablePins) and a
+       * Records arming-step failures (ScannerCheck, RestartDetection, EnablePins) and a
        * DisablePins failure, whether in Disarm() or in an arming fail-safe. A
        * DisablePins failure is sticky: a later arming-step failure does not
        * overwrite it before it is read, because the pins may not be isolated.
@@ -127,6 +142,9 @@ namespace alc
       bool TakeFailure(ArmingStep& step, int& result);
 
     private:
+      // The result reported with a ScannerCheck failure.
+      static constexpr int M_SCANNER_NOT_RUNNING { -ENODEV };
+
       // DisableFirePins() -> Inactive -> RestartDetection(false). A disable
       // failure is warned and recorded here, after the restart.
       void failSafe();

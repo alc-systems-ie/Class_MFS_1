@@ -20,6 +20,15 @@ namespace alc
   {
     if (m_state != ArmState::Inactive) { return false; }
 
+    // NO SCANNER, NO ARMING - SAFETY CRITICAL. Commands arrive only by scanning,
+    // so an armed device that cannot hear a Disarm could leave the armed state
+    // only by triggering. Refused outright: still Inactive, no delay, no pin or
+    // restart action - only the warning.
+    if (!m_actions.ScannerRunning()) {
+      raiseFailure(ArmingStep::ScannerCheck, M_SCANNER_NOT_RUNNING);
+      return false;
+    }
+
     // Nothing else: the fire pins are already disconnected while Inactive and
     // stay so for the whole exit delay.
     m_deadline_ms = nowMs + M_EXIT_DELAY_MS;
@@ -36,6 +45,15 @@ namespace alc
     int result { 0 };
     int disableResult { 0 };
     uint32_t session { m_session };
+
+    // NO SCANNER, NO ARMING. The scanner may have stopped during the exit delay.
+    // Checked before the armed restart, so nothing is restarted or enabled.
+    // ScannerRunning() is a query and cannot re-enter, so no session check follows.
+    if (!m_actions.ScannerRunning()) {
+      failSafe();
+      raiseFailure(ArmingStep::ScannerCheck, M_SCANNER_NOT_RUNNING);
+      return false;
+    }
 
     // One synchronous step. Nothing may tick the engine or derive the output
     // between the armed restart and the state becoming Active.

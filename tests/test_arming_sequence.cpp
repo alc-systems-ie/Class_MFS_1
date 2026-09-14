@@ -21,6 +21,7 @@ namespace
   constexpr int M_RESTART_FAILURE { -EIO };
   constexpr int M_ENABLE_FAILURE { -ENODEV };
   constexpr int M_DISABLE_FAILURE { -EBUSY };
+  constexpr int M_SCANNER_FAILURE { -ENODEV };
   constexpr bool M_BOTH_CALLBACKS[] { false, true };
 
   enum class Call : uint8_t { DisablePins, RestartArmed, RestartDisarmed, EnablePins, Warning };
@@ -70,6 +71,12 @@ namespace
         return enableResult;
       }
 
+      bool ScannerRunning() const override
+      {
+        scannerQueries++;
+        return scannerRunning;
+      }
+
       void SignalWarning(ArmingStep step, int result) override
       {
         LogEntry entry { Call::Warning, currentState(), step, result };
@@ -103,6 +110,8 @@ namespace
       int disableResult { 0 };
       int restartArmedResult { 0 };
       int enableResult { 0 };
+      bool scannerRunning { true };
+      mutable int scannerQueries { 0 };
   };
 
   struct Fixture
@@ -507,6 +516,130 @@ namespace
     printf("arming sequence: disarm from Inactive: OK\n");
   }
 
+  // 9. No scanner, no arming: an Arm while the scanner is down is refused
+  // outright - still Inactive, no delay started, nothing but the warning.
+  void testBeginArmingRefusedWithoutScanner()
+  {
+    Fixture fixture;
+    ArmingStep step { ArmingStep::DisablePins };
+    int result { 0 };
+
+    fixture.actions.scannerRunning = false;
+    assert(!fixture.sequence.BeginArming(M_START_MS));
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(fixture.actions.log.size() == 1);
+    assert(fixture.actions.log[0].call == Call::Warning);
+    assert(fixture.actions.log[0].stateAtCall == ArmState::Inactive);
+    assert(fixture.actions.log[0].step == ArmingStep::ScannerCheck);
+    assert(fixture.actions.log[0].result == M_SCANNER_FAILURE);
+
+    assert(fixture.sequence.TakeFailure(step, result));
+    assert(step == ArmingStep::ScannerCheck && result == M_SCANNER_FAILURE);
+    assert(!fixture.sequence.TakeFailure(step, result));
+
+    // No deadline was started: servicing well past it does nothing.
+    assert(!fixture.sequence.Service(M_START_MS + M_WELL_PAST_MS));
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(fixture.actions.log.size() == 1);
+
+    // Once the scanner is back, a fresh arm works normally.
+    fixture.actions.scannerRunning = true;
+    fixture.actions.log.clear();
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    assert(fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+    assert(fixture.sequence.State() == ArmState::Active);
+
+    // Arming or Active, BeginArming is still ignored without a warning.
+    fixture.actions.scannerRunning = false;
+    fixture.actions.log.clear();
+    assert(!fixture.sequence.BeginArming(M_START_MS + M_WELL_PAST_MS));
+    assert(fixture.actions.log.empty());
+
+    printf("arming sequence: BeginArming refused without scanner: OK\n");
+  }
+
+  // 10. The scanner stops during the exit delay: at the deadline the sequence
+  // fails safe before the armed restart - never enables, never Active.
+  void testScannerDownAtDeadline()
+  {
+    Fixture fixture;
+    ArmingStep step { ArmingStep::DisablePins };
+    int result { 0 };
+
+    fixture.actions.forbidActiveOnDisable = true;
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    fixture.actions.scannerRunning = false;
+
+    // Before the deadline nothing happens, scanner or not.
+    assert(!fixture.sequence.Service(M_START_MS + M_MID_DELAY_MS));
+    assert(fixture.sequence.State() == ArmState::Arming);
+    assert(fixture.actions.log.empty());
+
+    assert(!fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(!logContains(fixture.actions, Call::RestartArmed));
+    assert(!logContains(fixture.actions, Call::EnablePins));
+    assert(fixture.actions.log.size() == 3);
+    assert(fixture.actions.log[0].call == Call::DisablePins);
+    assert(fixture.actions.log[0].stateAtCall == ArmState::Arming);
+    assert(fixture.actions.log[1].call == Call::RestartDisarmed);
+    assert(fixture.actions.log[1].stateAtCall == ArmState::Inactive);
+    assert(fixture.actions.log[2].call == Call::Warning);
+    assert(fixture.actions.log[2].step == ArmingStep::ScannerCheck);
+    assert(fixture.actions.log[2].result == M_SCANNER_FAILURE);
+
+    for (const LogEntry& entry : fixture.actions.log) {
+      assert(entry.stateAtCall != ArmState::Active);
+    }
+
+    assert(fixture.sequence.TakeFailure(step, result));
+    assert(step == ArmingStep::ScannerCheck && result == M_SCANNER_FAILURE);
+
+    // No retry of its own.
+    assert(!fixture.sequence.Service(M_START_MS + M_WELL_PAST_MS));
+    assert(fixture.actions.log.size() == 3);
+
+    printf("arming sequence: scanner down at deadline fails safe: OK\n");
+  }
+
+  // 11. A scanner refusal does not overwrite a pending pin disable failure -
+  // the pins may not be isolated, which outranks it.
+  void testScannerRefusalKeepsDisableFailure()
+  {
+    Fixture fixture;
+    ArmingStep step { ArmingStep::ScannerCheck };
+    int result { 0 };
+
+    fixture.actions.disableResult = M_DISABLE_FAILURE;
+    assert(!fixture.sequence.Disarm());
+    fixture.actions.disableResult  = 0;
+    fixture.actions.scannerRunning = false;
+    assert(!fixture.sequence.BeginArming(M_START_MS));
+    assert(fixture.actions.log.back().call == Call::Warning);
+    assert(fixture.actions.log.back().step == ArmingStep::ScannerCheck);
+
+    assert(fixture.sequence.TakeFailure(step, result));
+    assert(step == ArmingStep::DisablePins && result == M_DISABLE_FAILURE);
+    assert(!fixture.sequence.TakeFailure(step, result));
+
+    printf("arming sequence: scanner refusal keeps a disable failure: OK\n");
+  }
+
+  // 12. The scanner is queried at BeginArming and again at the deadline - a
+  // scanner that stops during the exit delay must be caught before arming.
+  void testScannerQueriedAtBeginAndDeadline()
+  {
+    Fixture fixture;
+
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    int queriesAfterBegin { fixture.actions.scannerQueries };
+    assert(queriesAfterBegin >= 1);
+    assert(fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+    assert(fixture.actions.scannerQueries > queriesAfterBegin);
+
+    printf("arming sequence: scanner queried at begin and deadline: OK\n");
+  }
+
 }
 
 void run_arming_sequence_tests()
@@ -523,5 +656,9 @@ void run_arming_sequence_tests()
   testDisarmAndRearmInsideCallback();
   testBeginArmingIgnoredUnlessInactive();
   testDisarmFromInactive();
+  testBeginArmingRefusedWithoutScanner();
+  testScannerDownAtDeadline();
+  testScannerRefusalKeepsDisableFailure();
+  testScannerQueriedAtBeginAndDeadline();
   printf("arming sequence: OK\n");
 }

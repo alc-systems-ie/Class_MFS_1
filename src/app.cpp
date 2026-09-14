@@ -157,6 +157,8 @@ namespace alc
           return "arming failed - detection would not restart armed";
         case ArmingStep::EnablePins:
           return "arming failed - fire pins would not enable";
+        case ArmingStep::ScannerCheck:
+          return "scanner not running - a disarm could not be heard";
       }
       return "unknown arming step"; // Unreachable while every ArmingStep is handled above - -Wswitch warns if a new one is added.
     }
@@ -355,7 +357,7 @@ namespace alc
 
       // A failed arming has already failed safe and raised the warning inside
       // Service(). No LED A acknowledgement.
-      logArmingFailure();
+      logArmingFailure(false);
 
       // Every exit from Arming - Active, cancelled by a Disarm command above, or a
       // failed step inside Service() - restores duty-cycled scanning here, within
@@ -742,7 +744,7 @@ namespace alc
     // ================================================================
     bool cancelled { m_arming.Disarm() };
 
-    logArmingFailure();
+    logArmingFailure(false);
 
     // Deliberately says nothing about the LEDs: the main loop logs their actual
     // applied values.
@@ -750,7 +752,7 @@ namespace alc
     return cancelled;
   }
 
-  void App::logArmingFailure()
+  void App::logArmingFailure(bool atArmCommand)
   {
     ArmingStep step { ArmingStep::DisablePins };
     int result { 0 };
@@ -768,6 +770,14 @@ namespace alc
 
       case ArmingStep::EnablePins:
         LOG_ERR("Arming failed at the fire pin enable (%d) - device Inactive, fire pins disabled, no acknowledgement!", result);
+        break;
+
+      case ArmingStep::ScannerCheck:
+        if (atArmCommand) {
+          LOG_ERR("Arming refused: scanner not running - the device could not hear a disarm!");
+        } else {
+          LOG_ERR("Arming failed at the scanner check (%d) - device Inactive, fire pins disabled, no acknowledgement!", result);
+        }
         break;
     }
   }
@@ -1028,6 +1038,8 @@ namespace alc
 
   bool App::ScannerRunning() const
   {
+    // Overrides both DetectionHardware and ArmingActions, which declare the same
+    // query. A query only - must not call back into m_arming or the engine.
     return m_scanner.IsScanning();
   }
 
@@ -1330,6 +1342,7 @@ namespace alc
     ArmDecision decision { DecideCommand(m_arming.State(), fromNetworkManager, command) };
     protocol::Mode previousMode { m_settings.OperatingMode() };
     bool armedDelayWasPending { m_engine.DelayPendingArmed() };
+    ArmState armStateBefore { m_arming.State() };
     int result { 0 };
     LedPattern pattern { LedPattern::None };
 
@@ -1407,8 +1420,17 @@ namespace alc
         // acknowledged: LED A stays silent until the main loop's Service() has
         // restarted detection armed and enabled the pins. A failure then fails
         // safe to the warning, not to LED A.
+        //
+        // NO SCANNER, NO ARMING. From Inactive the sequence refuses the Arm when
+        // the scanner is not running and has already raised the warning; the
+        // refusal is logged here from its recorded failure. Nothing else follows:
+        // no continuous scan, no LED A, no exit delay.
         if (!m_arming.BeginArming(k_uptime_get())) {
-          LOG_ERR("Arming not started - device was not Inactive!");
+          if (armStateBefore == ArmState::Inactive) {
+            logArmingFailure(true);
+          } else {
+            LOG_ERR("Arming not started - device was not Inactive!");
+          }
           return;
         }
 

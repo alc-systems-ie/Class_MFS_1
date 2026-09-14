@@ -102,8 +102,9 @@ namespace alc
       bool disarmDevice();
 
       // Logs a failure ArmingSequence recorded, if any. The warning was already
-      // raised by the sequence through SignalWarning().
-      void logArmingFailure();
+      // raised by the sequence through SignalWarning(). atArmCommand selects the
+      // refusal wording for a ScannerCheck failure raised by BeginArming().
+      void logArmingFailure(bool atArmCommand);
 
       // The warning (arming sequence amendment section 4). Logs, and - until the
       // dedicated warning light is chosen - plays three long pulses on LED B in
@@ -119,6 +120,8 @@ namespace alc
       int DisableFirePins() override;
       int RestartDetection(bool armed) override;
       int EnableFirePins() override;
+      // ScannerRunning() is declared once, below with DetectionHardware, and
+      // overrides both interfaces.
       void SignalWarning(ArmingStep step, int result) override;
 
       // The engine's settings, built from m_settings on every call - never cached,
