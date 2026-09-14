@@ -131,6 +131,14 @@ The row "*(armed, command ignored)* — nothing" is removed. Every other row sta
 
 ## 3. App flow — replaces design spec §8.1 and §8.2
 
+**Amended 2026-09-14 — scan reliability:**
+`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` §4 adds a red
+**Stop** beside Send on every sending page (Arm, Settings, provisioner) and
+removes the "Send Disarm (replaces advert)" pre-empt (design spec §8.2) for
+cancelling an in-flight Arm — cancelling an arming, or disarming straight after
+arming, is now Stop, set Disarmed, Send. The disarm confirmation prompt below is
+unchanged.
+
 **The app never knows the device state, so it assumes the device is armed.**
 
 ### 3.1 Arm page — the MFS_1 home screen

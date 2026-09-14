@@ -29,7 +29,7 @@ Hardware is the `alc_drawer_master` board **minus the FEM**: **nRF54L05 + nPM210
 | Decision | Value |
 |----------|-------|
 | Sleep architecture | **System ON idle + RTC wake** — *not* nPM2100 Hibernate |
-| Scan | **100 ms passive every 6 s** (1.667% RX duty cycle) |
+| Scan | **100 ms passive every 5.906 s** (1.693% RX duty cycle) |
 | ADXL367 | Continuous measurement mode, 100 Hz ODR |
 | nRF21540 FEM | **Not fitted** — costs 3 dB TX (+7 dBm native vs +10 dBm) |
 | Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version 0x03 with an explicit command type |
@@ -142,13 +142,19 @@ Constraints from that analysis that are easy to violate by accident:
 - **Hibernate_PT cannot power the ADXL367** — it force-disables LDOSW and resets
   the PMIC registers. Only plain Hibernate can hold LSOUT up in ULP mode.
 - **Never enable an nRF21540 LNA for scanning** in any future FEM-equipped
-  variant — +5 mA at 1.667% duty is +83 µA, more than doubling the whole budget.
-- **The counterpart's advertising interval is not ours to set.** Measured from a
-  Mac (`CoreBluetooth`) at ~187 ms — well outside the 20–50 ms this project
-  originally assumed, and iOS/macOS do not expose the interval as a setting. The
-  app compensates with a 30 s advertising window rather than a fast interval; an
-  iPhone re-measure is still pending
-  (`docs/superpowers/plans/2026-09-13-bench-checklist.md` §7).
+  variant — +5 mA at 1.693% duty is +84.7 µA, more than doubling the whole budget.
+- **The counterpart's advertising interval is not ours to set.** Measured
+  (2026-09-14, `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`
+  §1): **187.5 ms, steady**, from a Mac (`CoreBluetooth`, foreground); **~35 ms,
+  steady for 30 s**, from an iPhone (iOS 26.6.1, foreground, release build).
+  Both are well outside the 20–50 ms this project originally assumed, and
+  iOS/macOS do not expose the interval as a setting. The app compensates with a
+  30 s advertising window rather than a fast interval. **Rule: the scan period
+  must not sit within a few ms of an integer multiple of any measured
+  counterpart interval longer than the scan window** — `CONFIG_MFS_SCAN_PERIOD_MS`
+  at 6000 ms was exactly 32 × 187.5 ms, so every scan landed at the same phase
+  of the Mac's advertising cycle and whole commands were missed; the default
+  moved to 5906 ms (31.5 × 187.5 ms) for exactly this reason.
 
 Full access design — derivation, key issue, wire format, acceptance, time, threat
 review: **`docs/tan-scheme.md`**. The wire format and firmware units are in

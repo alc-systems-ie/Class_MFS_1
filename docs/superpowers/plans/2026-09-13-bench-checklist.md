@@ -28,7 +28,7 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 ## 2. Boot and access state (Task 9)
 
 - [x] First boot: `No access state stored - first boot, no day floor.`
-- [x] `Passive scan started: 100 ms window every 6000 ms.`
+- [x] `Passive scan started: 100 ms window every 5906 ms.`
 - [x] Temporarily enable `CONFIG_THREAD_ANALYZER=y` (and `CONFIG_THREAD_ANALYZER_AUTO=y` or a manual call point), flash, provision, send a command and trigger the device, then record the reported high-water marks for the main thread and the Bluetooth RX thread. Revert the Kconfig afterwards.
 
 ## 3. Provisioning and commands, end to end (Task 13)
@@ -65,11 +65,27 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 6. [ ] Build with `CONFIG_MFS_DEBUG_LED=n` in prj.conf, flash, provision, and Arm page Send Armed: the rapid flash still plays, LED A is **dark** afterwards. Disarm (slow flash), then Settings page **Send** (one blink) and confirm LED A stays dark afterwards. Restore `CONFIG_MFS_DEBUG_LED=y`.
 7. [ ] Arming failure (optional, needs the ADXL367 disconnected): after the 10 s exit delay, **three long pulses on LED B**, no LED A flash, device Inactive - see §5c item 7.
 
-## 7. iPhone advertising interval (Task 13, spec §9 item 2)
+## 7. iPhone advertising interval (Task 13, spec §9 item 2) — DONE 2026-09-14
 
-- [ ] Temporarily raise `CONFIG_BT_RX_STACK_SIZE` to 4096 in `prj.conf` for this step - the added `LOG_INF()` below runs on the Bluetooth RX thread in immediate log mode, and the normal 2048-byte stack is sized on the assumption that this thread never logs (see the comment on `s_dropped` in `src/command_scanner.cpp`). Revert afterwards.
-- [ ] Temporarily add `LOG_INF("UUID seen at %lld ms.", k_uptime_get());` at the top of `parseAdStructure()`'s UUID branch in `src/command_scanner.cpp`, flash, `flutter run -d <iphone>`, and **Send** once. Record the interval between timestamps. **Revert both changes and reflash.**
-- [ ] If the interval is materially different from 187 ms, update `kAdvertiseWindow` in `class_app/lib/services/advertiser.dart` and spec §3's detection table, and `CLAUDE.md`'s interval note.
+- [x] Measured with a second nRF54L15 DK running `tools/uuid_observer` (a
+  continuous passive scanner logging every UUID with a timestamp) instead of the
+  in-firmware `LOG_INF()` patch originally planned below: **~35 ms, steady for
+  30 s, ~800 adverts per Send** (iOS 26.6.1, foreground, release build, slot 3).
+  Materially different from the Mac's 187.5 ms.
+- [x] Against the iPhone, MFS_1's `CONFIG_MFS_SCAN_DIAG` counters showed 2–3
+  adverts caught in every 100 ms scan window and every command heard at the
+  first scan — no `kAdvertiseWindow` or detection-table change is needed on the
+  iPhone side. The Mac's 187.5 ms interval was the actual problem: it is close
+  to an integer multiple of the old 6000 ms scan period (see the 2026-09-14
+  bench log entry below), fixed by moving the default to 5906 ms
+  (`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`).
+- [x] `CLAUDE.md`'s interval note updated with both measured values and the
+  no-near-multiple rule.
+
+Original recipe (superseded by the observer tool above; kept for reference):
+
+- Temporarily raise `CONFIG_BT_RX_STACK_SIZE` to 4096 in `prj.conf` for this step - the added `LOG_INF()` below runs on the Bluetooth RX thread in immediate log mode, and the normal 2048-byte stack is sized on the assumption that this thread never logs (see the comment on `s_dropped` in `src/command_scanner.cpp`). Revert afterwards.
+- Temporarily add `LOG_INF("UUID seen at %lld ms.", k_uptime_get());` at the top of `parseAdStructure()`'s UUID branch in `src/command_scanner.cpp`, flash, `flutter run -d <iphone>`, and **Send** once. Record the interval between timestamps. **Revert both changes and reflash.**
 
 ## 8. Recovery notes
 
@@ -245,6 +261,30 @@ fire line **is low / is not high**.
    The device ends Inactive, the meter shows both fire lines low, and the test
    resumes disarmed.
 
+## 5d. Scan reliability and Send/Stop (plan 2026-09-14)
+
+1. [ ] After flashing, confirm the boot log shows `Passive scan started: 100 ms
+   window every 5906 ms.`
+2. [ ] Mac: 10 Sends to the device. Count how many are heard at the first or
+   second scan (RTT `Command slot ... n ...` or LED A's pattern). Expect nearly
+   all - 5906 ms is no longer a near-integer-multiple of the Mac's 187.5 ms
+   advertising interval.
+3. [ ] Arm, then within the 10 s exit delay: press **Stop**, set Disarmed, **Send**.
+   Expect `Continuous scan: arming exit delay.` and `Scan cadence now
+   CONTINUOUS.` logged when the Arm was accepted, the cancel heard within about
+   a second of the Disarm advertising, and `Scan cadence now duty-cycled.` once
+   arming is cancelled.
+4. [ ] Let an arming complete instead of cancelling it: once Active, confirm the
+   cadence has returned to duty-cycled (`Scan cadence now duty-cycled.`) -
+   continuous scan covers the exit delay only, not the armed state itself.
+5. [ ] Press **Stop** during an in-flight Send: the app's advert stops at once
+   rather than running the full 30 s; with the observer tool
+   (`tools/uuid_observer`) running, confirm the UUID stops appearing.
+6. [ ] Optional, with the observer running: watch for the previous payload
+   being re-broadcast for a second or two at the start of the next Send (see
+   the 2026-09-14 bench log entry below) - harmless, documented in
+   `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` §5.
+
 ## 9. Bench log
 
 ### 2026-09-14 — first bench session (J-Link 853003346, nRF54L05, device 0xFBACBE88)
@@ -323,3 +363,34 @@ wait for the rollover.** This is a second route into the sequence-window DECISIO
 above — a device-side erase, which app-side options A/B cannot help and C only partly.
 §5a.2 then passed: `Command slot 2 n 0: Arm, minute 642.`, `Applied:` with the stored
 (default) settings.
+
+### 2026-09-14 — scan reliability bench session (second nRF54L15 DK, J-Link 1057733814, running `tools/uuid_observer`; MFS_1 built with `CONFIG_MFS_SCAN_DIAG=y`)
+
+**Root cause found for unreliable commands from the Mac.** The Mac advertises at
+a steady **187.5 ms** (~155 adverts per 30 s Send). With
+`CONFIG_MFS_SCAN_PERIOD_MS` still at its old default of 6000 ms, 6000 ms is
+exactly 32 × 187.5 ms, so every 100 ms scan window landed at the same phase of
+the Mac's advertising cycle: MFS_1's `CONFIG_MFS_SCAN_DIAG` counters showed 0 or
+1 adverts caught per scan, and whole commands were missed — a time sync missed
+by all 6 of its scans, four consecutive Disarms (n 18–21) unheard, and Disarm
+n 24 unheard.
+
+**iPhone measured for the first time** (iOS 26.6.1, foreground, release build,
+slot 3): a steady **~35 ms** advertising interval for the full 30 s, ~800
+adverts per Send. MFS_1 caught 2–3 adverts in every 100 ms scan window, every
+command was heard at the first scan, and a cancel sent during the 10 s exit
+delay worked. This closes §7 above and the "iPhone re-measure pending" note in
+`CLAUDE.md`.
+
+**iOS re-broadcasts the previous payload.** At the start of the next Send, the
+observer logged the previous advert's UUID (the time-sync payload) repeating
+for about 1.7 s before the new payload appeared — a minute after the previous
+advert had ended. Documented as an acceptable, explicable behaviour, not a bug:
+`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` §5.
+
+**Fix:** `CONFIG_MFS_SCAN_PERIOD_MS` default moved to **5906 ms** (31.5 ×
+187.5 ms, so consecutive scans sample opposite halves of the Mac's cycle,
+instead of 32 × 187.5 ms landing on the same phase every time), and the
+scanner now runs continuously for the whole Arming exit delay (§3, §5d above),
+not only for an armed trigger pending. Full derivation:
+`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`.

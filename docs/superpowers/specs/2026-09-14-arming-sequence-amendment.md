@@ -46,6 +46,12 @@ boolean first: the pins now go safe before any state changes.
 
 ## 3. The arming sequence
 
+**Amended 2026-09-14 — scan reliability:**
+`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` §3 supersedes
+the scanner cadence bullet below — the scanner runs continuously for the whole
+10 s exit delay, not at its normal duty-cycled cadence, so a Disarm sent during
+the delay is heard within a fraction of a second.
+
 A new arm state, **Arming**, sits between Inactive and Active.
 
 1. **Arm accepted** (persisted before acting, as for every command) → **Arming**. The fire
@@ -53,7 +59,9 @@ A new arm state, **Arming**, sits between Inactive and Active.
    engineer can vacate the area:
    - LED A shows nothing (no acknowledgement yet);
    - **LED B is suppressed** — nothing visible while the engineer walks away;
-   - the main loop keeps running and the scanner keeps its normal cadence;
+   - the main loop keeps running and the scanner switches to its continuous
+     cadence (`Scan cadence now CONTINUOUS.`), returning to duty-cycled when
+     Arming ends;
    - the detection engine keeps its disarmed test running (invisible); its state is
      discarded at step 2.
 2. After 10 s, in one synchronous step, in order:

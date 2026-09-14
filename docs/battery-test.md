@@ -120,7 +120,7 @@ starts boosting as V<sub>BAT</sub> drops, drawing proportionally more. Measuring
 Sweeping those three gives a far better life estimate than a single point, and
 takes minutes rather than months.
 
-The trace should show a ~4 µA floor with a **100 ms burst every 6 s** at a few mA
+The trace should show a ~4 µA floor with a **100 ms burst every 5906 ms** at a few mA
 — that burst is the scan window, and confirming its width and period directly
 validates the duty cycle the whole budget rests on.
 

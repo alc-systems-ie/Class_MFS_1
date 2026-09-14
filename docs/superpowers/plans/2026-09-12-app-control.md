@@ -6283,6 +6283,10 @@ code copies."
   bool CommandScanner::TakeCandidate(Candidate& out)
 ```
 
+(Note, 2026-09-14: the log text as implemented is `Scan cadence now CONTINUOUS.` /
+`Scan cadence now duty-cycled.` — see `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`.
+This historical plan is left as written.)
+
 - [ ] **Step 3: Add the delay, both witnesses and the cancellation to App**
 
 1. In `src/app.hpp`, replace:
@@ -6643,6 +6647,7 @@ west flash --dev-id 853003346 --recover
 Provision the clock. Then:
 
 1. Set **activations = 1, delay = 30 s**, arm. Trigger it. Expect `TRIGGER PENDING: firing in 30 s. Deactivating cancels it.` and `Scan cadence now CONTINUOUS (trigger pending).`
+   (Note, 2026-09-14: the log text as implemented is `Scan cadence now CONTINUOUS.` — see `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`. This historical plan is left as written.)
 2. **Wait the full 30 s.** Confirm `Output ASSERTED`, LED B lit **for about 5 s**, then `Output cleared`. (This is the step the old version would have failed.)
 3. Repeat, but **deactivate at ~15 s**. Confirm the arm state goes Inactive, **the output NEVER asserts, then or later**, and the scan returns to duty-cycled.
 4. Repeat, and **reset the board mid-delay**. Confirm it comes up Inactive, clock invalid, no pending trigger.

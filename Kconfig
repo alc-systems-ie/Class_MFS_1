@@ -3,10 +3,14 @@ mainmenu "Project CLASS Multi-Function Sensor 1 (nRF54L05)"
 config MFS_SCAN_PERIOD_MS
 	int "Passive scan period (milliseconds)"
 	default 5906
+	range 1000 10240
 	help
-	  How often the device wakes to scan. The useful range is 1000-30000 ms;
-	  above 30000 ms the cell's shelf life caps battery life and longer
-	  periods buy nothing.
+	  How often the device wakes to scan. Valid range 1000-10240 ms: the
+	  upper bound is the nRF54L HCI scan interval maximum (also enforced by
+	  the range above), and the millisecond-to-0.625-ms-unit conversion in
+	  src/command_scanner.cpp (value * 8 / 5 into a uint16_t) wraps silently
+	  above 40959 ms, well past that ceiling. Above a few thousand ms the
+	  cell's shelf life, not the radio, becomes the limiting factor.
 
 	  The default 5906 ms (9449 BLE units, 5905.625 ms) replaces preset 5's
 	  6000 ms from the ladder in docs/v1-scope.md section 7.1. 6000 ms is

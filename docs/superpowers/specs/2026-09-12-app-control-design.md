@@ -115,6 +115,13 @@ Amended 2026-09-13 (security) — full reasoning in `docs/tan-scheme.md`:
 
 ## 3. Spike result — advertising is proven, at a measured cost
 
+**Amended 2026-09-14 — scan reliability:**
+`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` §1–2 supersedes
+the 6 s scan cadence assumed below — the default `CONFIG_MFS_SCAN_PERIOD_MS` is
+now **5906 ms** — and adds the measured iPhone advertising interval (~35 ms,
+against the Mac's 187.5 ms measured here) and the root cause of the unreliable
+commands that measurement explains. Where they disagree, the amendment wins.
+
 Run 2026-09-12. A Flutter app on macOS advertised a 128-bit service UUID; an
 nRF54L15 DK running a passive scanner logged it. **119 adverts, every one 16
 bytes, AD type 0x07, payload byte-exact:**
@@ -755,6 +762,13 @@ offset directly; that design is open.
 
 ## 8. App design
 
+**Amended 2026-09-14 — Send/Stop:**
+`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` §4 supersedes
+the Send-only flow below — every sending page (Arm, Settings, provisioner) also
+has a red **Stop**, and the "Send Disarm (replaces advert)" pre-empt described in
+§8.2 below is **removed**: cancelling an in-flight Arm is now Stop, set
+Disarmed, Send. Where they disagree, the amendment wins.
+
 `../class_app` — one Flutter app for the device series.
 
 ```
@@ -818,8 +832,10 @@ by a request to the real Network Manager.
    (arming sequence amendment §3). **Rapid flash** on LED A — armed with exactly the
    settings just watched. **Three long pulses on LED B** and no LED A flash — the
    device could not arm (a fault) and stays disarmed; if it repeats, the device is
-   faulty. To cancel during the exit delay, toggle to Disarmed and Send — the app
-   lets the Disarm replace an Arm still advertising.
+   faulty. To cancel during the exit delay: press **Stop**, toggle to Disarmed,
+   and press **Send**
+   (`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` §4 — the
+   previous "Disarm replaces the advert" pre-empt is removed).
 
 ### 8.3 What the app must be honest about
 
