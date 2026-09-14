@@ -11,6 +11,7 @@ void run_credentials_tests();
 void run_arm_policy_tests();
 void run_arming_sequence_tests();
 void run_detection_engine_tests();
+void run_scan_policy_tests();
 
 int main()
 {
@@ -25,6 +26,7 @@ int main()
   run_arm_policy_tests();
   run_arming_sequence_tests();
   run_detection_engine_tests();
+  run_scan_policy_tests();
   printf("ALL TESTS PASSED\n");
   return 0;
 }

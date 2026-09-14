@@ -235,7 +235,7 @@ namespace alc
 
     m_fast     = fast;
     m_scanning = true;
-    LOG_INF("Scan cadence now %s.", fast ? "CONTINUOUS (trigger pending)" : "duty-cycled");
+    LOG_INF("Scan cadence now %s.", fast ? "CONTINUOUS" : "duty-cycled");
     return 0;
   }
 

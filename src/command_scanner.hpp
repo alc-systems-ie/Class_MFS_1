@@ -63,8 +63,10 @@ namespace alc
       /**
        * @brief Switch between the duty-cycled scan and a continuous one.
        *
-       * Continuous while a trigger is pending, so a deactivate is heard within one
-       * advert rather than ~30 s. Battery life is explicitly not a factor then.
+       * Continuous while Arming or while an armed trigger is pending, so a
+       * deactivate is heard within one advert rather than ~30 s. Battery life is
+       * explicitly not a factor then. The cadence is decided by DesiredFastScan()
+       * (scan_policy.hpp) and applied only by App::applyScanCadence().
        *
        * Records `fast` as the REQUESTED cadence regardless of outcome - see
        * IsAtRequestedCadence(). On failure to start at it, falls back to
@@ -78,6 +80,9 @@ namespace alc
        *         fallback restart succeeded.
        */
       int SetFastScan(bool fast);
+
+      /** @brief The cadence last REQUESTED via SetFastScan(), whether or not it was achieved. */
+      bool IsFastRequested() const { return m_fast_requested; }
 
       /** @brief True only while a scan is confirmed running, AT ANY cadence. */
       bool IsScanning() const { return m_scanning; }

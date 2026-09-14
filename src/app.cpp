@@ -214,6 +214,7 @@ namespace alc
       , m_settings()
       , m_delay_timer {}
       , m_delay_pm_lock_held(false)
+      , m_trigger_pending_scan(false)
       , m_last_scan_service_ms(0)
       , m_last_scan_diag_ms(0)
       , m_scan_outage_logged(false)
@@ -355,6 +356,14 @@ namespace alc
       // A failed arming has already failed safe and raised the warning inside
       // Service(). No LED A acknowledgement.
       logArmingFailure();
+
+      // Every exit from Arming - Active, cancelled by a Disarm command above, or a
+      // failed step inside Service() - restores duty-cycled scanning here, within
+      // one loop tick, unless an armed trigger delay still needs it. Compared
+      // against the cadence last REQUESTED so an unchanged tick makes no Bluetooth
+      // call, and a failed change (still requested in the scanner) is left to
+      // serviceScanHealth()'s throttled retry rather than retried every tick.
+      if (DesiredFastScan(m_arming.State(), m_trigger_pending_scan) != m_scanner.IsFastRequested()) { (void)applyScanCadence(); }
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
       if (++blinkTicks >= M_BLINK_PERIOD_TICKS) {
@@ -994,9 +1003,26 @@ namespace alc
 
     // Scan continuously while armed and pending. The deactivate path is the most
     // important thing the device does while a trigger is pending, and at the
-    // normal 6 s cadence an abort takes ~30 s to be heard with confidence. A
+    // normal ~6 s cadence an abort takes ~30 s to be heard with confidence. The
+    // request is one input to the cadence arbiter - Arming also scans
+    // continuously - so the result returned is that of the COMBINED cadence. A
     // failure is reported by the engine (DelayFastScanFailed or
     // DelayScanRestoreFailed) and retried by serviceScanHealth().
+    m_trigger_pending_scan = fast;
+    return applyScanCadence();
+  }
+
+  int App::applyScanCadence()
+  {
+    ArmState state { m_arming.State() };
+    bool fast { DesiredFastScan(state, m_trigger_pending_scan) };
+
+    // Logged once, when continuous scanning is newly requested. The scanner logs
+    // the achieved cadence itself ("Scan cadence now ..."), and any failure.
+    if (fast && !m_scanner.IsFastRequested()) {
+      LOG_INF("Continuous scan: %s.", (state == ArmState::Arming) ? "arming exit delay" : "armed trigger pending");
+    }
+
     return m_scanner.SetFastScan(fast);
   }
 
@@ -1391,6 +1417,12 @@ namespace alc
         // same stop-then-touch order as playLedPattern().
         k_timer_stop(&m_led_timer);
         m_led_sequencer.Stop();
+
+        // Scan continuously for the whole exit delay, so a Disarm is heard within
+        // a fraction of a second (scan reliability amendment section 3). A failure
+        // is logged by the scanner and retried by serviceScanHealth(); arming
+        // proceeds, since duty-cycled scanning still hears a Disarm, only slower.
+        (void)applyScanCadence();
 
         LOG_INF("Arming: fire pins isolated, arming in %u s.", static_cast<unsigned>(ArmingSequence::M_EXIT_DELAY_MS / MSEC_PER_SEC));
         break;

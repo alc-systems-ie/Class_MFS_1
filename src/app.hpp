@@ -16,6 +16,7 @@
 #include "led_sequencer.hpp"
 #include "npm2100.hpp"
 #include "output_switch.hpp"
+#include "scan_policy.hpp"
 #include "settings.hpp"
 
 namespace alc
@@ -140,6 +141,20 @@ namespace alc
       // tracked by the detection engine itself. Called every main-loop tick.
       void serviceScanHealth();
 
+      // THE ONE PLACE the scanner cadence is applied. Computes DesiredFastScan()
+      // from the arm state and m_trigger_pending_scan and hands it to
+      // CommandScanner::SetFastScan() (a no-op when already there and scanning).
+      // Logs the reason when continuous scanning is newly requested. Returns the
+      // scanner's result, which the engine reports as DelayFastScanFailed or
+      // DelayScanRestoreFailed; a failure stays requested in the scanner and
+      // serviceScanHealth() retries it.
+      //
+      // Called from SetTriggerPendingScan(), after a successful BeginArming(), and
+      // from the main loop only when the desired cadence differs from the one last
+      // requested - never directly from an ArmingActions implementation. It only
+      // reads m_arming.State(); it never calls into the sequence.
+      int applyScanCadence();
+
       // DetectionHardware - see detection_engine.hpp for each contract.
       int ConfigureAccelerometer(uint16_t thresholdLsb, bool& awake) override;
       int StandbyAccelerometer() override;
@@ -239,6 +254,11 @@ namespace alc
       // build, so continuous scanning is the mechanism that actually keeps a
       // disarm heard promptly). Owned by SetTriggerPendingScan().
       bool m_delay_pm_lock_held;
+
+      // The detection engine's request for continuous scanning during an ARMED
+      // trigger delay - one input to DesiredFastScan(), the arm state being the
+      // other. Written only by SetTriggerPendingScan().
+      bool m_trigger_pending_scan;
 
       // Uptime of the last scanner health check - see serviceScanHealth().
       int64_t m_last_scan_service_ms;

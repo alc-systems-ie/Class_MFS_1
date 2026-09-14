@@ -2,12 +2,27 @@ mainmenu "Project CLASS Multi-Function Sensor 1 (nRF54L05)"
 
 config MFS_SCAN_PERIOD_MS
 	int "Passive scan period (milliseconds)"
-	default 6000
+	default 5906
 	help
-	  How often the device wakes to scan. The default 6000 ms is preset 5 of
-	  the ladder in docs/v1-scope.md section 7.1 and budgets at ~69 uA, about
-	  2.4 years on a CR123A. The useful range is 1000-30000 ms; above 30000 ms
-	  the cell's shelf life caps battery life and longer periods buy nothing.
+	  How often the device wakes to scan. The useful range is 1000-30000 ms;
+	  above 30000 ms the cell's shelf life caps battery life and longer
+	  periods buy nothing.
+
+	  The default 5906 ms (9449 BLE units, 5905.625 ms) replaces preset 5's
+	  6000 ms from the ladder in docs/v1-scope.md section 7.1. 6000 ms is
+	  exactly 32 x 187.5 ms, the advertising interval measured from a macOS
+	  advertiser, so every scan landed at the same phase of its cycle and a
+	  command was caught on almost every scan or on almost none. 5906 ms is
+	  31.5 x 187.5 ms: each scan advances half an interval, so consecutive
+	  scans sample opposite halves of the cycle. Against the ~35 ms (iOS) and
+	  100 ms (Android low-latency) intervals the 100 ms window already spans
+	  an interval, so nothing changes there.
+
+	  Rule: the period must not be within a few ms of an integer multiple of
+	  any measured counterpart advertising interval longer than the scan
+	  window (docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md
+	  section 2). The shorter period raises the scan terms of the ~69 uA
+	  budget by 6000/5906, about 1.6 %, which is negligible.
 
 config MFS_SCAN_WINDOW_MS
 	int "Passive scan window (milliseconds)"
