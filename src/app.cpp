@@ -1101,7 +1101,7 @@ namespace alc
   {
     const protocol::Command& command { evaluation.command };
     bool fromNetworkManager { evaluation.slot == access::M_SLOT_NETWORK_MANAGER };
-    ArmDecision decision { DecideCommand(m_arm_state == ArmState::Active, fromNetworkManager, command) };
+    ArmDecision decision { DecideCommand(m_arm_state, fromNetworkManager, command) };
     protocol::Mode previousMode { m_settings.OperatingMode() };
     bool armedDelayWasPending { m_engine.DelayPendingArmed() };
     int result { 0 };

@@ -53,9 +53,6 @@ namespace alc
       bool IsOutputActive() const { return m_output_active; }
 
     private:
-      /** @brief Whether the sensor is armed. Cold start defaults to Inactive. */
-      enum class ArmState : uint8_t { Inactive = 0, Active = 1 };
-
       /** @brief Whether updateOutputState() runs a detection engine tick first. */
       enum class EngineTick : uint8_t { Run, Skip };
 

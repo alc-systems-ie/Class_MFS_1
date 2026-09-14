@@ -9,6 +9,7 @@ void run_arm_policy_tests()
   using namespace alc;
 
   constexpr bool M_BOTH_SLOT_KINDS[] { false, true };
+  constexpr ArmState M_ALL_STATES[] { ArmState::Inactive, ArmState::Arming, ArmState::Active };
   protocol::Command command;
   ArmDecision decision;
 
@@ -20,7 +21,7 @@ void run_arm_policy_tests()
   for (bool fromNetworkManager : M_BOTH_SLOT_KINDS) {
     // ARMED + Disarm: disarm and trim, nothing else.
     command.type = protocol::CommandType::Disarm;
-    decision     = DecideCommand(true, fromNetworkManager, command);
+    decision     = DecideCommand(ArmState::Active, fromNetworkManager, command);
     assert(decision.action == ArmAction::Disarm);
     assert(!decision.applySettings && !decision.applyMode && decision.trimClock);
 
@@ -28,27 +29,41 @@ void run_arm_policy_tests()
     // No settings, no mode, not even a trim - armed, only a disarm acts.
     for (protocol::CommandType type : { protocol::CommandType::Arm, protocol::CommandType::Settings }) {
       command.type = type;
-      decision     = DecideCommand(true, fromNetworkManager, command);
+      decision     = DecideCommand(ArmState::Active, fromNetworkManager, command);
       assert(decision.action == ArmAction::ReplayArmed);
       assert(!decision.applySettings && !decision.applyMode && !decision.trimClock);
     }
 
     // INACTIVE + Arm: arm with the STORED settings. The command's are not applied.
     command.type = protocol::CommandType::Arm;
-    decision     = DecideCommand(false, fromNetworkManager, command);
+    decision     = DecideCommand(ArmState::Inactive, fromNetworkManager, command);
     assert(decision.action == ArmAction::Arm);
     assert(!decision.applySettings && !decision.applyMode && decision.trimClock);
 
     // INACTIVE + Disarm: the ordinary deactivation, which also ends tuning.
     command.type = protocol::CommandType::Disarm;
-    decision     = DecideCommand(false, fromNetworkManager, command);
+    decision     = DecideCommand(ArmState::Inactive, fromNetworkManager, command);
     assert(decision.action == ArmAction::Disarm);
     assert(!decision.applySettings && !decision.applyMode && decision.trimClock);
 
-    // RESERVED never acts, armed or not (decode rejects it first; defence in depth).
+    // ARMING + Disarm: cancels arming, with the trim (arming sequence amendment 3.1).
+    command.type = protocol::CommandType::Disarm;
+    decision     = DecideCommand(ArmState::Arming, fromNetworkManager, command);
+    assert(decision.action == ArmAction::Disarm);
+    assert(!decision.applySettings && !decision.applyMode && decision.trimClock);
+
+    // ARMING + Arm or Settings: nothing at all - no replay, no settings, no mode, no trim.
+    for (protocol::CommandType type : { protocol::CommandType::Arm, protocol::CommandType::Settings }) {
+      command.type = type;
+      decision     = DecideCommand(ArmState::Arming, fromNetworkManager, command);
+      assert(decision.action == ArmAction::Ignore);
+      assert(!decision.applySettings && !decision.applyMode && !decision.trimClock);
+    }
+
+    // RESERVED never acts in any state (decode rejects it first; defence in depth).
     command.type = protocol::CommandType::Reserved;
-    for (bool armed : M_BOTH_SLOT_KINDS) {
-      decision = DecideCommand(armed, fromNetworkManager, command);
+    for (ArmState state : M_ALL_STATES) {
+      decision = DecideCommand(state, fromNetworkManager, command);
       assert(decision.action == ArmAction::Ignore);
       assert(!decision.applySettings && !decision.applyMode && !decision.trimClock);
     }
@@ -56,9 +71,9 @@ void run_arm_policy_tests()
 
   // INACTIVE + Settings: tune; mode only from slot 0.
   command.type = protocol::CommandType::Settings;
-  decision     = DecideCommand(false, false, command);
+  decision     = DecideCommand(ArmState::Inactive, false, command);
   assert(decision.action == ArmAction::Tune && decision.applySettings && !decision.applyMode && decision.trimClock);
-  decision = DecideCommand(false, true, command);
+  decision = DecideCommand(ArmState::Inactive, true, command);
   assert(decision.action == ArmAction::Tune && decision.applySettings && decision.applyMode);
 
   printf("arm policy: OK\n");

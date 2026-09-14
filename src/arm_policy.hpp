@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "arming_sequence.hpp"
 #include "mfs_protocol.hpp"
 
 namespace alc
@@ -9,9 +10,9 @@ namespace alc
 
   /** @brief What an accepted command is allowed to do. */
   enum class ArmAction : uint8_t {
-    Ignore,      ///< Reserved type. NOTHING happens (decode already rejects it).
-    Disarm,      ///< -> Inactive. From Active the only state change a command can make; from Inactive it restarts the test.
-    Arm,         ///< Inactive -> Active with the STORED settings.
+    Ignore,      ///< NOTHING happens: a reserved type (decode already rejects it), or Arm/Settings while Arming.
+    Disarm,      ///< -> Inactive. From Active the only state change a command can make; Arming: cancels; Inactive: restarts the test.
+    Arm,         ///< Inactive -> Arming (then Active after the exit delay) with the STORED settings.
     Tune,        ///< Inactive stays Inactive; the command's settings applied and the test restarted.
     ReplayArmed, ///< Armed, and the command does not disarm. State unchanged; LED A replays Armed.
   };
@@ -27,14 +28,18 @@ namespace alc
   /**
    * @brief THE SINGLE PATH. Decides what an accepted command may do. Pure.
    *
-   * See the command types amendment section 2.2 for the full table. Summary:
+   * See the command types amendment section 2.2 and the arming sequence
+   * amendment section 3.1 for the full tables. Summary:
    *
    * | Device is | Command  | Action                       | Settings | Mode | Trim |
    * |-----------|----------|-------------------------------|----------|------|------|
    * | Active    | Disarm   | Disarm                        | no       | no   | yes  |
    * | Active    | Arm      | No change - replay Armed      | no       | no   | no   |
    * | Active    | Settings | No change - replay Armed      | no       | no   | no   |
-   * | Inactive  | Arm      | Arm with the STORED settings  | no       | no   | yes  |
+   * | Arming    | Disarm   | Disarm - cancels arming       | no       | no   | yes  |
+   * | Arming    | Arm      | Ignore - nothing, no replay   | no       | no   | no   |
+   * | Arming    | Settings | Ignore - nothing, no replay   | no       | no   | no   |
+   * | Inactive  | Arm      | Arming, STORED settings       | no       | no   | yes  |
    * | Inactive  | Disarm   | Stay Inactive, restart test   | no       | no   | yes  |
    * | Inactive  | Settings | Tune                          | yes      | slot 0 only | yes |
    *
@@ -49,10 +54,14 @@ namespace alc
    *
    * App::applyCommand() must act on this decision and on nothing else.
    *
-   * @param armed              Whether the device is Active now.
+   * Arming is treated as armed for command policy, except that nothing is
+   * replayed: LED A has not acknowledged the arm yet, so a replay would reveal
+   * the state early and an Arm must not restart the exit delay.
+   *
+   * @param state              The device's arm state now.
    * @param fromNetworkManager Whether the command came from slot 0.
    */
-  inline ArmDecision DecideCommand(bool armed, bool fromNetworkManager, const protocol::Command& command)
+  inline ArmDecision DecideCommand(ArmState state, bool fromNetworkManager, const protocol::Command& command)
   {
     ArmDecision decision {};
 
@@ -66,7 +75,13 @@ namespace alc
       return decision;
     }
 
-    if (armed) {
+    if (state == ArmState::Arming) {
+      // Arm or Settings during the exit delay: nothing at all - no replay, no
+      // settings, no mode, no trim, and the deadline is not moved.
+      return decision;
+    }
+
+    if (state == ArmState::Active) {
       // Arm or Settings while armed: no settings, no mode, no trim, no re-arm.
       // LED A replays Armed so an engineer who did not know the state learns it.
       decision.action = ArmAction::ReplayArmed;
