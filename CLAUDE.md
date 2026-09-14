@@ -73,15 +73,21 @@ is dangerous.
   consumer, and is gated out of production builds.
 - Armed, the device's only path out is a disarm command or a one-shot trigger —
   see `DecideCommand()` (`src/arm_policy.hpp`), restated under Access rules below.
+- **Disarmed differs from armed in exactly two ways** — parameters change only
+  while disarmed, and a trigger shows on LED B instead of the fire GPIOs.
+  Detection, cooldown and delay run identically; Disarm restarts a test from
+  zero; arming always starts a fresh session
+  (`docs/superpowers/specs/2026-09-14-disarmed-test-mode-amendment.md`).
 
 Related: **arming is edge-triggered** (§1.0.1). AWAKE is a level, not a latch, so a
 naive `armed && triggered` fires the instant the device is armed on motion that
 predates arming — and an engineer handling the device to arm it *is* motion, so
-that is the common case, not an edge case. The device therefore **holds the ADXL367
-in standby while deactivated and configures it afresh on activation**, so there is
-no stale level to inherit. The order is load-bearing: activate is configure →
-confirm AWAKE 0 → set the boolean; deactivate is clear the boolean → re-derive the
-output → `Standby()`. Arming is **refused** if the part will not configure.
+that is the common case, not an edge case. The device therefore **reconfigures the
+ADXL367 afresh on every arm — and on every test restart — so there is no stale
+level to inherit**. The order is load-bearing: arm is restart (configure, confirm
+AWAKE clear) → boolean Active only on success; disarm is boolean Inactive →
+re-derive the output (GPIOs off) → restart the test. Arming is **refused** if the
+part will not configure.
 
 **ADXL367 loop mode has a mandatory initialization routine** (`docs/v1-scope.md`
 §3.1). Referenced mode holds an internal reference that is only valid once the

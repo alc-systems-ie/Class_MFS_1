@@ -91,6 +91,55 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 10. [ ] Turn Bluetooth off on the Mac: Send is disabled and the Arm page shows "Bluetooth is off." (the advertising-error path — "Not sent: …", no countdown, no dialog — is covered by host tests in `class_app/test/advertiser_test.dart`, not exercised here).
 11. [ ] Old-app regression: none needed (nothing deployed); a `0x02` command from an old app build is silent, but its rotating ID still matches (the ID does not depend on the protocol version), so each one counts as an authentication failure toward the 20-failure lockout — make sure no old app build is on a bench phone.
 
+## 5b. Disarmed test mode (plan 2026-09-14)
+
+RTT expectations below are the engine's log texts as implemented — see
+`App::OnDetectionEvent` and the Detection met/cleared and Output lines in
+`App::Run()` (`src/app.cpp`).
+
+1. [ ] Flash without `--recover`, provision the clock. With no command sent, tap
+   the device three times: LED B lights on the third tap (`Detection met (test) -
+   LED B on.`), at the settings already stored from boot - no Settings command is
+   needed to start the test.
+2. [ ] Disarm (Arm page, Send Disarmed): slow flash, then the test restarts from
+   zero. Count the restarts: the next tap after the disarm logs `Activation 1 of
+   N.`, not a continuation of whatever was counted before.
+3. [ ] Settings page: 1 activation, 30 s delay, Send (single blink). Tap once: LED
+   B lights only after about 30 s; RTT shows `TEST trigger pending: LED B in 30
+   s.` then `TEST delay elapsed - LED B on.` - never `TRIGGER PENDING`. No
+   `Scan cadence now CONTINUOUS` or fast-scan line is logged - continuous scan and
+   the PM lock are armed-only, so a long test delay costs no extra battery.
+4. [ ] Long cooldown: Settings page, activations 2, cooldown 600 s (10 min),
+   Send. Tap once (`Activation 1 of 2.`, `Cooldown started: 600 s.`), then Disarm.
+   The next tap logs `Activation 1 of 2.` immediately - no waiting out the
+   cooldown.
+5. [ ] **SAFETY, arm mid-test** (activations 3, cooldown 8 s, delay 0):
+   - (a) [ ] Tap twice (`Activation 1 of 3.`, `Activation 2 of 3.`), Arm page Send
+     Armed (rapid flash), tap once: no fire, RTT `Activation 1 of 3.` - the armed
+     session started from zero regardless of the count in progress.
+   - (b) [ ] Tap once (cooldown now running), Arm immediately, tap once:
+     `Activation 1 of 3.`, no fire.
+   - (c) [ ] Settings page: delay 30 s, activations 1, Send; tap once
+     (`TEST trigger pending: LED B in 30 s.`); Arm page Send Armed within the 30
+     s; leave the device untouched past 30 s: no fire - the pending test delay
+     never reaches the armed output.
+   - (d) [ ] Shake the device continuously while sending Arm: no fire until
+     motion stops and a fresh, complete edge finishes the count (`Activation 1 of
+     3.` logs only once AWAKE has cleared and reasserted after arming).
+6. [ ] Armed trigger fires once (`Output ASSERTED`, fire GPIOs and LED B for
+   about 5 s), then `Output cleared` and `Trigger complete - latched Inactive.
+   Re-arming needs an engineer command.`. The test resumes on its own with no
+   further command: the next completed tap after that logs `Activation 1 of N.`
+   and LED B lights on the next completed count.
+7. [ ] Measure device current while disarmed and idle (the ADXL367 now runs
+   continuously when disarmed) and compare it with the armed idle current -
+   confirm the two are close, since the part is configured identically and runs
+   the same loop-mode engine in both states.
+8. [ ] Cold-cell boot: after a battery insert, confirm the boot log shows the
+   accelerometer configured at boot - no configure-failure or retry line
+   (`Accelerometer would not configure`, `ADXL re-arm failed`) - before the first
+   tap.
+
 ## 9. Bench log
 
 ### 2026-09-14 — first bench session (J-Link 853003346, nRF54L05, device 0xFBACBE88)

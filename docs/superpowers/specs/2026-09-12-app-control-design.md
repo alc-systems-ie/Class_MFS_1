@@ -376,14 +376,21 @@ the condition at the consumer.
 
 ### 6.3 Detection engine
 
+> **Amended 2026-09-14 — disarmed test mode:**
+> `docs/superpowers/specs/2026-09-14-disarmed-test-mode-amendment.md` supersedes
+> this section where they disagree.
+
 Runs in **both** arm states. The arm boolean selects the consumer, nothing else.
 
-While Inactive the ADXL367 is held in standby after a disarm (§1.0.1); the
-engine runs while Inactive only once a Tune command starts it, for LED B
-simulation. Every configure — arming, tuning, cooldown re-arm — clears the
-detection latch, and deactivation clears the count, the latch and any
-cooldown, so nothing counted or latched in one session can reach the output in
-the next. (Amended 2026-09-13.)
+The ADXL367 is no longer held in standby while Inactive. Cold start boots
+Inactive, **testing** at the stored settings from the first tick — the engine
+is not waiting for a Tune command to start it. Every restart — arming,
+disarming, a Settings command, a cooldown re-arm — reconfigures the part
+afresh through the loop-mode bootstrap and clears the detection latch; a
+disarm or Settings command also clears the activation count and any pending
+cooldown or delay, so nothing counted or latched in one session can reach the
+output — or a later armed session — in the next. (Amended 2026-09-13, revised
+2026-09-14.)
 
 ```
 AWAKE rising edge
@@ -409,7 +416,8 @@ Two rules the pseudocode encodes deliberately:
 - **Cooldown is meaningful only when N > 1.** With N = 1 every activation triggers,
   so there is nothing to blank between; the device accepts the byte and ignores it.
 
-The count clears only on trigger or on deactivation. It does **not** expire.
+The count clears only on trigger or on a restart (disarm, Settings, or arm). It
+does **not** expire on its own.
 
 ### 6.4 The command path — one path while armed
 
@@ -471,6 +479,16 @@ guarantee — tuning can never arm the device — now holds trivially: every com
 is authenticated, and a command arms the device only if its type is Arm.
 
 ### 6.5.1 THE DELAY INTERLOCK — safety critical
+
+> **Amended 2026-09-14 — disarmed test mode:**
+> `docs/superpowers/specs/2026-09-14-disarmed-test-mode-amendment.md` supersedes
+> this section where they disagree. The delay now runs identically while
+> disarmed, on the same `k_timer` — it is not an armed-only mechanism. What
+> changes is only the consumer: a disarmed delay logs as a test
+> (`TEST trigger pending: LED B in N s.`), never `TRIGGER PENDING`, and its
+> expiry lights LED B rather than asserting the fire GPIOs, because the
+> interlock below only ever gates `updateOutputState()`'s output term, which is
+> already zero while disarmed.
 
 **A trigger that fires after the engineer has deactivated the device is the worst
 failure this product has.** With a delay of up to nine hours between the

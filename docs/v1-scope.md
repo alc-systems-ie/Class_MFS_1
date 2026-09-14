@@ -67,6 +67,13 @@ precisely so no other translation unit can reach it.
 
 ### 1.0.1 Arming is EDGE-TRIGGERED — safety critical
 
+> **Amended 2026-09-14 — disarmed test mode:**
+> `docs/superpowers/specs/2026-09-14-disarmed-test-mode-amendment.md` supersedes
+> this section where they disagree. The ADXL367 is no longer held in standby
+> while disarmed — the detection engine runs continuously in both arm states,
+> and the part is reconfigured afresh on every arm and on every test restart
+> (a disarm, a Settings command, or boot), not only on activation.
+
 **A trigger that was already asserted when the device was armed must never fire.**
 
 The ADXL367 AWAKE bit is a **level, not a latch**. Once motion occurs it stays
@@ -81,18 +88,19 @@ Without the guard the device would fire on nearly every activation.
 **In the product the trigger switches a voltage**, so a false fire on activation is
 dangerous rather than merely untidy.
 
-**Implementation: the accelerometer is stopped while the device is deactivated and
-configured afresh when it is activated.** Rather than leave a continuously-running
-part and filter its stale level, there is no stale level to inherit — the
-datasheet's loop mode initialization routine soft-resets the part and forces one
-activity/inactivity cycle, which drives AWAKE low (§3.1). The order is what makes
-this safe, and it is deliberate in both directions:
+**Implementation (amended — see banner above): the accelerometer is reconfigured
+afresh on every arm and on every test restart, never merely left running with a
+stale level.** Rather than leave a continuously-running part and filter its stale
+level, there is no stale level to inherit — the datasheet's loop mode
+initialization routine soft-resets the part and forces one activity/inactivity
+cycle, which drives AWAKE low (§3.1). The order is what makes this safe, and it is
+deliberate in both directions:
 
-| Activate | Deactivate |
+| Activate (Arm) | Deactivate (Disarm) |
 |---|---|
-| 1. `ConfigureLoopMode()` — soft reset, bootstrap cycle, real thresholds | 1. `m_arm_state = Inactive` |
-| 2. Confirm `AWAKE == 0` from STATUS | 2. `updateOutputState()` — output derives to 0 |
-| 3. `m_arm_state = Active`, LED A off | 3. `Standby()` — loop engine stopped, INT1 de-asserts |
+| 1. Restart: `ConfigureLoopMode()` — soft reset, bootstrap cycle, real thresholds | 1. `m_arm_state = Inactive` |
+| 2. Confirm `AWAKE == 0` from STATUS | 2. `updateOutputState()` — output derives to 0, GPIOs off |
+| 3. `m_arm_state = Active` only on success, LED A off | 3. Restart: reconfigure the ADXL367 afresh, test resumes from zero |
 
 On deactivation the boolean necessarily moves first, because **the output is
 derived from it, not stored beside it** (§1.0). The derivation runs immediately
@@ -100,10 +108,13 @@ after and always before the sensor is touched, so there is no instant at which a
 deactivated device still reads as triggered.
 
 `Adxl367::Standby()` parks INTMAP1/INTMAP2 active-low with nothing mapped before
-dropping POWER_CTL, so both pins idle HIGH. Stopping the part between arms means
-it now sits unconfigured from boot until the first activation — potentially
-forever — and the INT2/SHPHLD polarity bit (§2) must not depend on how soon
-someone happens to arm the device.
+dropping POWER_CTL, so both pins idle HIGH — used between a counted activation and
+its cooldown, not while merely disarmed. The part is configured at boot (cold
+start is Inactive, but Inactive now means testing — see the amendment banner
+above) and on every restart thereafter, so it no longer sits unconfigured from
+boot until the first activation. The INT2/SHPHLD polarity bit (§2) must not depend
+on how soon someone happens to arm the device, and reconfiguring on every restart
+guarantees it does not.
 
 `enableAccelerometer()` **refuses to arm** if the part will not configure or its
 AWAKE state cannot be read. A device that reported itself armed with a dead sensor

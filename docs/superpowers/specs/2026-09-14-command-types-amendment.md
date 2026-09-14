@@ -73,6 +73,13 @@ Plaintext, replacing `docs/tan-scheme.md` §6.1:
 | Inactive | Disarm | **Stay Inactive**; detection engine cleared, ADXL367 to standby | no | no | yes | slow flash (Disarmed) |
 | Inactive | Settings | **Tune** | yes | slot 0 only | yes | single blink (+ two blinks if mode changed) |
 
+> **Pointer — amended 2026-09-14 (disarmed test mode):** the Inactive rows above
+> predate `docs/superpowers/specs/2026-09-14-disarmed-test-mode-amendment.md`,
+> which supersedes them where they disagree. "ADXL367 to standby" on the
+> Inactive/Disarm row is no longer accurate — a disarm now **restarts the test
+> from zero**, reconfiguring the ADXL367 afresh rather than standing it down,
+> because the detection engine runs continuously while disarmed.
+
 Rules this preserves or introduces:
 
 - **Armed, the only state change is disarm.** Unchanged. An armed device still
@@ -88,8 +95,9 @@ Rules this preserves or introduces:
   engineer's confirmation was wrong; the rapid flash tells them so instead of
   silence.
 - **Disarm while Inactive runs the ordinary deactivation** (clear the count, the
-  latch and any cooldown, ADXL367 to standby), so it also ends a tuning session.
-  Its only visible effect is LED B stopping.
+  latch and any cooldown, then restart the test from zero — see the pointer
+  above; the ADXL367 is no longer stood down). Its only visible effect is a
+  restarted test, so LED B stops and relights on the next completed count.
 - **Arm uses exactly the stored settings** — the last Settings command applied, or
   `params/v1` restored at boot. The old guarantee (§4.2: "no window in which the
   device is armed with settings the engineer did not watch being tested") becomes a
