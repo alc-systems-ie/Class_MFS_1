@@ -198,6 +198,18 @@ namespace
         }
       }
 
+      // App::setArmState(Inactive), exactly: boolean first, then the output
+      // re-derived through updateOutputState(EngineTick::Skip) - no engine tick,
+      // so the output is simply false while the arm flag is false - then
+      // restartEngine(false). No time passes: App does all three in one call,
+      // between two poll-loop ticks.
+      void disarm()
+      {
+        armed = false;
+        engine.NoteOutput(false);
+        assert(engine.Restart(settings, false, hardware.nowMs) == 0);
+      }
+
       FakeHardware hardware;
       DetectionEngine engine;
       DetectionSettings settings;
@@ -998,6 +1010,74 @@ namespace
     printf("detection engine SAFETY arming mid-test, N = 1: OK\n");
   }
 
+  void testAppDisarmSeam()
+  {
+    // App's seam, reproduced exactly (Rig::disarm() mirrors
+    // App::setArmState(Inactive); the Run() latch is reproduced inline below,
+    // mirroring App::Run()'s TakeTriggerComplete() check after
+    // updateOutputState()). Both cases are safety-critical: a stale
+    // m_trigger_complete surviving a restart would report a trigger the
+    // moment the device is next armed, with no activation behind it.
+
+    // (a) Output asserted while armed, then App's disarm cuts it off mid-
+    // assertion (boolean first, output re-derived false, NoteOutput(false)
+    // still runs against the engine's own m_armed - still true at that point
+    // - before Restart() clears it). TakeTriggerComplete() must read false
+    // afterwards, and a fresh arm must show no stale completion and no output
+    // until a fresh, complete count.
+    {
+      Rig rig(M_ONE, 0, 0);
+
+      assert(rig.restart(true) == 0);
+      assert(rig.tick(true)); // N = 1, no delay: output asserts on the first edge.
+      rig.disarm();           // Disarmed mid-assertion - not a natural completion.
+      assert(!rig.engine.TakeTriggerComplete());
+
+      assert(rig.restart(true) == 0);
+      assert(!rig.engine.TakeTriggerComplete());
+      for (uint32_t i = 0; i < M_DERIVATION_TICKS; i++) {
+        assert(!rig.tick(false)); // no output until a fresh count completes.
+      }
+      assert(rig.tick(true));                    // a fresh, complete count still fires - the silence above has teeth.
+      assert(!rig.engine.TakeTriggerComplete()); // still asserted, not yet ended.
+    }
+
+    // (b) An armed trigger completes naturally, Run()'s latch disarms exactly
+    // as App::Run() does, and the restarted test resumes counting at
+    // Activation 1 with no second completion reported and no output - the
+    // session is disarmed, so NoteOutput() is a no-op regardless.
+    {
+      Rig rig(M_THREE, 0, 0);
+
+      assert(rig.restart(true) == 0);
+      rig.tap();
+      rig.tap();
+      assert(rig.engine.ActivationCount() == 2);
+
+      assert(rig.tick(true));   // third edge: detection met, output ON.
+      assert(!rig.tick(false)); // AWAKE clears: output ends, completion now pending.
+
+      // App::Run()'s latch: TakeTriggerComplete() && armed -> disarm.
+      assert(rig.engine.TakeTriggerComplete() && rig.armed);
+      rig.disarm();
+      assert(!rig.engine.TakeTriggerComplete());
+
+      rig.tap();
+      assert(rig.engine.ActivationCount() == 1);
+      assert(!rig.engine.TakeTriggerComplete());
+
+      rig.tap();
+      assert(rig.engine.ActivationCount() == 2);
+      assert(!rig.tick(true)); // third edge: detection met, but disarmed - no output.
+      assert(rig.engine.DetectionMet());
+      assert(!rig.engine.TakeTriggerComplete()); // disarmed: NoteOutput() is a no-op, so no second completion.
+      rig.tick(false);
+      assert(!rig.engine.DetectionMet());
+      assert(!rig.engine.TakeTriggerComplete());
+    }
+    printf("detection engine App disarm and Run() latch seam: OK\n");
+  }
+
 }
 
 void run_detection_engine_tests()
@@ -1014,4 +1094,5 @@ void run_detection_engine_tests()
   testOneShot();
   testWatchdog();
   testScanLostDuringArmedDelay();
+  testAppDisarmSeam();
 }
