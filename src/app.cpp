@@ -215,6 +215,7 @@ namespace alc
       , m_delay_timer {}
       , m_delay_pm_lock_held(false)
       , m_last_scan_service_ms(0)
+      , m_last_scan_diag_ms(0)
       , m_scan_outage_logged(false)
       , m_logging_cooldown(false)
       , m_engine(*this)
@@ -1207,7 +1208,27 @@ namespace alc
     // CommandScanner::TakeDroppedCount().
     dropped = m_scanner.TakeDroppedCount();
     if (dropped > 0) { LOG_WRN("Candidate queue full - %u adverts dropped!", dropped); }
+
+#if defined(CONFIG_MFS_SCAN_DIAG)
+    serviceScanDiagnostics();
+#endif
   }
+
+#if defined(CONFIG_MFS_SCAN_DIAG)
+  void App::serviceScanDiagnostics()
+  {
+    constexpr int64_t M_SCAN_DIAG_INTERVAL_MS { 1000 };
+    int64_t nowMs { k_uptime_get() };
+    uint32_t adverts { 0 };
+    uint32_t uuids { 0 };
+
+    if (nowMs - m_last_scan_diag_ms < M_SCAN_DIAG_INTERVAL_MS) { return; }
+    m_last_scan_diag_ms = nowMs;
+
+    m_scanner.TakeReceptionCounts(adverts, uuids);
+    if (adverts > 0) { LOG_INF("Scan diag: %u adverts, %u single-UUID128 in the last second.", adverts, uuids); }
+  }
+#endif
 
   void App::handleTimeSyncCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs)
   {
@@ -1234,7 +1255,12 @@ namespace alc
   {
     AccessControl::Evaluation evaluation { m_access.Evaluate(candidate.bytes, sizeof(candidate.bytes), m_clock, uptimeSecs) };
 
-    if (evaluation.verdict == AccessControl::Verdict::NotForUs) { return; }
+    if (evaluation.verdict == AccessControl::Verdict::NotForUs) {
+#if defined(CONFIG_MFS_SCAN_DIAG)
+      LOG_INF("Scan diag: UUID %02X%02X%02X%02X... not for us.", candidate.bytes[0], candidate.bytes[1], candidate.bytes[2], candidate.bytes[3]);
+#endif
+      return;
+    }
 
     if (evaluation.verdict != AccessControl::Verdict::Accepted) {
       // RTT only. Nothing on the radio, nothing on the LEDs.

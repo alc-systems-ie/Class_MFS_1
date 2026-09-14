@@ -47,6 +47,10 @@ namespace alc
     // mode on a 2 KB stack, is not safe.
     atomic_t s_dropped { ATOMIC_INIT(0) };
 
+    // Bench reception counters - see CommandScanner::TakeReceptionCounts().
+    atomic_t s_adverts_received { ATOMIC_INIT(0) };
+    atomic_t s_uuids_received { ATOMIC_INIT(0) };
+
     struct RecentEntry
     {
         uint8_t bytes[protocol::M_UUID_BYTES];
@@ -86,6 +90,8 @@ namespace alc
       // advertises anything else.
       if (data->type != M_AD_UUID128_ALL || data->data_len != protocol::M_UUID_BYTES) { return true; }
 
+      atomic_inc(&s_uuids_received);
+
       nowMs = k_uptime_get();
       if (seenRecently(data->data, nowMs)) { return false; }
 
@@ -107,6 +113,7 @@ namespace alc
       ARG_UNUSED(rssi);
       ARG_UNUSED(advType);
 
+      atomic_inc(&s_adverts_received);
       bt_data_parse(buf, &parseAdStructure, nullptr);
     }
 
@@ -183,6 +190,12 @@ namespace alc
   uint32_t CommandScanner::TakeDroppedCount()
   {
     return static_cast<uint32_t>(atomic_set(&s_dropped, 0));
+  }
+
+  void CommandScanner::TakeReceptionCounts(uint32_t& adverts, uint32_t& uuids)
+  {
+    adverts = static_cast<uint32_t>(atomic_set(&s_adverts_received, 0));
+    uuids   = static_cast<uint32_t>(atomic_set(&s_uuids_received, 0));
   }
 
   int CommandScanner::SetFastScan(bool fast)

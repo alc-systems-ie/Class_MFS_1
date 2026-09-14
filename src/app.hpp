@@ -163,6 +163,11 @@ namespace alc
       // ONLY to the time-sync check; once valid, ONLY to AccessControl.
       void serviceCandidates();
 
+#if defined(CONFIG_MFS_SCAN_DIAG)
+      // Bench only: logs scanner reception counts once a second - see Kconfig.
+      void serviceScanDiagnostics();
+#endif
+
       void handleTimeSyncCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs);
 
       void handleCommandCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs);
@@ -237,6 +242,9 @@ namespace alc
 
       // Uptime of the last scanner health check - see serviceScanHealth().
       int64_t m_last_scan_service_ms;
+
+      // See serviceScanDiagnostics(). Unused unless CONFIG_MFS_SCAN_DIAG.
+      int64_t m_last_scan_diag_ms;
 
       // True once a scan outage has been logged, so a scanner that stays down
       // logs once rather than every M_SCAN_SERVICE_INTERVAL_MS tick. Cleared

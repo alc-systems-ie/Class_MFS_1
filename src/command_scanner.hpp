@@ -54,6 +54,13 @@ namespace alc
       uint32_t TakeDroppedCount();
 
       /**
+       * @brief Adverts and single 128-bit UUID adverts received since the last
+       *        call. Bench diagnostics only (CONFIG_MFS_SCAN_DIAG); counted on the
+       *        Bluetooth RX thread and read from the main loop.
+       */
+      void TakeReceptionCounts(uint32_t& adverts, uint32_t& uuids);
+
+      /**
        * @brief Switch between the duty-cycled scan and a continuous one.
        *
        * Continuous while a trigger is pending, so a deactivate is heard within one

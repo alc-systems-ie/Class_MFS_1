@@ -114,6 +114,17 @@ config MFS_BLINK_MS
 	  needs the loop poll shortened to resolve it. Lower this if the aim is to
 	  measure the scan rather than the LED.
 
+config MFS_SCAN_DIAG
+	bool "Log scan reception counts and discarded command IDs (bench only)"
+	default n
+	help
+	  Bench diagnostic for commands that are advertised but never acted on.
+	  Once per second in which anything was received, logs how many adverts
+	  and how many single 128-bit service UUIDs the scanner delivered; and for
+	  every UUID the access check discards as not for this device, logs its
+	  first four on-air bytes. Tells "not received" apart from "received and
+	  silently discarded". Leave off in production - it reveals reception.
+
 config MFS_DEBUG_LED
 	bool "Drive the idle/detection indication on the LEDs (bench only)"
 	default y

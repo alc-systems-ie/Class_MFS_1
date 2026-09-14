@@ -186,7 +186,10 @@ namespace alc
     if (result < 0) {
       m_faulted = true;
       LOG_ERR("Fire output LATCHED FAULTY and will not assert again: fire pin disable failed (%d)!", result);
+      return result;
     }
+
+    LOG_INF("Fire pins isolated.");
     return result;
   }
 
