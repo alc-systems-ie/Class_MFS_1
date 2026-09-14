@@ -42,18 +42,61 @@ as a separate open failure before that. **The closed-form rule is withdrawn ever
 in this project's documentation; the period is chosen and checked by simulation only.
 
 **Method: phase-coverage simulation, `tools/scan_phase_check.py`.** For a scan period P,
-window W and N consecutive scans (30 000 ms / P ≈ 5.1 at these periods, so **N = 5**),
-and a counterpart advertising interval I modelled as an instant repeating every I ms at
+window W and N consecutive scans, and a counterpart advertising interval I modelled as an instant repeating every I ms at
 an unknown start phase φ: scan k opens a window [kP, kP + W], which catches an advert at
 phase φ + jI exactly when (φ − kP) mod I ≤ W. The script sweeps 2000 phase samples over
 one interval [0, I) and reports the fraction for which none of the N windows catch it —
 the fraction of commands, starting at a uniformly random moment, that would be missed
 entirely. An interval I ≤ W is exempt (a single window always contains an advert). The
-script's docstring has the full derivation and its limitations (instantaneous adverts,
-no advDelay jitter — both of which make the model pessimistic, not optimistic).
+script's docstring has the full derivation and its limitations.
 
-Results at W = 100 ms, N = 5, 2000 phase steps, for the default interval set (measured
-and plausible counterpart intervals):
+**N is derived, not assumed.** A 30 000 ms command burst starts at an arbitrary moment
+relative to the scan schedule, so the first window inside it opens anywhere from 0 to P
+after the burst starts. The number of complete windows *guaranteed* inside any burst of
+length B is **N = floor((B − W) / P)** — window k fits when (k + 1)P + W ≤ B in the worst
+case. The script derives it per period (`--burst-ms`, default 30 000; `--scans`
+overrides). **N = 5 needs 5P + W ≤ 30 000 ms, i.e. P ≤ 5980 ms. Raising the period past
+5980 ms drops N to 4**, which none of the passing islands below survive. 5970 ms has
+10 ms of that margin, and an advert that starts late eats into it.
+
+**A PASS holds for a steady interval; real advDelay jitter can add a small miss rate.**
+Earlier wording called the steady model pessimistic. It is not: a passing period works by
+stepping the scan phase across the advertiser's cycle in exact increments, and the BLE
+advDelay (0–10 ms, pseudo-random, added to every advertising event) perturbs those steps.
+`--jitter-ms J` adds a Monte Carlo model — each advert follows the previous one by
+I + U(0, J), the burst starts at a random point before the first scan, `--trials` trials.
+Read literally, I + U(0, J) has a mean spacing of I + J/2, which treats I as a *nominal*
+interval; `--jitter-centred` draws I − J/2 + U(0, J) instead, a mean of exactly I, which
+treats I as a *measured* mean spacing. The Mac's 187.5 ms is a measured spacing — the
+6000 ms scan stayed phase-locked to it across whole commands, which a mean 5 ms longer
+could not do — so the centred model is the one supported for the measured interval.
+
+Jitter results, J = 10 ms, 20 000 trials, seed 1 (± is one standard error):
+
+| Period | Model | 152.5 | 187.5 | 211.25 | 318.75 |
+|---|---|---|---|---|---|
+| **5970.000 ms (9552)** | steady | PASS | PASS | PASS | PASS |
+| | centred (mean I) | 1.13 ± 0.07 % | **1.36 ± 0.08 %** | 0.00 % | 0.59 ± 0.05 % |
+| | uncentred (mean I + 5 ms) | 4.94 % | **28.3 %** | 0.02 % | 6.52 % |
+| 5875.625 ms (9401) | steady | PASS | PASS | PASS | PASS |
+| | centred (mean I) | 0.00 % | 0.00 % | 0.40 % | **4.05 %** |
+| | uncentred (mean I + 5 ms) | 0.00 % | 0.05 % | 1.07 % | **10.2 %** |
+
+A sweep of 9300–9600 units against the intervals ≤ 320 ms, ranked by worst centred-jitter
+miss, puts **9380 units (5862.500 ms) first at 0.29 %** (all at 318.75 ms; 9378–9383 are
+all ≤ 0.34 %, and all pass steady); 9552 ranks 29th of 301 at 1.36 %, and is the best of
+its own island (9551 at 1.27 % is within sampling error; the island's edges reach 5–6 %).
+5875.625 ms ranks 83rd at 4.05 %. **No period is robust to the interpretation:** 9380
+misses 26 % in the uncentred model, and the period minimising the worst of the steady,
+centred and uncentred results (9406 units, 5878.750 ms) still misses 6.9 %. A few ms of
+uncertainty in the counterpart's *mean* interval matters more than the period choice —
+another reason the app's foreground, fast advertising (§6), not the period, is the
+guarantee. The period is unchanged; this is recorded for the owner.
+
+Steady-model results at W = 100 ms, N = 5, 2000 phase steps, for the default interval set
+(measured and plausible counterpart intervals). N = 5 is the derived value (below) for
+every row except 6000 ms, where the derived N is 4 and the row is worse still (318.75 ms
+then misses 16 %); reproduce that row with `--scans 5`:
 
 | Period | 152.5 | 187.5 (Mac, measured) | 211.25 (Apple rec.) | 318.75 | 417.5 | 546.25 | 760 | 852.5 | 1022.5 | 1285 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -93,17 +136,18 @@ neighbours outside the island fail — 9536 misses 152.5 ms at 1.6 %, 9566 misse
 the sweep before assuming a similar value stays safe if intervals are re-measured.
 
 Window stays 100 ms; average current rises by 6000/5970 on the scan terms (~0.5 %),
-negligible against the ~70 µA budget (`docs/power-budget.md` §3) — a smaller rise
+negligible against the ~69 µA budget (`docs/power-budget.md` §3) — a smaller rise
 than 5876 ms's 6000/5876 (~2.1 %), since 5970 ms is closer to 6000 ms.
 
 **Intervals from about 5 × W upward cannot be fully covered by any period at N = 5.**
-546.25 ms and above fail at all three periods above: a single 100 ms window can
+546.25 ms and above fail at all four periods above: a single 100 ms window can
 intersect at most one cycle of an advertiser that slow per scan, so five scans sweep at
 most 5 × W = 500 ms of the I − W gap the window does not already cover — for I well past
 1000 ms that is a small fraction of the gap, and no choice of P closes it. This is not a
-period-tuning problem; it is why the app's foreground-only, fast-advertising guarantee
-(§6, owner decision) is the actual protection against a slow or backgrounded advertiser,
-not this scan period. The production Android phone's interval must still be measured
+period-tuning problem; it is why the app's foreground-only sending (§6, owner decision) —
+which keeps the counterpart advertising fast, on Android through `ble_peripheral` 2.4.0's
+`ADVERTISE_MODE_LOW_LATENCY` — is the actual protection against a slow or backgrounded
+advertiser, not this scan period. The production Android phone's interval must still be measured
 with `tools/uuid_observer` and checked with the script (bench checklist §5d).
 
 ## 3. Continuous scanning during Arming
@@ -169,8 +213,9 @@ that together close the gap a period alone cannot:
   macOS window losing focus, or an iOS system sheet) does **not** stop an advert; that
   state is common and momentary, not a reason to interrupt a Send. This is what
   actually bounds the slow-interval case §2 identifies as uncoverable by any scan
-  period: the app never leaves the counterpart advertising fast in the background for
-  the scanner to contend with.
+  period: a Send only ever advertises from the foreground, where the platform
+  advertises fast (on Android, `ble_peripheral` 2.4.0 requests
+  `ADVERTISE_MODE_LOW_LATENCY`), never at a background interval.
 - **Scan period 5970 ms, checked by simulation.** §2 above; `CONFIG_MFS_SCAN_PERIOD_MS`
   default 5970 (9552 BLE units, 5970.000 ms — initially set to 5876 ms, 9401 units,
   5875.625 ms, then moved by the owner to the middle of a wider passing island,
@@ -178,6 +223,7 @@ that together close the gap a period alone cannot:
   withdrawn closed-form rule.
 
 Together these replace the §2 "OPEN — 211.25 ms fails" item: 5970 ms now passes against
-211.25 ms directly (see the table in §2), and the no-scanner/no-arming and
-foreground-only rules remove the two ways a slower or backgrounded advertiser could
-otherwise leave the device unable to hear a Disarm.
+211.25 ms directly for a steady advertiser (see the table in §2; jitter adds a small miss
+rate). Only the foreground-only rule bounds the slow- or backgrounded-advertiser case. No
+scanner, no arming does not: it guarantees the device can *hear* at all while armed, not
+that a slow advertiser is caught.

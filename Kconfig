@@ -27,16 +27,21 @@ config MFS_SCAN_PERIOD_MS
 
 	  The period is now chosen and verified by simulation, not a closed-form
 	  rule: tools/scan_phase_check.py sweeps 2000 start phases per interval
-	  and reports the fraction of commands (N = 5 consecutive scans) that
-	  every one of those scans would miss. 9552 units is the middle of the
+	  and reports the fraction of commands that every one of the N scans
+	  inside a 30 s burst would miss, N = floor((30000 - window) / period).
+	  N = 5 needs a period of at most 5980 ms: RAISING THIS PAST 5980 DROPS
+	  N TO 4, which no passing island survives. 9552 units is the middle of the
 	  passing island 9537-9565 units (15 units of margin below, 13 above),
 	  found with --sweep, so a one-unit build or clock error cannot tip it
 	  into a failing phase the way 9401 (5876 ms) could have. At 5970 ms it
 	  reports zero misses against the measured macOS interval (187.5 ms) and
-	  every Apple interval up to 318.75 ms. Intervals from about 5 x the
-	  100 ms window upward (roughly 500 ms and beyond) cannot be fully
-	  covered by any period at N = 5 - the app's foreground-only,
-	  fast-advertising guarantee is what protects those cases, not this
+	  every Apple interval up to 318.75 ms. A PASS holds for a steady
+	  interval; real advDelay jitter can add a small miss rate - about 1.4 %
+	  at 187.5 ms with --jitter-ms 10 --jitter-centred (scan reliability
+	  amendment section 2). Intervals from about 5 x the 100 ms window
+	  upward (roughly 500 ms and beyond) cannot be fully covered by any
+	  period at N = 5 - the app's foreground-only sending, which keeps the
+	  counterpart advertising fast, is what protects those cases, not this
 	  period. Run the script before changing this value or adding a newly
 	  measured interval; there is no formula to hand-check against instead.
 	  The longer period versus 5876 ms also lowers the scan terms of the

@@ -92,7 +92,10 @@ Original recipe (superseded by the observer tool above; kept for reference):
 
 - A corrupt `access/v1` record makes the firmware refuse commands on every boot (`Stored access state is invalid`). The only recovery is a wired erase of the settings partition, followed by re-provisioning.
 - If the scanner is lost while arming or armed — mid exit delay, idle, or with a trigger delay pending — the device **fails safe** (owner rule 2026-09-14, superseding the 2026-09-13 "still fires" decision): the pins are isolated, the device goes Inactive with arming and any pending trigger cancelled and nothing fires, the warning plays on LED B (`WARNING (light TBC): scanner not running while arming or armed - a disarm could not be heard (-19)!`), and RTT logs `Scanner not running while arming or armed - disarmed (fail safe)!`. No LED A acknowledgement. `Trigger suppressed: the scanner was not running during the delay (fail safe)!` **can** appear on target: when the loss happens inside the detection engine's own tick (restoring duty-cycled scanning at the delay's expiry, start and fallback both failing) the engine suppresses the trigger first, and the scanner fail-safe follows on the next tick (~100 ms). The loss is latched (`CommandScanner::TakeScanLost()`), so that disarm and its warning follow even if `serviceScanHealth()` has already restarted the scanner. What must never appear is `Trigger suppressed…` **without** the `Scanner not running while arming or armed - disarmed (fail safe)!` line within a tick after it — that would mean the fail-safe disarm was missed.
-- **Forcing scanner loss is host-tested only** (`tests/test_arming_sequence.cpp`, `tests/test_detection_engine.cpp`). There is no bench recipe for making `bt_le_scan_start()` and its fallback both fail on demand, so the two log lines above are not expected to be seen on the bench; do not add a firmware fault-injection hook to provoke them.
+- A scanner loss while the output is **asserted** cuts the fire pulse short: pins driven low and disconnected, Inactive, detection restarted disarmed. `Trigger complete - latched Inactive. Re-arming needs an engineer command.` does **not** follow, because the fail-safe, not the trigger latch, made the device Inactive (arming sequence amendment §4.2). Correct under the always-fail-safe rule.
+- If the fail-safe's pin disable also fails, only the two `WARNING (light TBC): …` lines (pins could not be isolated; scanner not running) and `Fire pin disable failed (…) - fire pins may NOT be isolated!` appear — the pending pin-disable failure outranks the scanner, so `Scanner not running while arming or armed - disarmed (fail safe)!` is **not** logged. Treat the pins as possibly live.
+- `serviceScanHealth()`'s once-a-second retry can itself take the scanner down (it stops a scan running at the wrong cadence, then the start and its fallback both fail: `Scanner fallback restart also failed: … - scanner is DOWN!`). While arming or armed that is a scanner loss like any other and fails safe to Inactive with the warning — a disarm with no command, not a firmware fault in the fail-safe.
+- **Forcing scanner loss is host-tested only** (`tests/test_arming_sequence.cpp`, `tests/test_detection_engine.cpp`). There is no bench recipe for making `bt_le_scan_start()` and its fallback both fail on demand, so the scanner-loss log lines above are not expected to be seen on the bench; do not add a firmware fault-injection hook to provoke them.
 - A nearby advertiser flooding random 128-bit UUIDs is an RF-jamming-class attack on the 8-entry candidate queue, not just noise: none of the garbage counts towards the lockout (§6.4 of `docs/tan-scheme.md`), but if it arrives faster than `serviceCandidates()` can drain it, genuine candidates get dropped. Run a flood test (an advertiser cycling random 128-bit UUIDs at a high rate) and check for `Candidate queue full - N adverts dropped!` in the log; confirm a genuine command still lands once the flood stops.
 
 ## 5a. Command types (plan 2026-09-14) — do this first on the new build
@@ -270,7 +273,9 @@ fire line **is low / is not high**.
 2. [ ] Mac: 10 Sends to the device. Count how many are heard at the first or
    second scan (RTT `Command slot ... n ...` or LED A's pattern). Expect nearly
    all - `tools/scan_phase_check.py` reports zero misses for 5970.000 ms against
-   the Mac's 187.5 ms advertising interval (amendment §2).
+   a steady 187.5 ms advertising interval, and about 1.4 % with 0-10 ms advDelay
+   jitter (`--jitter-ms 10 --jitter-centred`, amendment §2), so an occasional
+   whole-command miss in 10 Sends is within the model; several is not.
 3. [ ] Arm, then within the 10 s exit delay: press **Stop**, set Disarmed, **Send**.
    Expect `Continuous scan: arming exit delay.` and `Scan cadence now
    CONTINUOUS.` logged when the Arm was accepted, the cancel heard within about
@@ -289,8 +294,9 @@ fire line **is low / is not high**.
 7. [ ] Production Android phone: run `tools/uuid_observer` while the class app
    Sends from that phone (foreground, release build) and measure its real
    advertising interval I from consecutive same-UUID timestamps. If I is longer
-   than the 100 ms window, check it with `python3 tools/scan_phase_check.py I`
-   (the default period, 9552 units = 5970.000 ms, is used automatically).
+   than the 100 ms window, check it with `python3 tools/scan_phase_check.py I
+   --jitter-ms 10 --jitter-centred` (the default period, 9552 units = 5970.000
+   ms, is used automatically; a steady PASS alone is not a guarantee).
    Record I and the script's miss fraction and verdict here; a FAIL is a period
    problem, not a phone problem - re-run `--sweep` to see whether any period
    passes against this interval together with the rest of the default set

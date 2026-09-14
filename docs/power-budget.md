@@ -64,8 +64,9 @@ the middle of the wider passing island 9537–9565 units (15 units of margin
 below, 13 above) — "less battery is always good", and the wider margin costs
 less power besides, since 5970 ms is closer to the unconstrained 6000 ms
 optimum than 5876 ms was. The script reports a clean pass at 5970 ms against
-every measured or plausible interval up to 318.75 ms — see the amendment §2
-for the full results table. The figures below are recomputed for 5970 ms with
+every measured or plausible interval up to 318.75 ms for a steady advertiser;
+real advDelay jitter can add a small miss rate (~1.4 % worst) — see the
+amendment §2 for the full results. The figures below are recomputed for 5970 ms with
 the same formulas as before.
 
 System ON idle, 100 ms passive scan every 5970 ms. Duty cycle 100/5970 = 1.675%
@@ -80,7 +81,7 @@ System ON idle, 100 ms passive scan every 5970 ms. Duty cycle 100/5970 = 1.675%
 | nPM2100 quiescent (pass-through / ULP) | continuous | 0.3 µA |
 | **Total** | | **≈ 68.8 µA** (was ≈ 69.9 µA at 5876 ms) |
 
-**1450 mAh ÷ 0.0688 mA = 21,067 h ≈ 878 days ≈ 2.4 years.** (Was 1450 mAh ÷
+**1450 mAh ÷ 0.0688 mA = 21,076 h ≈ 878 days ≈ 2.4 years.** (Was 1450 mAh ÷
 0.0699 mA = 20,745 h ≈ 864 days at 5876 ms, and 1450 mAh ÷ 0.0685 mA = 21,170 h
 ≈ 882 days ≈ 2.4 years at the original 6000 ms — the longer period claws back
 most of the 5876 ms penalty: it now costs only about 4 days across the service
@@ -206,7 +207,7 @@ documents this same trap in its hand-off notes.
 The FEM is **not fitted** on MFS_1. What that costs and saves:
 
 **Battery: nothing meaningful.** It removes only the 0.4 µA standby — about five
-days of the 872. The LNA was already specified off during the scan (below), so
+days of the 878. The LNA was already specified off during the scan (below), so
 there was no scan-path saving to make.
 
 **Link budget: −3 dB on transmit.** The nRF54L05's native maximum is +7 dBm

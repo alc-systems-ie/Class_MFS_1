@@ -185,6 +185,21 @@ observation while Arming or Active leads to the fail-safe, whether or not the sc
 running again when checked. LED A plays Armed only after that tick's scanner check, and
 only if the state is still Active.
 
+**A loss during an asserted fire cuts the pulse short.** If the scanner is lost while the
+output is asserted, the fail-safe drives the fire pins low and disconnects them at once,
+goes Inactive and restarts detection disarmed, so the pulse ends early. Because the state
+is no longer Active, the one-shot `Trigger complete - latched Inactive…` line does not
+follow — the device is already Inactive by the fail-safe, not by the trigger latch. That
+is correct under the always-fail-safe rule: firing capability is never kept through a
+fault, including mid-pulse.
+
+**A pin-disable failure in the fail-safe outranks the scanner in the log.** Both warnings
+are raised (`WARNING (light TBC): fire pins could not be isolated …` and `WARNING (light
+TBC): scanner not running while arming or armed …`), but `TakeFailure()` keeps the sticky
+`DisablePins` failure, so RTT shows `Fire pin disable failed (…) - fire pins may NOT be
+isolated!` and **not** `Scanner not running while arming or armed - disarmed (fail
+safe)!`.
+
 As a defensive guard behind that fail-safe, the detection engine never fires an ARMED
 delay whose scanner was lost during the delay **or is down at expiry** (checked after
 restoring duty-cycled scanning, which can itself take the scanner down): no detection,

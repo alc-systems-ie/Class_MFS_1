@@ -35,7 +35,7 @@ Hardware is the `alc_drawer_master` board **minus the FEM**: **nRF54L05 + nPM210
 | Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version 0x03 with an explicit command type |
 | Day boundary | **04:00 UTC**, no multi-day validity window |
 | Timekeeping | **LFXO** 32.768 kHz (fitted), GRTC-sourced. **No external RTC** (BOM, reaffirmed 2026-09-13). Invalid on every boot until provisioner sync |
-| Battery | CR123A, ~2.4 year expected life at ~70 µA average |
+| Battery | CR123A, ~2.4 year expected life at ~69 µA average |
 
 Full derivation, component figures with citations, and the reasoning behind each
 choice: **`docs/power-budget.md`**. Read it before changing the duty cycle, the
@@ -156,7 +156,7 @@ Constraints from that analysis that are easy to violate by accident:
 - **Hibernate_PT cannot power the ADXL367** — it force-disables LDOSW and resets
   the PMIC registers. Only plain Hibernate can hold LSOUT up in ULP mode.
 - **Never enable an nRF21540 LNA for scanning** in any future FEM-equipped
-  variant — +5 mA at 1.702% duty is +85.1 µA, more than doubling the whole budget.
+  variant — +5 mA at 1.675% duty is +83.8 µA, more than doubling the whole budget.
 - **The counterpart's advertising interval is not ours to set.** Measured
   (2026-09-14, `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`
   §1): **187.5 ms, steady**, from a Mac (`CoreBluetooth`, foreground); **~35 ms,
@@ -173,11 +173,16 @@ Constraints from that analysis that are easy to violate by accident:
   owner moved the default to **5970 ms** (5970.000 ms real, 9552 BLE units),
   the middle of the wider 9537–9565 island, which the script reports as a clean
   pass (zero misses) against the Mac's 187.5 ms and every Apple interval up to
-  318.75 ms, including the 211.25 ms Apple recommends. Intervals from about
+  318.75 ms, including the 211.25 ms Apple recommends. **A PASS holds for a
+  steady interval; real advDelay jitter can add a small miss rate** (~1.4 % at
+  187.5 ms with `--jitter-ms 10 --jitter-centred`; amendment §2). The script
+  derives the scan count N = floor((30 000 − W) / P): **N = 5 needs P ≤ 5980 ms,
+  and raising the period past 5980 ms drops N to 4.** Intervals from about
   5 × the 100 ms window upward cannot be fully covered by any period at this
-  scan count — the owner decisions below (foreground-only sending; no scanner,
-  no arming) are what actually bound that case, not the period. The production
-  Android phone's interval is still to be measured and checked with the script.
+  scan count — only foreground-only sending (below), which keeps the
+  counterpart advertising fast, bounds that case; no scanner, no arming does
+  not. The production Android phone's interval is still to be measured and
+  checked with the script.
 
 Full access design — derivation, key issue, wire format, acceptance, time, threat
 review: **`docs/tan-scheme.md`**. The wire format and firmware units are in
@@ -280,7 +285,10 @@ disabled unless the app lifecycle is `resumed`; when the app becomes `hidden`,
 page shows "Advertising stopped - keep the app open while sending." `inactive`
 (visible but unfocused — a macOS window losing focus, or an iOS system sheet) does
 **not** stop an advert. This is what actually bounds the slow-advertiser case the
-scan period alone cannot cover (see the Scan section above).
+scan period alone cannot cover (see the Scan section above): a Send advertises only
+from the foreground, where the platform advertises fast — on Android because
+`ble_peripheral` 2.4.0 requests `ADVERTISE_MODE_LOW_LATENCY`. (No scanner, no arming
+does not bound it; it only ensures an armed device can hear at all.)
 
 **Malformed, replayed and out-of-range payloads are tested on the host** (plan
 Tasks 3–5), against
