@@ -83,8 +83,14 @@ firing while deactivated is dangerous.
   (`docs/superpowers/specs/2026-09-14-disarmed-test-mode-amendment.md`).
 - **Fire pins are isolated unless armed** — `GPIO_DISCONNECTED` with external
   pull-downs; disarm disables them first; arming waits 10 s, restarts detection,
-  enables the pins last, and any step failure fails safe to the warning (light
-  TBC) (`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`).
+  enables the pins last, and any step failure fails safe to the warning
+  (`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`).
+  `App::signalWarning()` is the one warning path: it logs `WARNING (light TBC)`
+  and, **until the dedicated warning light is chosen, plays three long pulses on
+  LED B in every build** (production included), overriding the bench detection
+  level while it plays. Sources: an arming-step failure, the boot pin check, a
+  fire-pin disable failure, and a fire switch `Set()` failure while Active (once
+  per boot). An arming failure shows **no** LED A acknowledgement.
   `OutputSwitch::Disable()` **latches the switch faulty on any failure**,
   including a disconnect-only failure that leaves both gates safely low — so a
   device that will not arm after a "Fire output LATCHED FAULTY" log is expected,

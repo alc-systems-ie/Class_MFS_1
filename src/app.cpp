@@ -25,6 +25,10 @@ namespace alc
 
     constexpr uint32_t M_POLL_INTERVAL_MS { 100 };
 
+    // Render rate of the LED pattern timers - fast enough for the 60 ms phases of
+    // the Armed pattern.
+    constexpr uint32_t M_LED_TICK_MS { 10 };
+
     // How often serviceScanHealth() retries starting the scan if it is down.
     // Only the retry is throttled - the detection engine tracks scanner loss
     // during an armed delay on every tick - since the Bluetooth stack's own
@@ -81,7 +85,9 @@ namespace alc
 
     // LED A — on while Inactive. LED B (bench only) — on while detection is met,
     // Inactive or Active, and suppressed while Arming; see the disarmed test mode
-    // amendment section 2 and the arming sequence amendment section 3.
+    // amendment section 2 and the arming sequence amendment section 3. In every
+    // build LED B also plays the interim warning, which overrides it while it
+    // plays (arming sequence amendment section 4).
     const struct gpio_dt_spec s_led_a = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
     const struct gpio_dt_spec s_led_b = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
 
@@ -204,6 +210,7 @@ namespace alc
       , m_access_ready(false)
       , m_output_switch()
       , m_output_active(false)
+      , m_switch_fault_warned(false)
       , m_settings()
       , m_delay_timer {}
       , m_delay_pm_lock_held(false)
@@ -214,6 +221,9 @@ namespace alc
       , m_arming(*this)
       , m_led_sequencer()
       , m_led_timer {}
+      , m_warning_sequencer()
+      , m_warning_timer {}
+      , m_leds_initialised(false)
       , m_initialised(false)
   {}
 
@@ -237,6 +247,8 @@ namespace alc
     k_timer_init(&m_delay_timer, nullptr, nullptr);
     k_timer_init(&m_led_timer, &App::ledTimerHandler, nullptr);
     k_timer_user_data_set(&m_led_timer, this);
+    k_timer_init(&m_warning_timer, &App::warningTimerHandler, nullptr);
+    k_timer_user_data_set(&m_warning_timer, this);
 
     // THE FIRE OUTPUT IS CHECKED FIRST, before the I2C bus, the FEM or the LEDs.
     // It is not driven: the external 10k pull-downs hold both gates off from
@@ -273,6 +285,11 @@ namespace alc
       LOG_ERR("Failed to initialise the LEDs: %d!", result);
       return result;
     }
+
+    // A warning raised by the boot pin check, before the LEDs existed, starts
+    // rendering now. It is still in its dark lead-in, so nothing is lost.
+    m_leds_initialised = true;
+    if (m_warning_sequencer.IsActive(k_uptime_get())) { k_timer_start(&m_warning_timer, K_NO_WAIT, K_MSEC(M_LED_TICK_MS)); }
 
     result = initPmic();
     if (result < 0) {
@@ -363,6 +380,7 @@ namespace alc
       // battery-test build never drives LED A, but the log still claimed "LED A ON".
       int64_t ledNowMs { k_uptime_get() };
       bool ledSequencerActive { m_led_sequencer.IsActive(ledNowMs) };
+      bool warningActive { m_warning_sequencer.IsActive(ledNowMs) };
 
       // While a pattern plays, the 10 ms LED timer owns LED A exclusively - in
       // EVERY build, battery-test included, or the loop's write below would fight
@@ -394,15 +412,17 @@ namespace alc
       // underneath is discarded when arming completes or is cancelled. It is a
       // bench indicator, not an output consumer - OutputSwitch is the example
       // future consumers copy (design spec section 6.2).
-      ledB = m_engine.DetectionMet() && (m_arming.State() != ArmState::Arming);
+      bool detectionLed { m_engine.DetectionMet() && (m_arming.State() != ArmState::Arming) };
 
-      // Logged on transitions of LED B itself, so the log follows the LED. While
-      // Inactive nothing else reports a test trigger - the Output line below only
-      // fires armed - so without this a test shows "Activation 3 of 3." and then
-      // silence, and LED B is the only evidence (bench, 2026-09-14).
-      if (ledB != previousDetection) {
-        previousDetection = ledB;
-        if (ledB) {
+      ledB = detectionLed;
+
+      // Logged on transitions of the detection indicator, so the log follows the
+      // LED. While Inactive nothing else reports a test trigger - the Output line
+      // below only fires armed - so without this a test shows "Activation 3 of 3."
+      // and then silence, and LED B is the only evidence (bench, 2026-09-14).
+      if (detectionLed != previousDetection) {
+        previousDetection = detectionLed;
+        if (detectionLed) {
           detectionStartMs = ledNowMs;
           LOG_INF("Detection met (%s) - LED B on.", m_arming.State() == ArmState::Active ? "armed" : "test");
         } else {
@@ -410,6 +430,12 @@ namespace alc
         }
       }
 #endif
+
+      // While the interim warning plays, the 10 ms warning timer owns LED B
+      // exclusively - in EVERY build, overriding the bench detection level. ledB
+      // is still computed so the transition log reports what is actually lit;
+      // the pin write itself is skipped below. Production has ledB false here.
+      if (warningActive) { ledB = m_warning_sequencer.Level(ledNowMs); }
 
       // Log only on transitions. A periodic dump floods the 4 KB RTT buffer in
       // LOG_MODE_IMMEDIATE and silently drops the events that actually matter —
@@ -420,10 +446,9 @@ namespace alc
                 ledA ? "ON" : "off", ledB ? "ON" : "off");
       }
 
-      // LED A is written here ONLY while no pattern is playing - see
-      // ledSequencerActive above. LED B has no second writer, so it is always
-      // written from the loop.
-      result = applyLedB(ledB);
+      // Each LED is written here ONLY while its timer is not playing a pattern -
+      // see ledSequencerActive and warningActive above. One writer per pin.
+      result = warningActive ? 0 : applyLedB(ledB);
       if (result == 0 && !ledSequencerActive) { result = applyLedA(ledA); }
       if (result < 0) { LOG_ERR("LED update failed: %d!", result); }
 
@@ -652,7 +677,16 @@ namespace alc
     // derivation point cannot be forgotten by a future edit to the loop, and
     // there is no second call site that could disagree with this one. While the
     // device is not Active the pins are disabled and Set(false) does nothing.
-    m_output_switch.Set(m_output_active);
+    int switchResult { m_output_switch.Set(m_output_active) };
+
+    // A switch failure while Active - a failed write or read-back, a refused
+    // assert - leaves the switch latched faulty and the armed device unable to
+    // fire, which the engineer must learn. Warned once: the latch keeps failing
+    // every later Set(), and a warning restarted every tick would never end.
+    if (switchResult < 0 && m_arming.State() == ArmState::Active && !m_switch_fault_warned) {
+      m_switch_fault_warned = true;
+      signalWarning(m_output_active ? "fire switch failed to assert while armed" : "fire switch failed to clear while armed", switchResult);
+    }
 
     // ONE-SHOT. The engine tracks the output App actually derived, and flags the
     // trigger complete once it has asserted and ended - acted on in the main loop.
@@ -706,7 +740,17 @@ namespace alc
 
   void App::signalWarning(const char* reason, int result)
   {
+    // The log line is unchanged from the stub, so bench notes still match it.
     LOG_ERR("WARNING (light TBC): %s (%d)!", reason, result);
+
+    // INTERIM: three long pulses on LED B until the dedicated warning light is
+    // chosen - in every build, since production has no other indicator. Stop the
+    // timer before touching the sequencer, so the handler never reads it
+    // half-written; a new warning replaces one already playing. Before
+    // initLeds() the timer is left stopped and Run() starts it.
+    k_timer_stop(&m_warning_timer);
+    m_warning_sequencer.Start(LedPattern::Warning, k_uptime_get());
+    if (m_leds_initialised) { k_timer_start(&m_warning_timer, K_NO_WAIT, K_MSEC(M_LED_TICK_MS)); }
   }
 
   int App::DisableFirePins()
@@ -1327,13 +1371,11 @@ namespace alc
 
   void App::playLedPattern(LedPattern pattern)
   {
-    constexpr k_timeout_t M_LED_TICK { K_MSEC(10) };
-
     // Stop the timer before touching the sequencer, so the handler never reads it
     // half-written. A new command replaces whatever was playing.
     k_timer_stop(&m_led_timer);
     m_led_sequencer.Start(pattern, k_uptime_get());
-    k_timer_start(&m_led_timer, K_NO_WAIT, M_LED_TICK);
+    k_timer_start(&m_led_timer, K_NO_WAIT, K_MSEC(M_LED_TICK_MS));
   }
 
   void App::ledTimerHandler(struct k_timer* timer)
@@ -1348,6 +1390,20 @@ namespace alc
 
     // ISR context. gpio_pin_set_dt() is ISR-safe on the nRF GPIO driver.
     gpio_pin_set_dt(&s_led_a, self->m_led_sequencer.Level(now) ? 1 : 0);
+  }
+
+  void App::warningTimerHandler(struct k_timer* timer)
+  {
+    App* self { static_cast<App*>(k_timer_user_data_get(timer)) };
+    int64_t now { k_uptime_get() };
+
+    if (!self->m_warning_sequencer.IsActive(now)) {
+      k_timer_stop(timer);
+      return;
+    }
+
+    // ISR context, as ledTimerHandler(). The only writer of LED B while active.
+    gpio_pin_set_dt(&s_led_b, self->m_warning_sequencer.Level(now) ? 1 : 0);
   }
 
   int App::applyLedA(bool ledA)

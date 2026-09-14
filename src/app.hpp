@@ -85,7 +85,8 @@ namespace alc
       // the LED timer owns the pin - see ledSequencerActive in Run().
       int applyLedA(bool ledA);
 
-      // Writes LED B. Always called from the main loop; nothing else writes it.
+      // Writes LED B. Split from LED A for the same reason: the main loop skips
+      // this call while the warning timer owns the pin - see warningActive in Run().
       int applyLedB(bool ledB);
 
       // Derives m_output_active. The single place the arm state and the
@@ -103,8 +104,10 @@ namespace alc
       // raised by the sequence through SignalWarning().
       void logArmingFailure();
 
-      // The warning light - TBC (arming sequence amendment section 4). A named
-      // stub: logs and does nothing else, so wiring a pin later is one place.
+      // The warning (arming sequence amendment section 4). Logs, and - until the
+      // dedicated warning light is chosen - plays three long pulses on LED B in
+      // every build, replacing any warning already playing. The one place a
+      // dedicated pin is wired later. Must not call back into m_arming.
       void signalWarning(const char* reason, int result);
 
       // ArmingActions - see arming_sequence.hpp for each contract.
@@ -175,6 +178,9 @@ namespace alc
       // k_timer expiry: renders LED A while a pattern plays, then stops itself.
       static void ledTimerHandler(struct k_timer* timer);
 
+      // k_timer expiry: renders LED B while the warning plays, then stops itself.
+      static void warningTimerHandler(struct k_timer* timer);
+
       // Adopts the clock's current day at most once every M_ADVANCE_INTERVAL_SECS,
       // so a device that receives no commands for days still advances its
       // persisted floor and cannot later accept a stale captured provisioner sync.
@@ -208,6 +214,11 @@ namespace alc
       // The definitive output state. Written only by updateOutputState(), read
       // only via IsOutputActive().
       bool m_output_active;
+
+      // True once a fire switch failure while Active has raised the warning. Once
+      // per boot: the switch latches faulty on a failure and never arms again, so
+      // the first warning is the one per fault - see updateOutputState().
+      bool m_switch_fault_warned;
 
       // The engineer-settable parameters, NVS-backed.
       Settings m_settings;
@@ -250,6 +261,17 @@ namespace alc
       // handler and written from the main loop; see playLedPattern().
       LedSequencer m_led_sequencer;
       struct k_timer m_led_timer;
+
+      // The interim warning on LED B. Same ownership rule as LED A: while it
+      // plays, m_warning_timer is LED B's only writer; the main loop writes LED B
+      // only once it has ended. Started by signalWarning() from the main thread.
+      LedSequencer m_warning_sequencer;
+      struct k_timer m_warning_timer;
+
+      // False until initLeds() has configured both LED pins. A warning raised
+      // before then (the boot pin check) starts its sequencer at once but its
+      // timer only after initLeds() - see Run().
+      bool m_leds_initialised;
 
       bool m_initialised;
   };

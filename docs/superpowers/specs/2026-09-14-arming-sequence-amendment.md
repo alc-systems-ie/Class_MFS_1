@@ -89,12 +89,32 @@ interlock, the single output derivation and `IsOutputActive()` as the only sanct
 read are unchanged. The command's minute still trims the clock only as before (an Arm
 accepted while Inactive trims; ignored commands during Arming do not).
 
-## 4. Warning light — TBC
+## 4. Warning light — TBC, interim on LED B
 
-The owner will choose a dedicated LED. Until then `App::signalWarning(reason, result)` is
-a **named stub**: it logs `LOG_ERR("WARNING (light TBC): %s (%d)!")` and does nothing
-else, so wiring it to a pin later is a one-place change. It is raised by: an arming-step
-failure, a boot pin check reading high, and a fire-pin disable failure.
+The owner will choose a dedicated LED. `App::signalWarning(reason, result)` is the one
+warning path, so wiring that pin later is a one-place change. It logs
+`LOG_ERR("WARNING (light TBC): %s (%d)!")` and, **until the dedicated light is chosen,
+plays an interim warning on LED B**:
+
+- **Pattern:** three long pulses — 700 ms on / 300 ms off for 3 s — framed by the same
+  300 ms dark gap before and after as every LED A pattern (`LedPattern::Warning`).
+- **All builds**, production included: production has no other indicator.
+- **Ownership:** while it plays, the warning's own 10 ms timer is LED B's only writer and
+  it overrides the bench detection level; the main loop writes LED B again only once it
+  has ended (the same single-writer rule LED A's sequencer and the loop follow). A new
+  warning replaces one already playing. A warning raised before the LEDs are initialised
+  (the boot pin check) starts rendering once they are, still inside its dark lead-in.
+- **LED A shows nothing** for an arming failure — no acknowledgement of any kind.
+
+It is raised by:
+
+1. an arming-step failure (§3 step 3);
+2. a boot pin check reading high, or not completing (§1);
+3. a fire-pin disable failure;
+4. **a fire switch failure while Active** — `OutputSwitch::Set()` returning an error from
+   the single derivation point (a failed write or read-back, a refused assert). Raised
+   **at most once per boot**: the switch latches faulty and every later `Set()` keeps
+   failing, so a per-tick warning would never end.
 
 ## 5. Host-testable arming sequence
 

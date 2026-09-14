@@ -58,6 +58,27 @@ void run_led_sequencer_tests()
   assert(!leds.Level(M_START + M_GAP + 600 + 100));
   assert(!leds.IsActive(M_START + M_GAP + 600 + M_GAP));
 
+  // Warning (LED B, interim): dark gap, then 700 ms on / 300 ms off for 3 s -
+  // three long pulses - then a dark gap.
+  leds.Start(LedPattern::Warning, M_START);
+  assert(!leds.Level(M_START + M_GAP - 1));
+  assert(leds.Level(M_START + M_GAP));
+  assert(leds.Level(M_START + M_GAP + 699));
+  assert(!leds.Level(M_START + M_GAP + 700));
+  assert(!leds.Level(M_START + M_GAP + 999));
+  assert(leds.Level(M_START + M_GAP + 1000));
+  assert(leds.Level(M_START + M_GAP + 2699));
+  assert(!leds.Level(M_START + M_GAP + 2700));
+  assert(!leds.Level(M_START + M_GAP + 3000));
+  assert(leds.IsActive(M_START + M_GAP + 3000 + M_GAP - 1));
+  assert(!leds.IsActive(M_START + M_GAP + 3000 + M_GAP));
+
+  // A new warning replaces one already playing: the pattern restarts from its lead-in.
+  leds.Start(LedPattern::Warning, M_START + 2000);
+  assert(!leds.Level(M_START + 2000 + M_GAP - 1));
+  assert(leds.Level(M_START + 2000 + M_GAP));
+  assert(leds.IsActive(M_START + 2000 + M_GAP + 3000 + M_GAP - 1));
+
   // A new command replaces the pattern playing.
   leds.Start(LedPattern::Disarmed, M_START);
   leds.Start(LedPattern::SettingsApplied, M_START + 100);

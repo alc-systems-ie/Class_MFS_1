@@ -23,7 +23,7 @@ namespace alc
     constexpr Step M_ARMED[] { { 60, 65 } };
     constexpr Step M_DISARMED[] { { 500, 500 } };
     constexpr Step M_DELAY_CANCELLED[] { { 100, 100 }, { 100, 700 } };
-    constexpr Step M_ARM_REFUSED[] { { 700, 300 } };
+    constexpr Step M_WARNING[] { { 700, 300 } };
     constexpr Step M_SINGLE_BLINK[] { { 200, 0 } };
     constexpr Step M_DOUBLE_BLINK[] { { 200, 200 }, { 200, 0 } };
 
@@ -39,8 +39,8 @@ namespace alc
           return { M_DISARMED, 1, M_LONG_PATTERN_MS };
         case LedPattern::DisarmedDelayCancelled:
           return { M_DELAY_CANCELLED, 2, M_LONG_PATTERN_MS };
-        case LedPattern::ArmRefused:
-          return { M_ARM_REFUSED, 1, M_LONG_PATTERN_MS };
+        case LedPattern::Warning:
+          return { M_WARNING, 1, M_LONG_PATTERN_MS };
         case LedPattern::SettingsApplied:
           return { M_SINGLE_BLINK, 1, M_SINGLE_BLINK_MS };
         case LedPattern::ModeChanged:
