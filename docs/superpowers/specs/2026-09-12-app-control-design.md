@@ -152,6 +152,9 @@ the iPhone** before treating 187 ms as final.
 
 ## 4. Wire format
 
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree.
+
+
 **Superseded 2026-09-13.** The plaintext layout with a `'C' 'L'` prefix, a device
 type and a day-code field is gone. The authoritative definition, with the
 derivations and a worked vector, is `docs/tan-scheme.md` §3 and §6.1. Summary:
@@ -201,6 +204,9 @@ It says "be in this state with these settings", never "change". Two consequences
   `command_scanner.cpp` existed because the old payload was a toggle; it is removed.
 
 ### 4.2 Settings and arm state always travel together
+
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree.
+
 
 Every Send carries the live slider values. While Inactive, the engineer tunes with
 ordinary commands whose arm bit is clear; each uses the next sequence number, which
@@ -403,6 +409,9 @@ The count clears only on trigger or on deactivation. It does **not** expire.
 
 ### 6.4 The command path — one path while armed
 
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree.
+
+
 **What an accepted command may do is decided in exactly one place**, the pure
 function `DecideCommand()` (`src/arm_policy.hpp`), and `App::applyCommand()` acts on
 that decision and on nothing else.
@@ -566,6 +575,9 @@ LED whatsoever**. The device logs over RTT and does nothing else.
 
 ### 6.7 LED scheme — PROVISIONAL
 
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree.
+
+
 The final hardware has **three LEDs visible through a light window**, integral to
 the design. This scheme is provisional and is what v1 implements.
 
@@ -694,6 +706,9 @@ app must never hold a device secret.
 
 ### 8.1 MFS_1 screen
 
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree.
+
+
 Device picker (one bench device this phase); arm toggle; a 1–16 selector for
 activations; a cooldown slider shown only when activations > 1, reading out mapped
 seconds; a delay slider; a sensitivity slider reading out mg, insensitive left to
@@ -708,6 +723,9 @@ distinct, because it sends a slot-0 command. In production that section is repla
 by a request to the real Network Manager.
 
 ### 8.2 Workflow
+
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree.
+
 
 1. Engineer picks the device.
 2. Toggle to Deactivated; Send. Watch LED A: **slow flash** — disarmed (or **double

@@ -180,6 +180,9 @@ The device is scan-only. The phone advertises one 128-bit service UUID carrying 
 
 ### 6.1 Wire format
 
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section (including `protocolVersion` `0x03`) where they disagree.
+
+
 On-air order (a scanner's hex dump; the app builds the UUID string reversed):
 
 | Bytes | Content | Visible to a listener |
@@ -283,6 +286,9 @@ worse than blind guessing only by the cost of capturing the ID in the first plac
   engineering-fault case rather than an attack surface.
 
 ### 6.5 What the device does with an accepted command
+
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree.
+
 
 It is an **absolute state assertion** — "be in this state with these settings".
 Settings travel with every command, so there is no window in which the device is
@@ -459,3 +465,4 @@ other days.
 | Serial prefix and device type | `MFS-` provisional |
 | Network Manager | Real implementation, HSM, attestation, slot assignment, reinstall policy (§3.1) |
 | **DECISION NEEDED: unheard Sends exhaust the window** | Each Send reserves a new `n` whether or not the device hears it; more than 16 unheard Sends to one device in one day lock that slot out until 04:00 UTC. Options (app throttle, app counting with a refusal at 16, wider window) in the bench log, `docs/superpowers/plans/2026-09-13-bench-checklist.md` §9 |
+| **DECISION NEEDED: store device settings in the app** | Useful to the engineer, but a lost phone would become a map of every sensor's sensitivity, activations, cooldown and delay, with no expiry. Options (do not store; back office returns them with the day key; phone-side under the day key) in `docs/superpowers/specs/2026-09-14-command-types-amendment.md` §4. Until decided: do not store |

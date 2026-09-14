@@ -127,3 +127,20 @@ rollover**. There is no recovery short of waiting, or using another slot. Option
 
 Also flagged in `docs/tan-scheme.md` §11.
 
+
+**§5 halted — Arm overwrites settings (08:03–08:25 UTC).** After re-provisioning,
+two Arm Sends produced no RTT line at all (app store at `n 14`, device window from
+`n 10`, clocks agree) — **not heard**, cause still open: the app starts its 30 s
+countdown even if `startAdvertising` failed, so check the advert with a phone scanner
+next time. A later Arm with the app's default sliders was accepted (`n 14`) and
+**overwrote the device's 3 activations / 8 s cooldown with 1 / 0 s**; a following Arm
+with the real settings was correctly ignored as armed (`n 15`). Arming or disarming is
+therefore only safe with knowledge of the settings. **Design changed:** Arm, Disarm and
+Settings become separate command types, settings only behind a confirmed disarm in the
+app — `docs/superpowers/specs/2026-09-14-command-types-amendment.md`. §5 and §6 resume
+on the new build.
+
+**DECISION NEEDED — store each device's settings in the app.** Useful, but a lost phone
+would carry every sensor's sensitivity, activations, cooldown and delay with no expiry.
+Options in the amendment §4; until decided, the app does not store them. Also flagged
+in `docs/tan-scheme.md` §11.
