@@ -90,11 +90,22 @@ This is proven by host tests (§4), not by review alone, and verified on the ben
 
 ### 3.3 Invariants kept
 
+> **Superseded 2026-09-14 (bench session 1) — arming sequence and fire-pin
+> isolation:** `docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`
+> replaces the disarm and arm orders below. Disarm now disables the fire pins
+> **first**, before the boolean moves to Inactive: disable pins → Inactive →
+> re-derive the output → restart the test. Arm now goes through a new `Arming`
+> state and a 10 s exit delay before the restart runs, and only enables the
+> fire pins — the last step — once the restart has succeeded, setting `Active`
+> after that.
+
 - **The arm boolean is definitive**; the output is `armed && detectionMet && delay
   permits` at the single derivation point; `OutputSwitch` interlock unchanged.
-- **Disarm order**: clear the boolean → re-derive the output (GPIOs off) → restart the
-  test. The output is off before the accelerometer is touched.
-- **Arm order**: restart (configure, confirm AWAKE clear) → set the boolean.
+- **Disarm order** (as originally specified here, now superseded — see above):
+  clear the boolean → re-derive the output (GPIOs off) → restart the test. The
+  output is off before the accelerometer is touched.
+- **Arm order** (as originally specified here, now superseded — see above):
+  restart (configure, confirm AWAKE clear) → set the boolean.
 - **The stuck-AWAKE watchdog runs in both states**, because the part now runs in both.
 
 ## 4. Host-testable detection engine

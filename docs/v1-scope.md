@@ -33,7 +33,8 @@ loop and day-key command validation (`docs/tan-scheme.md`).
 
 ### 1.0 THE ARM BOOLEAN IS DEFINITIVE — architectural invariant
 
-**The device tracks `m_arm_state`. The accelerometer is only ever ANDed with it.**
+**The device tracks `m_arming.State()` (`ArmingSequence`, `src/arming_sequence.hpp`
+— `Inactive`, `Arming` or `Active`). The accelerometer is only ever ANDed with it.**
 
 This is not a style preference. In the product the output switches a voltage, so a
 device that fires while deactivated is dangerous. The invariant must hold as
@@ -43,7 +44,7 @@ Enforced in code by a single derivation point:
 
 ```cpp
 // App::updateOutputState() — the only place the two are combined.
-m_output_active = (m_arm_state == ArmState::Active) && m_detection_met && delayPermitsFiring();
+m_output_active = (m_arming.State() == ArmState::Active) && m_engine.DetectionMet() && delayPermitsFiring();
 ```
 
 and a single sanctioned read, `App::IsOutputActive()`.
@@ -73,6 +74,17 @@ precisely so no other translation unit can reach it.
 > while disarmed — the detection engine runs continuously in both arm states,
 > and the part is reconfigured afresh on every arm and on every test restart
 > (a disarm, a Settings command, or boot), not only on activation.
+>
+> **Further amended 2026-09-14 (bench session 1) — arming sequence and
+> fire-pin isolation:** `docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`
+> further supersedes the table and identifiers below. There is now a third arm
+> state, `ArmState::Arming`, between Inactive and Active: an accepted Arm starts
+> a 10 s exit delay (LED A dark, LED B suppressed) before the restart below
+> runs, and the fire pins are `GPIO_DISCONNECTED` at every other time, attached
+> only as the last step of a successful arm. The state lives in
+> `m_arming.State()` (`ArmingSequence`), set via `App::disarmDevice()` (which
+> calls `m_arming.Disarm()`) and `m_arming.BeginArming()` / `m_arming.Service()`
+> — not a bare `m_arm_state` member or a `setArmState()` call.
 
 **A trigger that was already asserted when the device was armed must never fire.**
 
@@ -98,14 +110,23 @@ deliberate in both directions:
 
 | Activate (Arm) | Deactivate (Disarm) |
 |---|---|
-| 1. Restart: `ConfigureLoopMode()` — soft reset, bootstrap cycle, real thresholds | 1. `m_arm_state = Inactive` |
-| 2. Confirm `AWAKE == 0` from STATUS | 2. `updateOutputState()` — output derives to 0, GPIOs off |
-| 3. `m_arm_state = Active` only on success, LED A off | 3. Restart: reconfigure the ADXL367 afresh, test resumes from zero |
+| 1. Accepted → `m_arming.State()` = `Arming`; fire pins stay isolated, nothing for 10 s | 1. Disable the fire pins (`OutputSwitch::Disable()`) |
+| 2. Restart: `ConfigureLoopMode()` — soft reset, bootstrap cycle, real thresholds | 2. `m_arming.State()` = `Inactive` (cancel any arming) |
+| 3. Confirm `AWAKE == 0` from STATUS | 3. `updateOutputState()` — output re-derives to 0 (pins already isolated) |
+| 4. Enable the fire pins — the last step | 4. Restart: reconfigure the ADXL367 afresh, test resumes from zero |
+| 5. `m_arming.State()` = `Active` only if every step succeeded, LED A plays Armed | |
 
-On deactivation the boolean necessarily moves first, because **the output is
-derived from it, not stored beside it** (§1.0). The derivation runs immediately
-after and always before the sensor is touched, so there is no instant at which a
-deactivated device still reads as triggered.
+Any arming-step failure fails safe: disable the fire pins, `Inactive`, restart
+the test disarmed, raise the warning
+(`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md` §4).
+
+On deactivation the fire pins are disabled **before** the state moves to
+`Inactive` — the pins going safe does not wait on, or depend on, the boolean at
+all. The state then moves to `Inactive` and only then is the output re-derived,
+because **the output is derived from the state, not stored beside it** (§1.0).
+The re-derivation runs immediately after and always before the sensor is
+touched, so there is no instant at which a deactivated device still reads as
+triggered.
 
 `Adxl367::Standby()` parks INTMAP1/INTMAP2 active-low with nothing mapped before
 dropping POWER_CTL, so both pins idle HIGH — used between a counted activation and

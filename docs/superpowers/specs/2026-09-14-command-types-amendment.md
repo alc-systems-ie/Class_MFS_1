@@ -80,6 +80,17 @@ Plaintext, replacing `docs/tan-scheme.md` §6.1:
 > from zero**, reconfiguring the ADXL367 afresh rather than standing it down,
 > because the detection engine runs continuously while disarmed.
 
+> **Pointer — further amended 2026-09-14 (bench session 1, arming sequence and
+> fire-pin isolation):** `docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`
+> supersedes the timing of the Inactive/Arm and Active/Disarm rows above and adds a
+> third device-is state, **Arming**. Inactive/Arm no longer goes straight to Active
+> with an immediate rapid flash: it starts a 10 s exit delay with the fire pins
+> still isolated and LED A dark, then restarts detection armed, enables the fire
+> pins last, and only then sets Active and plays the rapid flash. Active/Disarm
+> (and a Disarm during Arming, which cancels it) now disables the fire pins
+> **before** the state moves to Inactive, not after. While Arming, only Disarm
+> acts; Arm and Settings are ignored (logged, no LED).
+
 Rules this preserves or introduces:
 
 - **Armed, the only state change is disarm.** Unchanged. An armed device still

@@ -351,6 +351,16 @@ tool is retired, so no dual parsing.
 
 ### 6.2 The arm invariant, restated
 
+> **Further amended 2026-09-14 (bench session 1) — arming sequence and
+> fire-pin isolation:**
+> `docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md` supersedes
+> the snippet below and the pin model it implies. The state lives in
+> `m_arming.State()` (`ArmingSequence`), not a bare `m_arm_state` member, and
+> has a third value, `ArmState::Arming`, between Inactive and Active. The fire
+> pins are `GPIO_DISCONNECTED` except in the moment between a successful arm
+> restart and `Active`, so `OutputSwitch` has no driver to move outside that
+> window regardless of what `m_output_switch.Set()` is asked for.
+
 `docs/v1-scope.md` §1.0 stands, with one change: **LED B is no longer the output
 mirror.** It becomes a tuning indicator. `OutputSwitch` becomes the worked example
 that future consumers copy.
@@ -423,6 +433,15 @@ does **not** expire on its own.
 ### 6.4 The command path — one path while armed
 
 **Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree.
+
+**Further amended 2026-09-14 (bench session 1)** — arming sequence and
+fire-pin isolation: `docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`
+supersedes the arm and disarm orders below. Arm no longer sets the boolean at
+step 5 below; it starts a 10 s exit delay (state `Arming`) with the fire pins
+still isolated, and only then, synchronously, restarts detection armed, enables
+the fire pins and sets `Active`. Disarm no longer moves the boolean first: it
+disables the fire pins **first**, then Inactive, then re-derives the output,
+then restarts the test.
 
 
 **What an accepted command may do is decided in exactly one place**, the pure
@@ -601,6 +620,13 @@ LED whatsoever**. The device logs over RTT and does nothing else.
 ### 6.7 LED scheme — PROVISIONAL
 
 **Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree.
+
+**Further amended 2026-09-14 (bench session 1)** — arming sequence and
+fire-pin isolation: `docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`
+supersedes the **Armed** row's timing. LED A shows nothing for the 10 s exit
+delay after an Arm is accepted (LED B is also suppressed for that window); the
+rapid flash below plays only once the fire pins are enabled and the device is
+actually `Active`, not at the moment the command was accepted.
 
 
 The final hardware has **three LEDs visible through a light window**, integral to
@@ -842,6 +868,16 @@ Probe source kept in the session scratchpad as `pmic_probe/`. It reuses
 
 ### 9.2 OutputSwitch pins — specified 2026-09-12
 
+> **Superseded 2026-09-14 (bench session 1) — arming sequence and fire-pin
+> isolation:** `docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`
+> replaces the pin model below. The pins are **not** configured as outputs from
+> boot: they are `GPIO_DISCONNECTED` (no driver at all, input and output
+> buffers both off) whenever the device is not `Active`, and Enable() attaches
+> `GPIO_OUTPUT_INACTIVE` only as the last step of arming. "Drive them low early
+> in boot" no longer applies — there is no driver to drive low that early, and
+> that is now the point: the external pull-downs hold the lines with nothing
+> from this firmware to fight or fail.
+
 **Fire1 = P2.05, Fire2 = P2.09. Both assert together on activation** — one logical
 channel, two lines, not a set/reset pair. **Both are pulled down by external 10 kΩ
 resistors**, so active-high.
@@ -854,12 +890,14 @@ fire2-gpios = <&gpio2 9 GPIO_ACTIVE_HIGH>;
 **The hardware is fail-safe at boot and the firmware must not undo it.** The
 nRF54L brings GPIOs up as high-Z inputs, so for the first milliseconds of every
 boot the fire lines are undriven — and the 10 kΩ pull-downs hold them
-de-energised. A reset loop or a brownout therefore cannot fire the output. Two
-rules follow:
+de-energised. A reset loop or a brownout therefore cannot fire the output. As
+originally specified here the two rules below followed; see the banner above
+for how the arming sequence amendment actually implements this:
 
 - Configure with `GPIO_OUTPUT_INACTIVE`, **never** `GPIO_OUTPUT_ACTIVE`.
-- Drive them low **early in boot**, alongside `parkFrontEndModule()`, so the pins
-  spend as little time as possible relying on the pull-downs alone.
+- ~~Drive them low **early in boot**, alongside `parkFrontEndModule()`, so the
+  pins spend as little time as possible relying on the pull-downs alone.~~
+  Superseded: the pins are left disconnected, not driven, until armed.
 
 #### Latent hazard — both pins are claimed by the DK board files
 

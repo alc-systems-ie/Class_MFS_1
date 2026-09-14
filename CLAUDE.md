@@ -58,9 +58,10 @@ ADXL on the 1.8 V LSOUT rail. Also force LDOSW to Ultra-Low Power — in `Auto` 
 would sit in High Power forever now that the device never hibernates.
 
 **ARCHITECTURAL INVARIANT — the arm boolean is definitive** (`docs/v1-scope.md`
-§1.0). The device tracks `m_arm_state`; the accelerometer is only ever **ANDed**
-with it. In the product the output switches a voltage, so firing while deactivated
-is dangerous.
+§1.0). The device tracks `m_arming.State()` (`ArmingSequence`,
+`src/arming_sequence.hpp`) — `Inactive`, `Arming` or `Active`; the accelerometer
+is only ever **ANDed** with it. In the product the output switches a voltage, so
+firing while deactivated is dangerous.
 
 - `App::updateOutputState()` is the **only** place the two are combined.
 - `App::IsOutputActive()` is the **only** sanctioned read.
@@ -73,21 +74,40 @@ is dangerous.
   consumer, and is gated out of production builds.
 - Armed, the device's only path out is a disarm command or a one-shot trigger —
   see `DecideCommand()` (`src/arm_policy.hpp`), restated under Access rules below.
+  While **Arming**, the only command that acts is Disarm, which cancels it — see
+  below.
 - **Disarmed differs from armed in exactly two ways** — parameters change only
   while disarmed, and a trigger shows on LED B instead of the fire GPIOs.
   Detection, cooldown and delay run identically; Disarm restarts a test from
   zero; arming always starts a fresh session
   (`docs/superpowers/specs/2026-09-14-disarmed-test-mode-amendment.md`).
+- **Fire pins are isolated unless armed** — `GPIO_DISCONNECTED` with external
+  pull-downs; disarm disables them first; arming waits 10 s, restarts detection,
+  enables the pins last, and any step failure fails safe to the warning (light
+  TBC) (`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`).
+  `OutputSwitch::Disable()` **latches the switch faulty on any failure**,
+  including a disconnect-only failure that leaves both gates safely low — so a
+  device that will not arm after a "Fire output LATCHED FAULTY" log is expected,
+  not a further symptom to chase. `GPIO_DISCONNECTED` on the fire pins currently
+  behaves cleanly only because they sit on `gpio2`, which has **no GPIOTE
+  instance** on this SoC; re-check disconnect/reconfigure behaviour from
+  scratch if the fire pins ever move to `gpio0` or `gpio1`.
 
 Related: **arming is edge-triggered** (§1.0.1). AWAKE is a level, not a latch, so a
 naive `armed && triggered` fires the instant the device is armed on motion that
 predates arming — and an engineer handling the device to arm it *is* motion, so
 that is the common case, not an edge case. The device therefore **reconfigures the
 ADXL367 afresh on every arm — and on every test restart — so there is no stale
-level to inherit**. The order is load-bearing: arm is restart (configure, confirm
-AWAKE clear) → boolean Active only on success; disarm is boolean Inactive →
-re-derive the output (GPIOs off) → restart the test. Arming is **refused** if the
-part will not configure.
+level to inherit**. The order is load-bearing and now also carries the fire-pin
+isolation (`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`):
+**arm** is accepted → **Arming**; nothing for 10 s (`M_EXIT_DELAY_MS`, LED A dark,
+LED B suppressed); then, synchronously, restart detection armed (configure, confirm
+AWAKE clear) → enable the fire pins **last** → boolean Active only on every step's
+success, LED A plays Armed. **Disarm**, from any state: disable the fire pins
+**first** → boolean Inactive (cancel any arming) → re-derive the output (GPIOs
+already isolated) → restart the test. Arming is **refused** — fails safe to the
+warning, disable pins, Inactive, test resumed disarmed — if any step fails,
+including the part not configuring.
 
 **ADXL367 loop mode has a mandatory initialization routine** (`docs/v1-scope.md`
 §3.1). Referenced mode holds an internal reference that is only valid once the
@@ -148,10 +168,14 @@ next 04:00 UTC only — `docs/power-budget.md` §8.1):
   carry no settings, so an engineer can arm or disarm without knowing the device's
   tuning; settings are applied only by a Settings command while Inactive. **Armed,
   the only state change is disarm** — Arm or Settings to an armed device changes
-  nothing and replays the Armed pattern on LED A. **Triggers are one-shot** and
-  latch the device Inactive, so disarm and trigger are the only two ways out of the
-  armed state. `DecideCommand()` (`src/arm_policy.hpp`) is the single place this is
-  decided — never add a second path in `App`.
+  nothing and replays the Armed pattern on LED A. **While Arming (the 10 s exit
+  delay), only Disarm acts** — it cancels the arming (§2 disarm order); Arm and
+  Settings are ignored outright, logged, with no LED and no clock trim
+  (`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md` §3.1).
+  **Triggers are one-shot** and latch the device Inactive, so disarm and trigger
+  are the only two ways out of the armed state. `DecideCommand()`
+  (`src/arm_policy.hpp`) is the single place this is decided — never add a second
+  path in `App`.
 - **The app never stores device settings** (owner decision 2026-09-14, amendment
   §4) — a lost phone must not become a map of every sensor's tuning.
 - **Persist before acting**, and **failures emit nothing** — no advert, no LED. LED A

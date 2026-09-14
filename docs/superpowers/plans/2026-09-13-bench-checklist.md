@@ -153,6 +153,57 @@ RTT expectations below are the engine's log texts as implemented — see
    retrying the accelerometer every N ms!`, `Failed to reconfigure the ADXL -
    retrying every N ms!`) - before the first tap.
 
+## 5c. Arming sequence and fire-pin isolation (plan 2026-09-14)
+
+RTT expectations below are the exact strings logged by `src/app.cpp` and
+`src/output_switch.cpp` as implemented — see `App::applyCommand()`,
+`App::disarmDevice()`, `App::logArmingFailure()`, `App::Run()` and
+`OutputSwitch::Init()`/`Enable()`/`Disable()`.
+
+1. [ ] **Boot.** RTT shows `Fire output initialised: both pins read low at boot
+   and are isolated (no driver).` (or, on a failed check,
+   `Fire output failed its boot check (%d) - pins isolated and latched faulty;
+   booting on, but the device will NOT arm!` and `WARNING (light TBC): fire
+   pins failed the boot check (%d)!`). With a meter on Fire1/Fire2: both read
+   low (pulled down), with no driver from the SoC either side of the check.
+2. [ ] **Arm.** Send Armed. RTT: `Arming: fire pins isolated, arming in 10 s.`
+   Immediately after: **nothing on LED A or LED B for 10 s** — tap the device
+   during the window and confirm LED B stays dark (suppressed while Arming).
+   At the meter, Fire1/Fire2 stay floating/pulled low throughout. After 10 s:
+   RTT `Arm state: Active - fire pins enabled (uptime ... ms).`, LED A rapid
+   flash (Armed), and the meter now reads both fire lines **driven low**
+   (`GPIO_OUTPUT_INACTIVE`, not merely pulled) — confirming Enable() attached
+   a driver rather than the pull-downs still doing the work.
+3. [ ] **Disarm during the 10 s.** Send Armed, then within the delay Send
+   Disarmed. RTT: `Arming cancelled by slot N n M.` then `Arm state: Inactive
+   - arming cancelled (uptime ... ms).` LED A plays the ordinary **slow
+   flash** (Disarmed, not the double-blink — no armed delay was pending), the
+   device never reaches Active, and the meter shows the fire lines stayed
+   isolated/low throughout.
+4. [ ] **Arm or Settings during the 10 s.** Send Armed, then within the delay
+   send an Arm or a Settings command. RTT: `Arming: Arm from slot N n M
+   ignored - only a disarm is accepted while arming.` (or `Settings from slot
+   N n M ignored - ...`). No LED, no clock trim, no settings applied, and the
+   original arming still completes at its original 10 s deadline.
+5. [ ] **Disarm while Active.** With the device armed (fire lines driven
+   low, meter), Send Disarmed. RTT: `Arm state: Inactive (uptime ... ms).`
+   LED A slow flash. Meter: both fire lines isolated again (no driver) at
+   once, not merely returning to the pull-downs' RC rate.
+6. [ ] **Armed trigger.** Trigger the device while armed: the fire lines
+   assert (meter and/or the existing fire-output check), then RTT `Trigger
+   complete - latched Inactive. Re-arming needs an engineer command.` and
+   `Arm state: Inactive (uptime ... ms).` Meter: both fire lines isolated
+   immediately afterwards.
+7. [ ] **Failure path** (if safely inducible — e.g. disconnect or hold the
+   ADXL367 unresponsive so the restart fails; otherwise skip and note why).
+   Expect one of `Arming failed at the detection restart (%d) - device
+   Inactive, fire pins disabled, no acknowledgement!` paired with `WARNING
+   (light TBC): arming failed - detection would not restart armed (%d)!`, or
+   `Arming failed at the fire pin enable (%d) - device Inactive, fire pins
+   disabled, no acknowledgement!` paired with `WARNING (light TBC): arming
+   failed - fire pins would not enable (%d)!`. The device ends Inactive, fire lines isolated (meter), the
+   test resumes disarmed, and **no rapid flash plays**.
+
 ## 9. Bench log
 
 ### 2026-09-14 — first bench session (J-Link 853003346, nRF54L05, device 0xFBACBE88)
