@@ -67,22 +67,26 @@ namespace alc
     Definition definition { definitionOf(m_pattern) };
     int64_t elapsed { nowMs - m_start_ms };
 
-    return definition.stepCount > 0 && elapsed >= 0 && elapsed < definition.durationMs;
+    return definition.stepCount > 0 && elapsed >= 0 && elapsed < M_FRAME_GAP_MS + definition.durationMs + M_FRAME_GAP_MS;
   }
 
   bool LedSequencer::Level(int64_t nowMs) const
   {
     Definition definition { definitionOf(m_pattern) };
+    int64_t elapsed { nowMs - m_start_ms };
     uint32_t cycleMs { 0 };
     uint32_t position { 0 };
 
     if (!IsActive(nowMs)) { return false; }
 
+    // The dark frame either side of the steps - see M_FRAME_GAP_MS.
+    if (elapsed < M_FRAME_GAP_MS || elapsed >= M_FRAME_GAP_MS + definition.durationMs) { return false; }
+
     for (uint8_t index = 0; index < definition.stepCount; index++) {
       cycleMs += definition.steps[index].onMs + definition.steps[index].offMs;
     }
 
-    position = static_cast<uint32_t>(nowMs - m_start_ms) % cycleMs;
+    position = static_cast<uint32_t>(elapsed - M_FRAME_GAP_MS) % cycleMs;
     for (uint8_t index = 0; index < definition.stepCount; index++) {
       if (position < definition.steps[index].onMs) { return true; }
       position -= definition.steps[index].onMs;

@@ -32,6 +32,13 @@ namespace alc
   class LedSequencer
   {
     public:
+      // Dark gap played before and after every pattern. A bench build lights
+      // LED A steadily while Inactive, and a pattern that begins or ends on an
+      // on phase would merge into that level - a single 200 ms blink on a lit
+      // LED is simply invisible (found on the bench 2026-09-14). Framed in dark,
+      // every pattern reads the same on a lit or a dark idle LED.
+      static constexpr uint16_t M_FRAME_GAP_MS { 300 };
+
       LedSequencer();
 
       /** @brief Start a pattern, replacing any pattern already playing. */
@@ -41,7 +48,7 @@ namespace alc
 
       LedPattern Current() const { return m_pattern; }
 
-      /** @brief True until the pattern's duration has elapsed. */
+      /** @brief True until the pattern and both of its dark gaps have elapsed. */
       bool IsActive(int64_t nowMs) const;
 
       /** @brief The LED level the pattern calls for at this instant. False once inactive. */
