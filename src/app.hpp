@@ -10,6 +10,7 @@
 #include "adxl367.hpp"
 #include "arm_policy.hpp"
 #include "command_scanner.hpp"
+#include "detection_engine.hpp"
 #include "device_clock.hpp"
 #include "led_sequencer.hpp"
 #include "npm2100.hpp"
@@ -24,8 +25,12 @@ namespace alc
    *
    * One Run() per boot. The SoC stays in System ON idle between scan windows —
    * the nPM2100 is never hibernated, so Run() does not return.
+   *
+   * Implements DetectionHardware privately: the detection engine drives the
+   * ADXL367, the PMIC cooldown timer, the GRTC delay timer and the scanner
+   * through it, and nothing outside App can.
    */
-  class App
+  class App : private DetectionHardware
   {
     public:
       App();
@@ -51,6 +56,9 @@ namespace alc
       /** @brief Whether the sensor is armed. Cold start defaults to Inactive. */
       enum class ArmState : uint8_t { Inactive = 0, Active = 1 };
 
+      /** @brief Whether updateOutputState() runs a detection engine tick first. */
+      enum class EngineTick : uint8_t { Run, Skip };
+
       // Drives the four unused nRF21540 control pins low. The FEM is fitted on the
       // bespoke alc_drawer_master board but MFS_1 does not use it; a floating PDN
       // would leave it in an indeterminate state instead of power-down.
@@ -69,16 +77,6 @@ namespace alc
 
       int initAccelerometer();
 
-      // Configures the ADXL367 and proves it is reporting inactivity. Called
-      // BEFORE m_arm_state goes Active, so the device cannot come up armed on an
-      // assertion that predates arming.
-      int enableAccelerometer();
-
-      // Takes the output to 0 through updateOutputState(), then puts the ADXL367
-      // in standby. Called AFTER m_arm_state goes Inactive, so the output is
-      // already derived low before the part is stopped.
-      int disableAccelerometer();
-
       // Writes LED A. Split from LED B so the main loop can skip this call while
       // the LED timer owns the pin - see ledSequencerActive in Run().
       int applyLedA(bool ledA);
@@ -87,41 +85,45 @@ namespace alc
       int applyLedB(bool ledB);
 
       // Derives m_output_active. The single place the arm state and the
-      // accelerometer are combined — see IsOutputActive().
-      void updateOutputState();
+      // accelerometer are combined — see IsOutputActive(). EngineTick::Skip
+      // re-derives without advancing the engine, for the disarm path.
+      void updateOutputState(EngineTick tick);
 
       void setArmState(ArmState state);
 
-      // Stands the ADXL367 down and starts the PMIC timer for the cooldown between
-      // counted activations. No-op when the cooldown is zero.
-      int beginCooldown();
+      // The engine's settings, built from m_settings on every call - never cached,
+      // so a Settings command reaches the engine on its very next use.
+      DetectionSettings detectionSettings() const;
 
-      // Polls the PMIC timer; on expiry re-arms the ADXL367 through the full
-      // bootstrap so the engine cannot inherit a level from the blanking window.
-      void serviceCooldown();
+      // Restarts the detection engine from zero at the current settings. Returns
+      // the configure result - see DetectionEngine::Restart().
+      int restartEngine(bool armed);
 
-      /**
-       * @brief True only when BOTH witnesses agree no delay is running.
-       *
-       * A flag left set with a dead timer now waits for the deadline rather
-       * than firing early - see m_delay_deadline_ms and the expiry commit in
-       * updateOutputState(). A running timer with a cleared flag still blocks
-       * firing. Both failure directions are safe, which is the whole reason
-       * for using two witnesses of different kinds.
-       */
+      // Delegates to DetectionEngine::DelayPermitsFiring() - both delay witnesses
+      // must agree no delay is running.
       bool delayPermitsFiring() const;
 
       // Installed into OutputSwitch as the second, independent layer.
       static bool interlockThunk(void* context);
 
-      void beginDelay();
-      void cancelDelay();
-
-      // Confirms the scanner is actually running, retries at
-      // M_SCAN_SERVICE_INTERVAL_MS if not, and updates m_delay_scan_lost every
-      // tick while a delay is pending - see the expiry commit in
-      // updateOutputState(). Called every main-loop tick.
+      // Confirms the scanner is at its requested cadence and retries at
+      // M_SCAN_SERVICE_INTERVAL_MS if not. Scanner loss during an armed delay is
+      // tracked by the detection engine itself. Called every main-loop tick.
       void serviceScanHealth();
+
+      // DetectionHardware - see detection_engine.hpp for each contract.
+      int ConfigureAccelerometer(uint16_t thresholdLsb, bool& awake) override;
+      int StandbyAccelerometer() override;
+      int StartCooldownTimer(uint32_t durationMs) override;
+      int StopCooldownTimer() override;
+      int CooldownTimerExpired(bool& expired) override;
+      int ClearCooldownTimerEvent() override;
+      void StartDelayTimer(uint32_t durationMs) override;
+      void StopDelayTimer() override;
+      bool DelayTimerRunning() const override;
+      int SetTriggerPendingScan(bool fast) override;
+      bool ScannerRunning() const override;
+      void OnDetectionEvent(const DetectionEvent& event) override;
 
       // Parses the bench credentials from Kconfig, initialises PSA, runs the crypto
       // self-test and restores the access state. A failure leaves commands
@@ -179,81 +181,22 @@ namespace alc
 
       ArmState m_arm_state;
 
-      // True when the ADXL367 was still awake immediately after being configured
-      // for arming. That assertion belongs to motion from BEFORE arming, so it
-      // must not count as a trigger; it is suppressed until INT1 de-asserts and a
-      // fresh edge arrives. Belt and braces - the configuration bootstrap drives
-      // AWAKE low, so this should not normally be set.
-      bool m_ignore_stale_trigger;
-
       // The definitive output state. Written only by updateOutputState(), read
       // only via IsOutputActive().
       bool m_output_active;
 
-      // Consecutive loop ticks with the ADXL awake, for the stuck-AWAKE watchdog.
-      uint32_t m_awake_ticks;
-
       // The engineer-settable parameters, NVS-backed.
       Settings m_settings;
 
-      // Latched by the detection engine when the activation count reaches the
-      // configured threshold; cleared when AWAKE de-asserts. NOT derived in
-      // updateOutputState() - the engine zeroes the count when it latches, so
-      // deriving this from the count would take the output false immediately.
-      bool m_detection_met;
-
-      // Activations seen since the last trigger or deactivation. Does not expire.
-      uint8_t m_activation_count;
-
-      // True while the ADXL is standing down for a cooldown window.
-      bool m_in_cooldown;
-
-      // Previous INT1 level, for edge detection. The engine counts RISING edges,
-      // not levels - a level would count the same activation on every loop tick.
-      bool m_previous_awake;
-
-      // Uptime at which the cooldown is forced over regardless of what the PMIC
-      // reports, so a TimerIsExpired() fault or a timer that never expires cannot
-      // strand the device in standby forever. See serviceCooldown().
-      int64_t m_cooldown_deadline_ms;
-
-      // True once a failed re-arm after cooldown has been logged, so a retry that
-      // keeps failing logs once rather than every 100 ms tick.
-      bool m_cooldown_rearm_failed;
-
-      // The cooldown window itself is over and only the re-arm remains. Once set,
-      // serviceCooldown() stops consulting the PMIC - it already cleared the
-      // timer's expiry event on the transition - and just retries the re-arm.
-      bool m_cooldown_expired;
-
-      // Earliest uptime at which the next re-arm attempt may run, so a failing
-      // re-arm retries at M_COOLDOWN_RETRY_MS rather than every 100 ms tick.
-      int64_t m_cooldown_next_retry_ms;
-
-      // The delay's two independent witnesses. Deliberately different in kind so
-      // that either being wrong still BLOCKS firing - see delayPermitsFiring().
-      bool m_delay_pending;
+      // The GRTC delay timer - one of the delay's two witnesses, the engine's flag
+      // being the other. See DetectionEngine::DelayPermitsFiring().
       struct k_timer m_delay_timer;
 
-      // Held for the whole delay so the SoC cannot enter a deeper state - only
-      // takes effect when CONFIG_PM is enabled (it is off in this build, so
-      // continuous scanning below is the mechanism that actually keeps a
-      // disarm heard promptly). Battery life is explicitly not a factor while
-      // a trigger is pending.
+      // Held while an ARMED delay is pending so the SoC cannot enter a deeper
+      // state - only takes effect when CONFIG_PM is enabled (it is off in this
+      // build, so continuous scanning is the mechanism that actually keeps a
+      // disarm heard promptly). Owned by SetTriggerPendingScan().
       bool m_delay_pm_lock_held;
-
-      // Uptime at which a pending delay is considered genuinely expired.
-      // k_timer_remaining_ticks() returns 0 both when a timer has expired and
-      // when it was never armed, so this deadline is what tells the two apart
-      // for the expiry commit in updateOutputState().
-      int64_t m_delay_deadline_ms;
-
-      // Set in beginDelay() if the scanner was not confirmed running at the
-      // start of the delay, and every tick thereafter while the delay is
-      // pending if it drops out. Does not suppress the trigger - Andy's
-      // ruling is to prioritise the alarm - but is logged at the expiry
-      // commit so a missed disarm is visible.
-      bool m_delay_scan_lost;
 
       // Uptime of the last scanner health check - see serviceScanHealth().
       int64_t m_last_scan_service_ms;
@@ -263,19 +206,21 @@ namespace alc
       // once the scanner is confirmed running again.
       bool m_scan_outage_logged;
 
-      // Uptime until which a DELAYED trigger holds detection regardless of AWAKE.
-      // Zero for an undelayed trigger, whose own AWAKE sets the duration.
-      int64_t m_detection_hold_until_ms;
+      // Logging only - the engine owns the cooldown. True between a
+      // CooldownStarted event and the cooldown's end, so that a configure retry
+      // (after a refused arm, a failed restart or a failed watchdog re-arm),
+      // which the engine also runs as a "cooldown", is not logged as one.
+      bool m_logging_cooldown;
+
+      // Activation counting, cooldown, the delay, the detection period and the
+      // stuck-AWAKE watchdog - in both arm states. Declared after everything its
+      // DetectionHardware calls touch.
+      DetectionEngine m_engine;
 
       // LED A acknowledgement patterns. The sequencer is read from the timer
       // handler and written from the main loop; see playLedPattern().
       LedSequencer m_led_sequencer;
       struct k_timer m_led_timer;
-
-      // ONE-SHOT trigger. Set while the output is asserted; when it clears, the
-      // trigger is complete and the main loop latches the device Inactive.
-      bool m_trigger_fired;
-      bool m_trigger_complete;
 
       bool m_initialised;
   };

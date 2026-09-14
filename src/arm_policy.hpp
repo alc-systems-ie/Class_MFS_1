@@ -10,9 +10,9 @@ namespace alc
   /** @brief What an accepted command is allowed to do. */
   enum class ArmAction : uint8_t {
     Ignore,      ///< Reserved type. NOTHING happens (decode already rejects it).
-    Disarm,      ///< -> Inactive. From Active the only state change a command can make; from Inactive it ends tuning.
+    Disarm,      ///< -> Inactive. From Active the only state change a command can make; from Inactive it restarts the test.
     Arm,         ///< Inactive -> Active with the STORED settings.
-    Tune,        ///< Inactive stays Inactive; the command's settings applied for tuning.
+    Tune,        ///< Inactive stays Inactive; the command's settings applied and the test restarted.
     ReplayArmed, ///< Armed, and the command does not disarm. State unchanged; LED A replays Armed.
   };
 
@@ -35,7 +35,7 @@ namespace alc
    * | Active    | Arm      | No change - replay Armed      | no       | no   | no   |
    * | Active    | Settings | No change - replay Armed      | no       | no   | no   |
    * | Inactive  | Arm      | Arm with the STORED settings  | no       | no   | yes  |
-   * | Inactive  | Disarm   | Stay Inactive, end any tuning | no       | no   | yes  |
+   * | Inactive  | Disarm   | Stay Inactive, restart test   | no       | no   | yes  |
    * | Inactive  | Settings | Tune                          | yes      | slot 0 only | yes |
    *
    * **An armed device has only two ways out of the armed state: a disarm
@@ -60,7 +60,7 @@ namespace alc
 
     if (command.type == protocol::CommandType::Disarm) {
       // Armed or not. From Inactive it is the ordinary deactivation, so a Disarm
-      // sent blind to an Inactive device is harmless and ends any tuning session.
+      // sent blind to an Inactive device is harmless and restarts the test from zero.
       decision.action    = ArmAction::Disarm;
       decision.trimClock = true;
       return decision;

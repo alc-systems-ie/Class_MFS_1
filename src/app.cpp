@@ -26,10 +26,10 @@ namespace alc
     constexpr uint32_t M_POLL_INTERVAL_MS { 100 };
 
     // How often serviceScanHealth() retries starting the scan if it is down.
-    // The outage check and m_delay_scan_lost update themselves run every tick
-    // regardless - only the retry itself is throttled, since the Bluetooth
-    // stack's own stop/start churn is not free and a genuine outage does not
-    // need a 100 ms retry rate to recover promptly.
+    // Only the retry is throttled - the detection engine tracks scanner loss
+    // during an armed delay on every tick - since the Bluetooth stack's own
+    // stop/start churn is not free and a genuine outage does not need a 100 ms
+    // retry rate to recover promptly.
     constexpr int64_t M_SCAN_SERVICE_INTERVAL_MS { 1000 };
 
     // How often the persisted day floor is adopted from the clock with no command
@@ -37,27 +37,8 @@ namespace alc
     // accepting a stale captured provisioner sync against an old floor.
     constexpr int64_t M_ADVANCE_INTERVAL_SECS { 60 };
 
-    // Stuck-AWAKE watchdog threshold, in 100 ms loop ticks. Generous multiple of
-    // the configured inactivity period so normal sustained handling never trips it.
-    constexpr uint32_t M_AWAKE_STUCK_TICKS { (CONFIG_MFS_ADXL_INACTIVITY_SECS * 10U * 6U) };
-
-    // How long a delayed trigger asserts: the ADXL loop period an undelayed
-    // trigger gets from its own AWAKE.
-    constexpr int64_t M_DELAYED_TRIGGER_HOLD_MS { CONFIG_MFS_ADXL_INACTIVITY_SECS * MSEC_PER_SEC };
-
-    // nPM2100 TIMER is specified to +-10%, so the deadline fallback in
-    // serviceCooldown() must allow that much slack over the requested duration
-    // before it can be trusted to mean the PMIC has gone silent.
-    constexpr int64_t M_COOLDOWN_TOLERANCE_DIVISOR { 10 };
-
-    // Extra fixed slack on top of the tolerance, covering scheduling jitter in the
-    // 100 ms poll loop itself.
-    constexpr int64_t M_COOLDOWN_GRACE_MS { 2000 };
-
-    // Minimum spacing between re-arm retries once the cooldown has expired but
-    // enableAccelerometer() keeps failing. One attempt per second bounds the
-    // driver's own error logging to 1 Hz instead of the 10 Hz poll rate.
-    constexpr int64_t M_COOLDOWN_RETRY_MS { 1000 };
+    // The detection engine's configure retry spacing, for log messages.
+    constexpr unsigned M_ENGINE_RETRY_MS { static_cast<unsigned>(DetectionEngine::M_COOLDOWN_RETRY_MS) };
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
     // Liveness blink for the battery test, at the scan period.
@@ -194,30 +175,16 @@ namespace alc
       , m_access_ready(false)
       , m_output_switch()
       , m_arm_state(ArmState::Inactive)
-      , m_ignore_stale_trigger(false)
       , m_output_active(false)
-      , m_awake_ticks(0)
       , m_settings()
-      , m_detection_met(false)
-      , m_activation_count(0)
-      , m_in_cooldown(false)
-      , m_previous_awake(false)
-      , m_cooldown_deadline_ms(0)
-      , m_cooldown_rearm_failed(false)
-      , m_cooldown_expired(false)
-      , m_cooldown_next_retry_ms(0)
-      , m_delay_pending(false)
       , m_delay_timer {}
       , m_delay_pm_lock_held(false)
-      , m_delay_deadline_ms(0)
-      , m_delay_scan_lost(false)
       , m_last_scan_service_ms(0)
       , m_scan_outage_logged(false)
-      , m_detection_hold_until_ms(0)
+      , m_logging_cooldown(false)
+      , m_engine(*this)
       , m_led_sequencer()
       , m_led_timer {}
-      , m_trigger_fired(false)
-      , m_trigger_complete(false)
       , m_initialised(false)
   {}
 
@@ -301,7 +268,9 @@ namespace alc
     LOG_INF("Settings: %u activations, %u s cooldown, %u LSB, %u s delay, mode %u.", m_settings.Activations(), m_settings.CooldownSeconds(),
             m_settings.ThresholdLsb(), m_settings.DelaySeconds(), static_cast<unsigned>(m_settings.OperatingMode()));
 
-    // Cold start defaults to Inactive — see docs/v1-scope.md section 6.
+    // Cold start defaults to Inactive — see docs/v1-scope.md section 6. Inactive
+    // is not idle: this configures the ADXL367 and starts the detection test at
+    // the stored settings (disarmed test mode amendment, section 3).
     setArmState(ArmState::Inactive);
 
     result = m_scanner.Start();
@@ -328,15 +297,14 @@ namespace alc
       if (blinkOnTicks > 0) { --blinkOnTicks; }
 #endif
 
-      serviceCooldown();
-
       // The ONE place the output state is derived. See updateOutputState().
-      updateOutputState();
+      updateOutputState(EngineTick::Run);
 
       // Firing is one of the only two ways out of the armed state. Acted on here,
-      // not inside updateOutputState(), because setArmState() re-enters it.
-      if (m_trigger_complete) {
-        m_trigger_complete = false;
+      // not inside updateOutputState(), because setArmState() re-enters it. The
+      // flag is taken on every tick; the engine only raises it for an ARMED
+      // output, and a disarmed test carries on.
+      if (m_engine.TakeTriggerComplete() && m_arm_state == ArmState::Active) {
         LOG_WRN("Trigger complete - latched Inactive. Re-arming needs an engineer command.");
         setArmState(ArmState::Inactive);
       }
@@ -372,20 +340,20 @@ namespace alc
 
 #if defined(CONFIG_MFS_DEBUG_LED)
       // LED B shows DETECTION, in either arm state, for the 5 s ADXL loop period.
-      // Inactive it simulates triggers while tuning; Active it confirms one. It is
+      // Inactive it shows test triggers; Active it confirms one. It is
       // a bench indicator, not an output consumer - OutputSwitch is the example
       // future consumers copy (design spec section 6.2).
-      ledB = m_detection_met;
+      ledB = m_engine.DetectionMet();
 
       // Logged on transitions, in either arm state. While Inactive nothing else
-      // reports a simulated trigger - the Output line below only fires armed -
-      // so without this a tuning session shows "Activation 3 of 3." and then
-      // silence, and LED B is the only evidence (bench, 2026-09-14).
-      if (m_detection_met != previousDetection) {
-        previousDetection = m_detection_met;
-        if (m_detection_met) {
+      // reports a test trigger - the Output line below only fires armed - so
+      // without this a test shows "Activation 3 of 3." and then silence, and
+      // LED B is the only evidence (bench, 2026-09-14).
+      if (ledB != previousDetection) {
+        previousDetection = ledB;
+        if (ledB) {
           detectionStartMs = ledNowMs;
-          LOG_INF("Detection met (%s) - LED B on.", m_arm_state == ArmState::Active ? "armed" : "tuning");
+          LOG_INF("Detection met (%s) - LED B on.", m_arm_state == ArmState::Active ? "armed" : "test");
         } else {
           LOG_INF("Detection cleared after %lld ms - LED B off.", ledNowMs - detectionStartMs);
         }
@@ -581,97 +549,20 @@ namespace alc
     result = m_accelerometer.Init();
     if (result < 0) { return result; }
 
-    // Probe only. The part is NOT configured here: a deactivated device holds it
-    // in standby, and the loop engine is configured at the moment of arming - see
-    // enableAccelerometer(). Cold start is Inactive, so it stays in standby now.
+    // Probe only, with both interrupt pins parked safe. The loop engine is not
+    // configured here: the detection engine configures it afresh on every restart
+    // - the first at boot, when the device starts Inactive and testing.
     result = m_accelerometer.Standby();
     if (result < 0) {
       LOG_ERR("Failed to put the accelerometer in standby: %d!", result);
       return result;
     }
 
-    LOG_INF("ADXL367 held in standby until the device is activated.");
+    LOG_INF("ADXL367 probed and parked until the detection engine configures it.");
     return 0;
   }
 
-  int App::enableAccelerometer()
-  {
-    // ================================================================
-    //  ENABLE ORDER - SAFETY CRITICAL. See docs/v1-scope.md section 1.0.1.
-    //
-    //  Configure the part, prove it is reporting inactivity, and ONLY
-    //  then let m_arm_state go Active. The device therefore cannot come
-    //  up armed on motion that predates arming.
-    // ================================================================
-    int result { 0 };
-    bool awake { true };
-
-    // Configuring IS the clear: the datasheet's loop mode initialization routine
-    // soft-resets the part and forces one activity/inactivity cycle, which drives
-    // AWAKE low and captures a valid reference. Doing it per-arm also means the
-    // reference is always taken in the orientation the device is actually left in.
-    result = m_accelerometer.ConfigureLoopMode(m_settings.ThresholdLsb(), CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
-                                               CONFIG_MFS_ADXL_INACTIVITY_SECS);
-    if (result < 0) {
-      LOG_ERR("Accelerometer would not configure: %d!", result);
-      return result;
-    }
-
-    // Confirm AWAKE from STATUS rather than from INT1. The register is what the
-    // engine actually holds; the pin only mirrors it.
-    result = m_accelerometer.ReadAwake(awake);
-    if (result < 0) {
-      LOG_ERR("Accelerometer AWAKE could not be read: %d!", result);
-      return result;
-    }
-
-    // Every (re)configure starts with no inherited latch - a detection from
-    // before this configure must never reach the output (v1-scope section 1.0.1).
-    m_detection_met           = false;
-    m_previous_awake          = false;
-    m_detection_hold_until_ms = 0;
-
-    // Should already be clear. If handling the device has woken it again in the
-    // moments since, that assertion still predates arming, so suppress it until
-    // INT1 de-asserts and a fresh edge arrives.
-    m_ignore_stale_trigger = awake;
-    if (awake) { LOG_WRN("ADXL still awake after configuring - suppressing until it clears!"); }
-
-    m_awake_ticks = 0;
-    return 0;
-  }
-
-  int App::disableAccelerometer()
-  {
-    // ================================================================
-    //  DISABLE ORDER - SAFETY CRITICAL.
-    //
-    //  The output is taken to 0 through the single derivation point
-    //  BEFORE the part is stopped, so there is no instant at which a
-    //  deactivated device still reads as triggered. m_arm_state has
-    //  already been set Inactive by the caller - the output is DERIVED
-    //  from it, so the boolean necessarily moves first and the
-    //  derivation follows immediately, before the sensor is touched.
-    // ================================================================
-    int result { 0 };
-
-    m_ignore_stale_trigger = false;
-    m_awake_ticks          = 0;
-    updateOutputState();
-
-    // Standby stops the loop engine and de-asserts INT1. The rail stays up: LSOUT
-    // is shared and power-cycling it would cost the ADXL367's fuse-load sequence
-    // and the 100 ms settling delay on every arm.
-    result = m_accelerometer.Standby();
-    if (result < 0) {
-      LOG_ERR("Failed to put the accelerometer in standby: %d!", result);
-      return result;
-    }
-
-    return 0;
-  }
-
-  void App::updateOutputState()
+  void App::updateOutputState(EngineTick tick)
   {
     // ================================================================
     //  THE SINGLE SOURCE OF TRUTH FOR THE DEVICE OUTPUT.
@@ -689,72 +580,15 @@ namespace alc
     // ================================================================
     bool awake { gpio_pin_get_dt(&s_adxl_int1) > 0 };
 
-    // Release the stale-trigger suppression only once the part has actually gone
-    // back to sleep. See setArmState() - this is what makes arming edge-triggered.
-    if (m_ignore_stale_trigger && !awake) {
-      m_ignore_stale_trigger = false;
-      LOG_INF("ADXL cleared after arming - device is now live.");
-    }
+    // The detection engine counts, cools down, delays and runs the stuck-AWAKE
+    // watchdog identically in both arm states - it never sees the output. The
+    // disarm path skips the tick: it must take the output low without counting
+    // an edge or starting a cooldown on the way, and restarts the engine next.
+    if (tick == EngineTick::Run) { m_engine.Tick(detectionSettings(), m_arm_state == ArmState::Active, awake, k_uptime_get()); }
 
-    // RISING EDGES, not levels. AWAKE stays asserted for the whole inactivity
-    // period, so counting the level would add one activation per loop tick.
-    // While a trigger's output period is in progress no new activation is
-    // counted, so a second delay cannot start and cut the one-shot pulse short.
-    bool risingEdge { awake && !m_previous_awake && !m_ignore_stale_trigger && !m_in_cooldown && !m_delay_pending && !m_trigger_fired };
-    m_previous_awake = awake;
-
-    if (risingEdge) {
-      m_activation_count++;
-      LOG_INF("Activation %u of %u.", m_activation_count, m_settings.Activations());
-
-      if (m_activation_count >= m_settings.Activations()) {
-        m_activation_count = 0;
-        // No blanking here. Standing the ADXL down at the moment of trigger
-        // would cut short the assertion that IS the output's 5 s duration.
-        //
-        // While Inactive (tuning) the delay is not simulated - LED B shows
-        // detection at once, and no real timer, fast scan or PM lock is
-        // started on a disarmed device.
-        if (m_arm_state == ArmState::Active && m_settings.DelaySeconds() > 0) {
-          beginDelay(); // m_detection_met waits for the timer
-        } else {
-          m_detection_met = true;
-        }
-      } else {
-        // Result not checked here - beginCooldown() already logs its own
-        // failure, and on failure it has itself restored detection.
-        beginCooldown();
-      }
-    }
-
-    // The delay elapsed and was not cancelled. k_timer_remaining_ticks() alone
-    // cannot be trusted here: it reads 0 both for "expired" and for "never
-    // armed", and m_delay_deadline_ms is what tells the two apart.
-    if (m_delay_pending && k_timer_remaining_ticks(&m_delay_timer) == 0 && k_uptime_get() >= m_delay_deadline_ms) {
-      cancelDelay(); // clears the flag and releases the PM lock
-      m_detection_met = true;
-
-      // The delay outlived the AWAKE that started it, so AWAKE is already clear
-      // and would end detection on this very tick - the output would never
-      // assert. Hold detection for the same 5 s the loop period gives an
-      // undelayed trigger.
-      m_detection_hold_until_ms = k_uptime_get() + M_DELAYED_TRIGGER_HOLD_MS;
-
-      // Andy's ruling: the alarm is prioritised over the risk of a missed
-      // disarm. A scanner outage during the delay does not suppress the
-      // trigger - it is logged instead, so a missed disarm is at least
-      // visible after the fact.
-      if (m_delay_scan_lost) { LOG_WRN("Trigger firing although the scanner was not running during the delay - a disarm may have been missed."); }
-    }
-
-    // The trigger's own AWAKE running to completion is what clears detection -
-    // or, for a delayed trigger, the hold set when the delay expired.
-    if (m_detection_met && !awake && k_uptime_get() >= m_detection_hold_until_ms) { m_detection_met = false; }
-
-    // Activations during a pending delay are ignored: the trigger is already
-    // committed, and re-counting would let a continuing disturbance postpone or
-    // duplicate it. LAYER ONE of the delay interlock is the last term.
-    m_output_active = (m_arm_state == ArmState::Active) && m_detection_met && delayPermitsFiring();
+    // LAYER ONE of the delay interlock is the last term: while a delay is
+    // pending - armed trigger or test - detection cannot reach the output.
+    m_output_active = (m_arm_state == ArmState::Active) && m_engine.DetectionMet() && delayPermitsFiring();
 
     // The fire output is driven HERE, in the same breath as the condition is
     // derived, rather than from the main loop. A consumer that lives at the
@@ -762,65 +596,9 @@ namespace alc
     // there is no second call site that could disagree with this one.
     m_output_switch.Set(m_output_active);
 
-    // ONE-SHOT. Once the output has asserted and its period has ended, the
-    // trigger is complete. Only flagged here - see the main loop.
-    if (m_output_active) { m_trigger_fired = true; }
-    if (m_trigger_fired && !m_output_active) {
-      m_trigger_fired    = false;
-      m_trigger_complete = true;
-    }
-
-    // Stuck-AWAKE watchdog. Defence in depth: if the accelerometer somehow holds
-    // AWAKE far beyond its configured inactivity period, the device stops
-    // triggering and - worse - does so SILENTLY, with no LED and no log. That is
-    // an unacceptable failure mode for an alarm sensor, so recover rather than
-    // sit dead. Re-running the loop configuration includes the bootstrap that
-    // guarantees AWAKE clears.
-    // Only while armed: a deactivated device holds the part in standby, where the
-    // loop engine is stopped and AWAKE is necessarily clear.
-    if (m_arm_state == ArmState::Active && awake) {
-      if (++m_awake_ticks >= M_AWAKE_STUCK_TICKS) {
-        m_awake_ticks = 0;
-        LOG_ERR("ADXL stuck AWAKE for %u s - re-arming the loop engine!", M_AWAKE_STUCK_TICKS / 10U);
-
-        // enableAccelerometer(), not a bare ConfigureLoopMode() call - the
-        // watchdog's re-arm must reset the previous-awake edge witness and
-        // the stale-trigger hold exactly like every other (re)configure, or
-        // a fresh motion edge right after recovery could be lost or
-        // miscounted.
-        //
-        // enableAccelerometer() itself sets m_ignore_stale_trigger = awake on
-        // success - if AWAKE is still asserted immediately after
-        // reconfiguring, that assertion predates this recovery and must be
-        // suppressed until INT1 de-asserts, exactly as for every other arm.
-        // DO NOT clear it again below: an earlier version did, which
-        // discarded that suppression and let a level still stuck right after
-        // the re-arm read as a rising edge on the very next tick - counting a
-        // spurious activation once per watchdog period until the configured
-        // count was reached and the device fired on a stale level.
-        if (enableAccelerometer() < 0) {
-          LOG_ERR("ADXL re-arm failed!");
-
-          // Hand over to serviceCooldown()'s existing re-arm retry path rather
-          // than leave the part unconfigured and the watchdog silent until it
-          // next trips M_AWAKE_STUCK_TICKS later - that would leave the device
-          // deaf for the whole watchdog period again. serviceCooldown() now
-          // retries the re-arm at 1 Hz until detection is restored - its own
-          // enableAccelerometer() call sets m_ignore_stale_trigger correctly
-          // on whichever retry eventually succeeds, so nothing more is
-          // needed here.
-          m_in_cooldown            = true;
-          m_cooldown_expired       = true;
-          m_cooldown_next_retry_ms = 0;
-          m_cooldown_rearm_failed  = false;
-        }
-
-        // A stuck level must not hold a detection - and so the output - open.
-        m_detection_met = false;
-      }
-    } else {
-      m_awake_ticks = 0;
-    }
+    // ONE-SHOT. The engine tracks the output App actually derived, and flags the
+    // trigger complete once it has asserted and ended - acted on in the main loop.
+    m_engine.NoteOutput(m_output_active);
   }
 
   void App::setArmState(ArmState state)
@@ -838,62 +616,49 @@ namespace alc
     // moment. In the product the trigger switches a voltage, so a false fire on
     // activation is dangerous, not merely untidy.
     //
-    // The part is therefore STOPPED while the device is deactivated and
-    // configured afresh when it is activated. The configuration routine drives
-    // AWAKE low, so there is no stale level to inherit. alc_drawer_master solves
-    // the equivalent problem differently - it uses latched activity, so it clears
-    // the latch immediately before arming (ReadActivityLatched) - but a latch
-    // clear has no effect on a level.
-    if (state == ArmState::Active) {
-      // Every arm starts with no pending delay - a delay counted before arming
-      // belongs to motion before arming and must never fire the armed device
-      // (v1-scope section 1.0.1).
-      cancelDelay();
-      m_detection_hold_until_ms = 0;
-      m_trigger_fired           = false;
-      m_trigger_complete        = false;
+    // The part now runs in BOTH arm states (disarmed test mode amendment), so
+    // the mechanism is RECONFIGURE ON EVERY RESTART: every transition restarts
+    // the detection engine from zero, which configures the part afresh through
+    // the loop-mode bootstrap. That drives AWAKE low, so there is no stale level
+    // to inherit, and any AWAKE still reported after it is suppressed until a
+    // fresh edge. The restart also discards the test's count, cooldown, delay and
+    // detection latch, so nothing from a test can reach the armed output
+    // (amendment section 3.2). alc_drawer_master solves the equivalent problem
+    // differently - it uses latched activity, so it clears the latch immediately
+    // before arming (ReadActivityLatched) - but a latch clear has no effect on a
+    // level.
+    int result { 0 };
 
-      // Sensor first, boolean second. A device that cannot configure its
+    if (state == ArmState::Active) {
+      // Restart first, boolean second. A device that cannot configure its
       // accelerometer must NOT report itself armed: it would be a silent loss of
       // function. It stays Inactive and LED A shows the Arm Refused pattern, so
-      // the refusal is visible - in bench builds it then stays lit while Inactive.
-      if (enableAccelerometer() < 0) {
+      // the refusal is visible. The part is NOT stood down for good - the engine
+      // retries the configure at 1 Hz, so the test resumes once the part responds.
+      result = restartEngine(true);
+      if (result < 0) {
         LOG_ERR("Arm request rejected - device stays Inactive!");
-        // Best effort - the part must not keep running on a device that reports
-        // itself Inactive.
-        if (m_accelerometer.Standby() < 0) { LOG_WRN("Could not stand the accelerometer down after a refused arm."); }
         return;
       }
       m_arm_state = ArmState::Active;
     } else {
-      // UNCONDITIONAL, and before anything else. A pending trigger must not
-      // outlive disarming. The pending state is also deliberately not persisted,
-      // so a reset loses the trigger too - the fail-safe direction.
-      cancelDelay();
-      m_detection_met    = false;
-      m_activation_count = 0;
-
-      // Boolean first, sensor second - see disableAccelerometer().
+      // ================================================================
+      //  DISARM ORDER - SAFETY CRITICAL.
+      //
+      //  Boolean first, then the output re-derived through the single
+      //  derivation point - so the fire GPIOs are off - and only then the
+      //  engine restarted and the part touched. There is no instant at
+      //  which a deactivated device still drives the output. The pending
+      //  state is deliberately not persisted, so a reset loses a pending
+      //  trigger too - the fail-safe direction.
+      // ================================================================
       m_arm_state = ArmState::Inactive;
-      disableAccelerometer();
+      updateOutputState(EngineTick::Skip);
 
-      // Whatever was counted or latched belongs to the armed session that just
-      // ended. Cleared AFTER disableAccelerometer() because its re-derivation
-      // tick can itself count an edge and start a cooldown - clearing first would
-      // leave that tick's work in place.
-      m_activation_count        = 0;
-      m_detection_met           = false;
-      m_previous_awake          = false;
-      m_detection_hold_until_ms = 0;
-      if (m_in_cooldown) {
-        m_in_cooldown      = false;
-        m_cooldown_expired = false;
-        if (m_pmic.TimerStop() < 0) { LOG_ERR("Failed to stop the cooldown timer on deactivation!"); }
-      }
-
-      // Whatever the route to Inactive, a trigger in progress is over.
-      m_trigger_fired    = false;
-      m_trigger_complete = false;
+      // Whatever was counted, latched or pending belongs to the session that just
+      // ended. The test starts again from zero.
+      result = restartEngine(false);
+      if (result < 0) { LOG_ERR("Detection test could not start - retrying the accelerometer every %u ms!", M_ENGINE_RETRY_MS); }
     }
 
     // Deliberately says nothing about the LEDs: the main loop logs their actual
@@ -902,105 +667,22 @@ namespace alc
     LOG_INF("Arm state: %s (uptime %lld ms).", state == ArmState::Active ? "Active" : "Inactive", k_uptime_get());
   }
 
-  int App::beginCooldown()
+  DetectionSettings App::detectionSettings() const
   {
-    uint16_t seconds { m_settings.CooldownSeconds() };
-    int result { 0 };
-
-    if (seconds == 0) { return 0; }
-
-    // Stand the accelerometer down for the window. Leaving it running would let
-    // a continuous disturbance hold AWAKE asserted right through the blanking
-    // period, so the re-arm would inherit a stale level - exactly the bug commit
-    // 0a50910 fixed for the arming path.
-    result = m_accelerometer.Standby();
-    if (result < 0) {
-      LOG_ERR("Failed to stand the ADXL down for cooldown: %d!", result);
-      return result;
-    }
-
-    result = m_pmic.TimerStop();
-    if (result == 0) { result = m_pmic.TimerSetMode(Npm2100::TimerMode::GeneralPurpose); }
-    if (result == 0) { result = m_pmic.TimerSetDurationMs(static_cast<uint32_t>(seconds) * MSEC_PER_SEC); }
-    if (result == 0) { result = m_pmic.TimerClearExpiredEvent(); }
-    if (result == 0) { result = m_pmic.TimerStart(); }
-    if (result < 0) {
-      LOG_ERR("Failed to start the cooldown timer: %d!", result);
-
-      // Fail TOWARD detecting - no blanking this time - rather than leave the
-      // part standing down with nothing left to bring it back up.
-      if (m_pmic.TimerStop() < 0) { LOG_WRN("Could not stop the cooldown timer after a failure."); }
-      if (enableAccelerometer() < 0) { LOG_ERR("Could not restore detection after the cooldown timer failed!"); }
-      return result;
-    }
-
-    m_in_cooldown            = true;
-    m_cooldown_rearm_failed  = false;
-    m_cooldown_expired       = false;
-    m_cooldown_next_retry_ms = 0;
-
-    // Forced over regardless of the PMIC - see m_cooldown_deadline_ms. The TIMER
-    // block is +-10%, plus a fixed grace for loop scheduling jitter.
-    m_cooldown_deadline_ms = k_uptime_get() + static_cast<int64_t>(seconds) * MSEC_PER_SEC +
-                             (static_cast<int64_t>(seconds) * MSEC_PER_SEC) / M_COOLDOWN_TOLERANCE_DIVISOR + M_COOLDOWN_GRACE_MS;
-
-    LOG_INF("Cooldown started: %u s.", seconds);
-    return 0;
+    return DetectionSettings { m_settings.Activations(), m_settings.CooldownSeconds(), m_settings.DelaySeconds(), m_settings.ThresholdLsb() };
   }
 
-  void App::serviceCooldown()
+  int App::restartEngine(bool armed)
   {
-    bool expired { false };
-    bool pmicExpired { false };
-
-    if (!m_in_cooldown) { return; }
-
-    // Only consult the PMIC until the cooldown is confirmed over. Once
-    // m_cooldown_expired is set the window itself has already ended - the timer's
-    // expiry event is already cleared - and everything left is the re-arm retry,
-    // which has nothing to do with the PMIC timer.
-    if (!m_cooldown_expired) {
-      // A TimerIsExpired() error counts as not-expired from the PMIC, but the
-      // deadline below still applies - it is the fallback for exactly this case.
-      pmicExpired = (m_pmic.TimerIsExpired(expired) == 0) && expired;
-      expired     = pmicExpired || (k_uptime_get() >= m_cooldown_deadline_ms);
-      if (!expired) { return; }
-
-      // Logged only on this transition, not on every later retry tick.
-      if (!pmicExpired) { LOG_WRN("Cooldown forced over by the deadline - the PMIC timer did not report expiry!"); }
-      if (m_pmic.TimerClearExpiredEvent() < 0) { LOG_WRN("Failed to clear the cooldown timer expiry event!"); }
-
-      m_cooldown_expired = true;
-    }
-
-    // Rate-limited: one attempt per M_COOLDOWN_RETRY_MS rather than every 100 ms
-    // poll tick, so a persistently failing re-arm cannot flood RTT via the
-    // driver's own logging in enableAccelerometer() / ConfigureLoopMode().
-    if (k_uptime_get() < m_cooldown_next_retry_ms) { return; }
-
-    // Full bootstrap, not a bare restart. Re-arming must confirm AWAKE is clear
-    // so the engine cannot inherit an assertion from during the blanking window.
-    // m_in_cooldown is left set on failure so the re-arm is retried, rather than
-    // stranding the ADXL in standby forever.
-    if (enableAccelerometer() < 0) {
-      if (!m_cooldown_rearm_failed) {
-        LOG_ERR("Failed to re-arm the ADXL after cooldown - retrying!");
-        m_cooldown_rearm_failed = true;
-      }
-      m_cooldown_next_retry_ms = k_uptime_get() + M_COOLDOWN_RETRY_MS;
-      return;
-    }
-
-    m_in_cooldown      = false;
-    m_cooldown_expired = false;
-    m_previous_awake   = false;
-    LOG_INF("Cooldown elapsed - detection re-armed.");
+    // A restart discards any cooldown, so the next CooldownElapsed can only
+    // belong to a configure retry unless a new cooldown starts first.
+    m_logging_cooldown = false;
+    return m_engine.Restart(detectionSettings(), armed, k_uptime_get());
   }
 
   bool App::delayPermitsFiring() const
   {
-    // BOTH must agree. Not one, not either - both.
-    return !m_delay_pending && k_timer_remaining_ticks(&m_delay_timer) == 0;
+    return m_engine.DelayPermitsFiring();
   }
 
   bool App::interlockThunk(void* context)
@@ -1008,82 +690,14 @@ namespace alc
     return static_cast<const App*>(context)->delayPermitsFiring();
   }
 
-  void App::beginDelay()
-  {
-    uint16_t seconds { m_settings.DelaySeconds() };
-    int result { 0 };
-
-    if (seconds == 0) { return; }
-
-    // GRTC, not the PMIC timer. At +/-10% over temperature the PMIC would put a
-    // 9-hour delay anywhere inside a 108-minute window.
-    k_timer_start(&m_delay_timer, K_SECONDS(seconds), K_NO_WAIT);
-    m_delay_pending     = true;
-    m_delay_deadline_ms = k_uptime_get() + static_cast<int64_t>(seconds) * MSEC_PER_SEC;
-
-    // Stay awake for the duration - only effective when CONFIG_PM is enabled
-    // (it is off in this build; the continuous scan below is what actually
-    // keeps a disarm heard promptly).
-    if (!m_delay_pm_lock_held) {
-      pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
-      m_delay_pm_lock_held = true;
-    }
-
-    // Scan continuously. The deactivate path is the most important thing the
-    // device does while a trigger is pending, and at the normal 6 s cadence an
-    // abort takes ~30 s to be heard with confidence.
-    m_delay_scan_lost = false;
-    result            = m_scanner.SetFastScan(true);
-    if (!m_scanner.IsScanning()) {
-      // Truly down - nothing is listening at all.
-      m_delay_scan_lost = true;
-      LOG_ERR("Scanner not running at the start of a delay - a disarm may not be heard!");
-    } else if (result < 0) {
-      // Still running, just at the fallback (duty-cycled) cadence - a disarm
-      // can still be heard, only more slowly. Not scan-lost: serviceScanHealth()
-      // keeps retrying for the true continuous cadence in the background.
-      LOG_WRN("Continuous scan unavailable at the start of a delay - retrying; a disarm is still heard at the duty-cycled rate.");
-    }
-
-    LOG_WRN("TRIGGER PENDING: firing in %u s. Deactivating cancels it.", seconds);
-  }
-
-  void App::cancelDelay()
-  {
-    int result { 0 };
-
-    k_timer_stop(&m_delay_timer);
-    m_delay_pending = false;
-
-    if (m_delay_pm_lock_held) {
-      pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
-      m_delay_pm_lock_held = false;
-    }
-
-    result = m_scanner.SetFastScan(false);
-    if (result < 0) {
-      // serviceScanHealth() keeps retrying - a failed cadence change here
-      // must not be silently lost.
-      LOG_ERR("Failed to restore duty-cycled scanning: %d!", result);
-    }
-  }
-
   void App::serviceScanHealth()
   {
     int64_t uptimeMs { k_uptime_get() };
 
-    // Every tick, not throttled: a delay that goes blind to the scanner must
-    // not complete as if nothing happened - see the expiry commit in
-    // updateOutputState(). Keyed on IsScanning() alone, deliberately NOT
-    // IsAtRequestedCadence(): a scan running at the wrong (duty-cycled)
-    // cadence can still hear a disarm, just more slowly, so it is not
-    // "lost" - Andy's decision to fire regardless of a TRUE loss stands
-    // either way.
-    if (m_delay_pending && !m_scanner.IsScanning()) { m_delay_scan_lost = true; }
-
-    // The retry itself IS throttled - the Bluetooth stack's own stop/start
-    // churn is not free, and a genuine outage does not need a 100 ms retry
-    // rate to recover promptly.
+    // Throttled - the Bluetooth stack's own stop/start churn is not free, and a
+    // genuine outage does not need a 100 ms retry rate to recover promptly.
+    // Scanner loss during an armed delay is not tracked here: the detection
+    // engine checks ScannerRunning() itself on every tick.
     if (uptimeMs - m_last_scan_service_ms < M_SCAN_SERVICE_INTERVAL_MS) { return; }
     m_last_scan_service_ms = uptimeMs;
 
@@ -1100,6 +714,244 @@ namespace alc
     if (!m_scanner.IsAtRequestedCadence() && !m_scan_outage_logged) {
       LOG_ERR("Scanner not at the requested cadence - retrying!");
       m_scan_outage_logged = true;
+    }
+  }
+
+  int App::ConfigureAccelerometer(uint16_t thresholdLsb, bool& awake)
+  {
+    int result { 0 };
+
+    // Configuring IS the clear: the datasheet's loop mode initialization routine
+    // soft-resets the part and forces one activity/inactivity cycle, which drives
+    // AWAKE low and captures a valid reference. Doing it on every restart also
+    // means the reference is always taken in the orientation the device is
+    // actually left in.
+    result = m_accelerometer.ConfigureLoopMode(thresholdLsb, CONFIG_MFS_ADXL_ACTIVITY_SAMPLES, CONFIG_MFS_ADXL_INACTIVITY_THRESHOLD,
+                                               CONFIG_MFS_ADXL_INACTIVITY_SECS);
+    if (result < 0) {
+      LOG_ERR("Accelerometer would not configure: %d!", result);
+      return result;
+    }
+
+    // Confirm AWAKE from STATUS rather than from INT1. The register is what the
+    // engine actually holds; the pin only mirrors it.
+    result = m_accelerometer.ReadAwake(awake);
+    if (result < 0) {
+      LOG_ERR("Accelerometer AWAKE could not be read: %d!", result);
+      return result;
+    }
+
+    return 0;
+  }
+
+  int App::StandbyAccelerometer()
+  {
+    // Standby stops the loop engine and de-asserts INT1. The rail stays up: LSOUT
+    // is shared and power-cycling it would cost the ADXL367's fuse-load sequence
+    // and the 100 ms settling delay on every configure.
+    return m_accelerometer.Standby();
+  }
+
+  int App::StartCooldownTimer(uint32_t durationMs)
+  {
+    int result { m_pmic.TimerStop() };
+
+    if (result == 0) { result = m_pmic.TimerSetMode(Npm2100::TimerMode::GeneralPurpose); }
+    if (result == 0) { result = m_pmic.TimerSetDurationMs(durationMs); }
+    if (result == 0) { result = m_pmic.TimerClearExpiredEvent(); }
+    if (result == 0) { result = m_pmic.TimerStart(); }
+    return result;
+  }
+
+  int App::StopCooldownTimer()
+  {
+    return m_pmic.TimerStop();
+  }
+
+  int App::CooldownTimerExpired(bool& expired)
+  {
+    return m_pmic.TimerIsExpired(expired);
+  }
+
+  int App::ClearCooldownTimerEvent()
+  {
+    return m_pmic.TimerClearExpiredEvent();
+  }
+
+  void App::StartDelayTimer(uint32_t durationMs)
+  {
+    // GRTC, not the PMIC timer. At +/-10% over temperature the PMIC would put a
+    // 9-hour delay anywhere inside a 108-minute window.
+    k_timer_start(&m_delay_timer, K_MSEC(durationMs), K_NO_WAIT);
+  }
+
+  void App::StopDelayTimer()
+  {
+    k_timer_stop(&m_delay_timer);
+  }
+
+  bool App::DelayTimerRunning() const
+  {
+    // k_timer_remaining_ticks() reads 0 both for "expired" and for "never
+    // started"; the engine's deadline is what tells the two apart.
+    return k_timer_remaining_ticks(&m_delay_timer) != 0;
+  }
+
+  int App::SetTriggerPendingScan(bool fast)
+  {
+    // Stay awake while an armed trigger is pending - only effective when
+    // CONFIG_PM is enabled (it is off in this build; the continuous scan below is
+    // what actually keeps a disarm heard promptly). Battery life is explicitly
+    // not a factor while a trigger is pending.
+    if (fast && !m_delay_pm_lock_held) {
+      pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+      m_delay_pm_lock_held = true;
+    } else if (!fast && m_delay_pm_lock_held) {
+      pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+      m_delay_pm_lock_held = false;
+    }
+
+    // Scan continuously while armed and pending. The deactivate path is the most
+    // important thing the device does while a trigger is pending, and at the
+    // normal 6 s cadence an abort takes ~30 s to be heard with confidence. A
+    // failure is reported by the engine (DelayFastScanFailed or
+    // DelayScanRestoreFailed) and retried by serviceScanHealth().
+    return m_scanner.SetFastScan(fast);
+  }
+
+  bool App::ScannerRunning() const
+  {
+    return m_scanner.IsScanning();
+  }
+
+  void App::OnDetectionEvent(const DetectionEvent& event)
+  {
+    // Every log line the detection engine produces. Called synchronously from
+    // inside Tick() and Restart(), at the point in the sequence where App logged
+    // the same thing before the extraction. A disarmed delay is a TEST and never
+    // logs as a pending trigger.
+    switch (event.type) {
+      case DetectionEventType::StaleAwakeSuppressed:
+        LOG_WRN("ADXL still awake after configuring - suppressing until it clears!");
+        break;
+
+      case DetectionEventType::StaleAwakeReleased:
+        if (event.armed) {
+          LOG_INF("ADXL cleared after arming - device is now live.");
+        } else {
+          LOG_INF("ADXL cleared after configuring - test is now live.");
+        }
+        break;
+
+      case DetectionEventType::Activation:
+        LOG_INF("Activation %u of %u.", event.count, event.limit);
+        break;
+
+      case DetectionEventType::CooldownStarted:
+        m_logging_cooldown = true;
+        LOG_INF("Cooldown started: %u s.", event.seconds);
+        break;
+
+      case DetectionEventType::CooldownStandbyFailed:
+        LOG_ERR("Failed to stand the ADXL down for cooldown: %d - no cooldown, reconfiguring within %u ms!", static_cast<int>(event.result),
+                M_ENGINE_RETRY_MS);
+        break;
+
+      case DetectionEventType::CooldownTimerFailed:
+        LOG_ERR("Failed to start the cooldown timer: %d!", static_cast<int>(event.result));
+        break;
+
+      case DetectionEventType::CooldownTimerStopFailed:
+        LOG_WRN("Could not stop the cooldown timer after a failure.");
+        break;
+
+      case DetectionEventType::CooldownRestoreFailed:
+        LOG_ERR("Could not restore detection after the cooldown timer failed - retrying every %u ms!", M_ENGINE_RETRY_MS);
+        break;
+
+      case DetectionEventType::CooldownForced:
+        LOG_WRN("Cooldown forced over by the deadline - the PMIC timer did not report expiry!");
+        break;
+
+      case DetectionEventType::CooldownClearEventFailed:
+        LOG_WRN("Failed to clear the cooldown timer expiry event!");
+        break;
+
+      case DetectionEventType::RearmFailed:
+        if (m_logging_cooldown) {
+          LOG_ERR("Failed to re-arm the ADXL after cooldown - retrying!");
+        } else {
+          LOG_ERR("Failed to reconfigure the ADXL - retrying every %u ms!", M_ENGINE_RETRY_MS);
+        }
+        break;
+
+      case DetectionEventType::CooldownElapsed:
+        // The engine runs a configure retry through its cooldown path, so this
+        // also ends a retry. Only a cooldown that actually started logs as one.
+        if (m_logging_cooldown) {
+          LOG_INF("Cooldown elapsed - detection re-armed.");
+        } else {
+          LOG_INF("ADXL reconfigured - detection restored.");
+        }
+        m_logging_cooldown = false;
+        break;
+
+      case DetectionEventType::DelayStarted:
+        if (event.armed) {
+          LOG_WRN("TRIGGER PENDING: firing in %u s. Deactivating cancels it.", event.seconds);
+        } else {
+          LOG_INF("TEST trigger pending: LED B in %u s.", event.seconds);
+        }
+        break;
+
+      case DetectionEventType::DelayScanLost:
+        LOG_ERR("Scanner not running at the start of a delay - a disarm may not be heard!");
+        break;
+
+      case DetectionEventType::DelayFastScanFailed:
+        LOG_WRN("Continuous scan unavailable at the start of a delay - retrying; a disarm is still heard at the duty-cycled rate.");
+        break;
+
+      case DetectionEventType::DelayScanRestoreFailed:
+        // serviceScanHealth() keeps retrying - a failed cadence change here must
+        // not be silently lost.
+        LOG_ERR("Failed to restore duty-cycled scanning: %d!", static_cast<int>(event.result));
+        break;
+
+      case DetectionEventType::DelayExpired:
+        // Armed, the output assertion itself is what gets logged, as before.
+        if (!event.armed) { LOG_INF("TEST delay elapsed - LED B on."); }
+        break;
+
+      case DetectionEventType::DelayExpiredScanLost:
+        LOG_WRN("Trigger firing although the scanner was not running during the delay - a disarm may have been missed.");
+        break;
+
+      case DetectionEventType::WatchdogRearm:
+        LOG_ERR("ADXL stuck AWAKE for %u s - re-arming the loop engine!", event.seconds);
+        break;
+
+      case DetectionEventType::WatchdogRearmFailed:
+        // The engine hands over to its configure retry, so this is no cooldown.
+        m_logging_cooldown = false;
+        LOG_ERR("ADXL re-arm failed!");
+        break;
+
+      case DetectionEventType::RestartCooldownStopFailed:
+        if (event.armed) {
+          LOG_WRN("Could not stop the test cooldown timer before arming.");
+        } else {
+          LOG_ERR("Failed to stop the cooldown timer on restarting the test!");
+        }
+        break;
+
+      case DetectionEventType::RestartStandbyFailed:
+        if (event.armed) {
+          LOG_WRN("Could not stand the accelerometer down after a refused arm.");
+        } else {
+          LOG_WRN("Could not stand the accelerometer down after a failed test restart.");
+        }
+        break;
     }
   }
 
@@ -1245,7 +1097,8 @@ namespace alc
     bool fromNetworkManager { evaluation.slot == access::M_SLOT_NETWORK_MANAGER };
     ArmDecision decision { DecideCommand(m_arm_state == ArmState::Active, fromNetworkManager, command) };
     protocol::Mode previousMode { m_settings.OperatingMode() };
-    bool delayWasPending { m_delay_pending };
+    bool armedDelayWasPending { m_engine.DelayPendingArmed() };
+    int result { 0 };
     LedPattern pattern { LedPattern::None };
 
     // THE SINGLE PATH. Everything below acts on `decision` and on nothing else -
@@ -1291,30 +1144,26 @@ namespace alc
     switch (decision.action) {
       case ArmAction::Disarm:
         // Armed or not. From Active this is the only state change a command can
-        // make; from Inactive it is the same deactivation - count, latch,
-        // cooldown cleared, ADXL367 to standby - which ends a tuning session. A
-        // disarm carries no settings.
+        // make; from Inactive it is the same deactivation, which restarts the
+        // test from zero - the engineer's way to reset a long cooldown or delay
+        // (amendment section 3.1). A disarm carries no settings.
+        //
+        // The double blink means a pending TRIGGER was cancelled, so it plays
+        // only for an ARMED delay, read before disarming. Cancelling a test
+        // delay is not a cancelled trigger.
         setArmState(ArmState::Inactive);
-        pattern = delayWasPending ? LedPattern::DisarmedDelayCancelled : LedPattern::Disarmed;
-        if (delayWasPending) { LOG_WRN("Disarmed with a trigger PENDING - the trigger is cancelled."); }
+        pattern = armedDelayWasPending ? LedPattern::DisarmedDelayCancelled : LedPattern::Disarmed;
+        if (armedDelayWasPending) { LOG_WRN("Disarmed with a trigger PENDING - the trigger is cancelled."); }
         break;
 
       case ArmAction::Arm:
         // The command carries no settings; arming uses m_settings exactly as
         // already stored, never the command's own settings fields.
-        m_activation_count = 0;
-        m_detection_met    = false;
-
-        // A cooldown - or its expiry latch - left over from Inactive tuning must
-        // not carry into the armed session.
-        if (m_in_cooldown) {
-          m_in_cooldown      = false;
-          m_cooldown_expired = false;
-          if (m_pmic.TimerStop() < 0) { LOG_WRN("Could not stop the tuning cooldown timer before arming."); }
-        }
-
-        // setArmState() performs the standby -> configure -> confirm-AWAKE-clear
-        // sequence that makes arming edge-triggered, and refuses if it cannot.
+        //
+        // setArmState() restarts the engine from zero - discarding the test's
+        // count, cooldown, delay and detection - and configures the part and
+        // confirms AWAKE clear, which makes arming edge-triggered. It refuses if
+        // the part will not configure.
         setArmState(ArmState::Active);
         pattern = (m_arm_state == ArmState::Active) ? LedPattern::Armed : LedPattern::ArmRefused;
         if (pattern == LedPattern::ArmRefused) {
@@ -1323,24 +1172,11 @@ namespace alc
         break;
 
       case ArmAction::Tune:
-        // (Re)start the engine at the new threshold so LED B simulates triggers
-        // straight away. Always, not only on change - the engineer may be
-        // restarting the simulation after a disarm stood the part down.
-        m_activation_count = 0;
-        m_detection_met    = false;
-
-        // A cooldown - or its expiry latch - from before this Tune must not
-        // carry into the restarted engine.
-        if (m_in_cooldown) {
-          m_in_cooldown      = false;
-          m_cooldown_expired = false;
-          if (m_pmic.TimerStop() < 0) { LOG_WRN("Could not stop the tuning cooldown timer before restarting the engine."); }
-        }
-
-        // A delay counted before this Tune must not outlive it either - see the
-        // Arm case and setArmState(Active).
-        cancelDelay();
-        if (enableAccelerometer() < 0) { LOG_ERR("Could not start the engine for tuning!"); }
+        // Restart the test from zero at the new settings. Always, not only on
+        // change - sending the same settings again is the engineer's way to
+        // reset a long cooldown or delay (amendment section 3.1).
+        result = restartEngine(false);
+        if (result < 0) { LOG_ERR("Could not start the engine for tuning - retrying every %u ms!", M_ENGINE_RETRY_MS); }
         pattern = (m_settings.OperatingMode() != previousMode) ? LedPattern::ModeChanged : LedPattern::SettingsApplied;
         break;
 

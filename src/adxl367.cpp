@@ -329,9 +329,10 @@ namespace alc
     //
     // INT2 is wired to the nPM2100 SHPHLD pin. What makes that pin safe is the
     // active-low POLARITY bit, which forces it to idle HIGH; the INTMAP2 reset
-    // value of 0x00 does not set it. ConfigureLoopMode() writes it, but a device
-    // that boots and is never activated would then sit at the reset default
-    // indefinitely, since the part is now held in standby until it is armed. A
+    // value of 0x00 does not set it. ConfigureLoopMode() writes it, but a part
+    // whose configure keeps failing - it is stood down after every failed
+    // attempt while the detection engine retries - would otherwise sit at the
+    // reset default indefinitely. A
     // hazard the datasheet calls out must not depend on how soon someone happens
     // to arm the device - see docs/v1-scope.md section 2.
     //
