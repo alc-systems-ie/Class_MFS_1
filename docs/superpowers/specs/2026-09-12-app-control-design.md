@@ -564,14 +564,17 @@ firing forever: once `k_uptime_get() >= m_delay_deadline_ms`, the expiry commit
 clears the flag (`cancelDelay()`), releases the PM lock, and lets detection
 proceed.
 
-**Owner ruling, 2026-09-13: a trigger still fires even if the scanner was lost
-during the delay.** `serviceScanHealth()` tracks whether the scanner was confirmed
-running for the whole delay (`m_delay_scan_lost`); if it was not, the expiry commit
-logs a warning ("a disarm may have been missed") but does **not** suppress the
-trigger. Andy's decision: the alarm is prioritised over the risk of a missed
-disarm — a scanner outage already makes a disarm unlikely to be heard, so
-suppressing the trigger on top of that would trade a real alarm for a precaution
-that, by the time it matters, cannot protect anyone.
+**Owner rule, 2026-09-14: always fail safe — a trigger never fires if the scanner
+was lost during the delay.** This supersedes the 2026-09-13 ruling that prioritised
+the alarm over a missed disarm. A device that cannot scan cannot hear a disarm, so
+`App::Run()` disarms the moment the scanner is not running while Active — warning
+raised, pins isolated first, Inactive, the pending trigger cancelled, logged
+`Scanner not running while armed - disarmed (fail safe)!` (arming sequence amendment
+§4.2). Behind that, the detection engine still tracks whether the scanner was running
+for the whole armed delay (`m_delay_scan_lost`); if it was not, the expiry commit
+does **not** fire — no detection, no hold — and reports
+`Trigger suppressed: the scanner was not running during the delay (fail safe)!`. A
+disarmed test delay is unaffected: it drives no fire pins.
 
 **`OutputSwitch` does not learn about delays.** Coupling it to one feature would
 destroy its value as a general containment. Instead it gains an **interlock** it

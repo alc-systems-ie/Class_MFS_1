@@ -140,8 +140,10 @@ namespace alc
       static bool interlockThunk(void* context);
 
       // Confirms the scanner is at its requested cadence and retries at
-      // M_SCAN_SERVICE_INTERVAL_MS if not. Scanner loss during an armed delay is
-      // tracked by the detection engine itself. Called every main-loop tick.
+      // M_SCAN_SERVICE_INTERVAL_MS if not. It does not act on scanner loss while
+      // armed: Run() disarms at once (always fail safe), and the detection engine
+      // tracks loss during an armed delay as a defensive guard. Called every
+      // main-loop tick.
       void serviceScanHealth();
 
       // THE ONE PLACE the scanner cadence is applied. Computes DesiredFastScan()

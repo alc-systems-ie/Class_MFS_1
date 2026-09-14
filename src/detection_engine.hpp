@@ -43,28 +43,28 @@ namespace alc
    * it can tell the two apart.
    */
   enum class DetectionEventType : uint8_t {
-    StaleAwakeSuppressed,      ///< WRN "ADXL still awake after configuring - suppressing until it clears!"
-    StaleAwakeReleased,        ///< INF, worded by App per event.armed - "device is now live" vs "test is now live".
-    Activation,                ///< INF "Activation %u of %u." - count, limit.
-    CooldownStarted,           ///< INF "Cooldown started: %u s." - seconds.
-    CooldownStandbyFailed,     ///< ERR, App appends its own retry wording - result.
-    CooldownTimerFailed,       ///< ERR "Failed to start the cooldown timer: %d!" - result.
-    CooldownTimerStopFailed,   ///< WRN "Could not stop the cooldown timer after a failure." - result.
-    CooldownRestoreFailed,     ///< ERR, App appends its own retry wording - result.
-    CooldownForced,            ///< WRN "Cooldown forced over by the deadline - the PMIC timer did not report expiry!"
-    CooldownClearEventFailed,  ///< WRN "Failed to clear the cooldown timer expiry event!" - result.
-    RearmFailed,               ///< ERR, worded by App per its own m_logging_cooldown - cooldown re-arm vs plain reconfigure.
-    CooldownElapsed,           ///< INF, worded by App per its own m_logging_cooldown - cooldown elapsed vs reconfigured.
-    DelayStarted,              ///< armed: WRN "TRIGGER PENDING: firing in %u s. Deactivating cancels it."; else a TEST line - seconds.
-    DelayScanLost,             ///< ERR "Scanner not running at the start of a delay - a disarm may not be heard!" (armed only).
-    DelayFastScanFailed,       ///< WRN "Continuous scan unavailable at the start of a delay - retrying; ..." (armed only) - result.
-    DelayScanRestoreFailed,    ///< ERR "Failed to restore duty-cycled scanning: %d!" - result.
-    DelayExpired,              ///< Armed: no log of its own. Disarmed: INF "TEST delay elapsed - LED B on."
-    DelayExpiredScanLost,      ///< WRN "Trigger firing although the scanner was not running during the delay - ..." (armed only).
-    WatchdogRearm,             ///< ERR "ADXL stuck AWAKE for %u s - re-arming the loop engine!" - seconds.
-    WatchdogRearmFailed,       ///< ERR "ADXL re-arm failed!" - result.
-    RestartCooldownStopFailed, ///< WRN or ERR, worded by App per event.armed - see App::OnDetectionEvent - result.
-    RestartStandbyFailed,      ///< WRN, worded by App per event.armed - refused arm vs failed test restart.
+    StaleAwakeSuppressed,           ///< WRN "ADXL still awake after configuring - suppressing until it clears!"
+    StaleAwakeReleased,             ///< INF, worded by App per event.armed - "device is now live" vs "test is now live".
+    Activation,                     ///< INF "Activation %u of %u." - count, limit.
+    CooldownStarted,                ///< INF "Cooldown started: %u s." - seconds.
+    CooldownStandbyFailed,          ///< ERR, App appends its own retry wording - result.
+    CooldownTimerFailed,            ///< ERR "Failed to start the cooldown timer: %d!" - result.
+    CooldownTimerStopFailed,        ///< WRN "Could not stop the cooldown timer after a failure." - result.
+    CooldownRestoreFailed,          ///< ERR, App appends its own retry wording - result.
+    CooldownForced,                 ///< WRN "Cooldown forced over by the deadline - the PMIC timer did not report expiry!"
+    CooldownClearEventFailed,       ///< WRN "Failed to clear the cooldown timer expiry event!" - result.
+    RearmFailed,                    ///< ERR, worded by App per its own m_logging_cooldown - cooldown re-arm vs plain reconfigure.
+    CooldownElapsed,                ///< INF, worded by App per its own m_logging_cooldown - cooldown elapsed vs reconfigured.
+    DelayStarted,                   ///< armed: WRN "TRIGGER PENDING: firing in %u s. Deactivating cancels it."; else a TEST line - seconds.
+    DelayScanLost,                  ///< ERR "Scanner not running at the start of a delay - a disarm may not be heard!" (armed only).
+    DelayFastScanFailed,            ///< WRN "Continuous scan unavailable at the start of a delay - retrying; ..." (armed only) - result.
+    DelayScanRestoreFailed,         ///< ERR "Failed to restore duty-cycled scanning: %d!" - result.
+    DelayExpired,                   ///< Armed: no log of its own. Disarmed: INF "TEST delay elapsed - LED B on." Not raised when suppressed.
+    DelayExpiredScanLostSuppressed, ///< ERR "Trigger suppressed: the scanner was not running during the delay (fail safe)!" (armed only; no fire).
+    WatchdogRearm,                  ///< ERR "ADXL stuck AWAKE for %u s - re-arming the loop engine!" - seconds.
+    WatchdogRearmFailed,            ///< ERR "ADXL re-arm failed!" - result.
+    RestartCooldownStopFailed,      ///< WRN or ERR, worded by App per event.armed - see App::OnDetectionEvent - result.
+    RestartStandbyFailed,           ///< WRN, worded by App per event.armed - refused arm vs failed test restart.
   };
 
   /** @brief One engine event. Fields not named for the type are zero. */
@@ -293,8 +293,10 @@ namespace alc
       int64_t m_delay_deadline_ms;
 
       // Set if the scanner was not running at the start of an ARMED delay, or on
-      // any tick thereafter while it is pending. Does not suppress the trigger -
-      // Andy's ruling is to prioritise the alarm - but is reported at expiry.
+      // any tick thereafter while it is pending. Owner rule 2026-09-14: always
+      // fail safe - an armed delay that expires with this set does NOT fire (no
+      // detection, no hold) and is reported as suppressed. App normally disarms
+      // first, the moment the scanner is down while Active; this is the guard.
       bool m_delay_scan_lost;
 
       // Uptime until which a DELAYED detection holds regardless of AWAKE. Zero for

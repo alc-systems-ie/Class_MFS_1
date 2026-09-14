@@ -125,6 +125,10 @@ It is raised by:
 4. **a fire switch failure while Active** — `OutputSwitch::Set()` returning an error from
    the single derivation point (a failed write or read-back, a refused assert) — **raises
    the warning and fails safe to disarmed** (§4.1). Raised at most once per Active session.
+5. **the command scanner not running while Active** — `CommandScanner::IsScanning()`
+   false (a start and its fallback both failed) — **raises the warning** with reason
+   `scanner not running while armed - a disarm could not be heard` (`-ENODEV`) **and
+   fails safe to disarmed** (§4.2).
 
 ### 4.1 Fire switch faults (owner decisions, 2026-09-14)
 
@@ -145,6 +149,28 @@ runs the ordinary disarm (§2): pins disabled first, Inactive, the test restarte
 LED A acknowledgement.** The switch stays latched faulty, so a later Arm fails at the
 enable step (§3 step 3) and raises its own arming-failure warning (source 1) — always,
 independent of source 4.
+
+### 4.2 Scanner loss while Active (owner rule, 2026-09-14: always fail safe)
+
+A device that cannot scan cannot hear a disarm, so it must not stay armed — idle or
+with a trigger delay pending. Every main-loop tick, after every scanner call (command
+handling, `serviceScanHealth()`, the arming service, the cadence gate) and **before**
+the output is derived, `App::Run()` checks `Active && !IsScanning()`. If so it raises
+the warning (source 5), runs the ordinary disarm (§2) — pins disabled first, Inactive,
+any pending trigger delay cancelled, the test restarted — and logs
+`Scanner not running while armed - disarmed (fail safe)!`. **No LED A
+acknowledgement.** Once per event: the disarm ends the Active state. A scan running at
+the fallback cadence still hears a disarm and is not a loss. The loop is entered only
+after `CommandScanner::Start()` succeeds, so the check never sees a scanner that was
+never started. While Arming, a lost scanner is caught by the scanner check at the end
+of the exit delay, which refuses the arm (§3).
+
+As a defensive guard behind that disarm, the detection engine never fires an ARMED
+delay that ran without a scanner: at expiry it sets no detection and no hold and
+reports `DelayExpiredScanLostSuppressed`, logged as
+`Trigger suppressed: the scanner was not running during the delay (fail safe)!`. A
+disarmed test delay is unaffected. This supersedes the 2026-09-13 "prioritise fire"
+ruling.
 
 ## 5. Host-testable arming sequence
 

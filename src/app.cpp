@@ -367,6 +367,24 @@ namespace alc
       // serviceScanHealth()'s throttled retry rather than retried every tick.
       if (DesiredFastScan(m_arming.State(), m_trigger_pending_scan) != m_scanner.IsFastRequested()) { (void)applyScanCadence(); }
 
+      // FAIL SAFE ON SCANNER LOSS WHILE ARMED (owner rule 2026-09-14: always fail
+      // safe). A device that cannot scan cannot hear a disarm, so it must not stay
+      // armed - idle, or with a trigger delay pending. IsScanning() is false only
+      // when a scan start and its fallback have both failed; a scan stuck at the
+      // fallback cadence still hears a disarm and is serviceScanHealth()'s to
+      // retry. Checked after every scanner call above and BEFORE the output is
+      // derived, so a deaf armed device never ticks the engine armed and cannot
+      // fire on this tick. The loop is only reached once Start() has succeeded,
+      // so "not scanning" here is a genuine loss, never "not yet started". This
+      // is the ordinary disarm - pins isolated first, Inactive, any pending
+      // trigger cancelled, test restarted - with the warning and no LED A
+      // acknowledgement. Once per event: the disarm ends the Active state.
+      if (m_arming.State() == ArmState::Active && !m_scanner.IsScanning()) {
+        signalWarning("scanner not running while armed - a disarm could not be heard", -ENODEV);
+        (void)disarmDevice();
+        LOG_ERR("Scanner not running while armed - disarmed (fail safe)!");
+      }
+
 #if defined(CONFIG_MFS_BATTERY_TEST)
       if (++blinkTicks >= M_BLINK_PERIOD_TICKS) {
         blinkTicks   = 0;
@@ -896,8 +914,9 @@ namespace alc
 
     // Throttled - the Bluetooth stack's own stop/start churn is not free, and a
     // genuine outage does not need a 100 ms retry rate to recover promptly.
-    // Scanner loss during an armed delay is not tracked here: the detection
-    // engine checks ScannerRunning() itself on every tick.
+    // Scanner loss while armed is not acted on here: Run() disarms on it every
+    // tick (always fail safe), and the detection engine also checks
+    // ScannerRunning() itself during an armed delay.
     if (uptimeMs - m_last_scan_service_ms < M_SCAN_SERVICE_INTERVAL_MS) { return; }
     m_last_scan_service_ms = uptimeMs;
 
@@ -1142,8 +1161,9 @@ namespace alc
         if (!event.armed) { LOG_INF("TEST delay elapsed - LED B on."); }
         break;
 
-      case DetectionEventType::DelayExpiredScanLost:
-        LOG_WRN("Trigger firing although the scanner was not running during the delay - a disarm may have been missed.");
+      case DetectionEventType::DelayExpiredScanLostSuppressed:
+        // Owner rule 2026-09-14: always fail safe. The engine did not fire.
+        LOG_ERR("Trigger suppressed: the scanner was not running during the delay (fail safe)!");
         break;
 
       case DetectionEventType::WatchdogRearm:

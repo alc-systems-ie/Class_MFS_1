@@ -89,8 +89,8 @@ firing while deactivated is dangerous.
   and, **until the dedicated warning light is chosen, plays three long pulses on
   LED B in every build** (production included), overriding the bench detection
   level while it plays. Sources: an arming-step failure, the boot pin check, a
-  fire-pin disable failure, and a fire switch `Set()` failure while Active (once
-  per Active session). An arming failure shows **no** LED A acknowledgement.
+  fire-pin disable failure, a fire switch `Set()` failure while Active (once
+  per Active session), and the scanner not running while Active. An arming failure shows **no** LED A acknowledgement.
   **A fire switch fault while Active fails safe to disarmed** — the main loop runs
   the ordinary disarm beside the trigger latch and logs `Fire switch fault while
   armed - disarmed (fail safe).`, with no LED A acknowledgement (amendment §4.1).
@@ -104,6 +104,12 @@ firing while deactivated is dangerous.
   behaves cleanly only because they sit on `gpio2`, which has **no GPIOTE
   instance** on this SoC; re-check disconnect/reconfigure behaviour from
   scratch if the fire pins ever move to `gpio0` or `gpio1`.
+- **Always fail safe** (owner rule 2026-09-14): any fault the device depends on — fire switch, arming step, command scanner, while arming or armed, including a pending trigger delay — isolates the pins, disarms, cancels any pending trigger and raises the warning. Never keep firing capability through a fault.
+  For the scanner: `App::Run()` disarms the moment `IsScanning()` is false while
+  Active (`Scanner not running while armed - disarmed (fail safe)!`), before the
+  output is derived; the detection engine additionally never fires an armed delay
+  that ran without a scanner (`DelayExpiredScanLostSuppressed`). This supersedes
+  the 2026-09-13 "prioritise fire" ruling.
 
 Related: **arming is edge-triggered** (§1.0.1). AWAKE is a level, not a latch, so a
 naive `armed && triggered` fires the instant the device is armed on motion that

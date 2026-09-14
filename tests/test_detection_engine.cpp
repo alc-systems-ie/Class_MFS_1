@@ -31,6 +31,10 @@ namespace
   constexpr int64_t M_FAST_TOGGLE_MS { 200 };
   constexpr bool M_BOTH_STATES[] { false, true };
 
+  // Well past a delay's deadline plus the 5 s delayed-trigger hold, so a trigger
+  // that was going to fire has certainly done so.
+  constexpr int64_t M_DERIVED_HOLD_MARGIN_MS { 10000 };
+
   class FakeHardware : public DetectionHardware
   {
     public:
@@ -735,14 +739,18 @@ namespace
 
   void testScanLostDuringArmedDelay()
   {
-    // Preserved: the alarm is prioritised over a possibly missed disarm.
+    // Owner rule 2026-09-14: always fail safe. App disarms as soon as the scanner
+    // is down while Active; the engine never fires an armed delay that ran
+    // without a scanner, even if that disarm did not happen.
     {
       Rig rig(M_ONE, 0, M_DELAY_SECS);
+      int64_t deadlineMs { 0 };
 
       assert(rig.restart(true) == 0);
       rig.tap();
       assert(rig.engine.DelayPendingArmed());
       assert(rig.hardware.countEvents(DetectionEventType::DelayScanLost) == 0);
+      deadlineMs = rig.hardware.delayEndMs;
 
       // The scanner drops out for a while, then recovers - the loss is remembered.
       rig.hardware.scannerRunning = false;
@@ -750,39 +758,87 @@ namespace
       rig.tick(false);
       rig.hardware.scannerRunning = true;
 
-      while (!rig.engine.DetectionMet()) {
-        rig.tick(false);
-      }
-      assert(rig.everOutput);
-      assert(rig.hardware.countEvents(DetectionEventType::DelayExpired) == 1);
-      assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLost) == 1);
+      rig.idleUntil(deadlineMs + M_DERIVED_HOLD_MARGIN_MS);
+      assert(!rig.engine.DelayPendingArmed());
+      assert(!rig.engine.DetectionMet() && !rig.everOutput);
+      assert(!rig.engine.TakeTriggerComplete());
+      assert(rig.hardware.countEvents(DetectionEventType::DelayExpired) == 0);
+      assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLostSuppressed) == 1);
+      assert(!rig.hardware.fastScan);
     }
 
-    // Down at the start of the delay: reported at once, and again at expiry.
+    // Down at the start of the delay: reported at once, suppressed at expiry.
     {
       Rig rig(M_ONE, 0, M_DELAY_SECS);
+      int64_t deadlineMs { 0 };
 
       assert(rig.restart(true) == 0);
       rig.hardware.scannerRunning = false;
       rig.tap();
       assert(rig.hardware.countEvents(DetectionEventType::DelayScanLost) == 1);
       rig.hardware.scannerRunning = true;
-      rig.idleUntil(rig.hardware.delayEndMs);
-      assert(rig.engine.DetectionMet() && rig.everOutput);
-      assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLost) == 1);
+      deadlineMs                  = rig.hardware.delayEndMs;
+      rig.idleUntil(deadlineMs + M_DERIVED_HOLD_MARGIN_MS);
+      assert(!rig.engine.DetectionMet() && !rig.everOutput);
+      assert(rig.hardware.countEvents(DetectionEventType::DelayExpired) == 0);
+      assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLostSuppressed) == 1);
     }
 
-    // Healthy scanner, or a disarmed test delay: no scan-lost report.
-    for (bool armed : M_BOTH_STATES) {
+    // A suppressed delay leaves the engine counting: the next genuine delay, with
+    // a healthy scanner, fires as normal.
+    {
       Rig rig(M_ONE, 0, M_DELAY_SECS);
 
-      assert(rig.restart(armed) == 0);
-      if (!armed) { rig.hardware.scannerRunning = false; }
+      assert(rig.restart(true) == 0);
+      rig.tap();
+      rig.hardware.scannerRunning = false;
+      rig.tick(false);
+      rig.hardware.scannerRunning = true;
+      rig.idleUntil(rig.hardware.delayEndMs + M_DERIVED_HOLD_MARGIN_MS);
+      assert(!rig.everOutput);
+
+      rig.tap();
+      assert(rig.engine.DelayPendingArmed());
+      rig.idleUntil(rig.hardware.delayEndMs);
+      while (!rig.engine.DetectionMet()) {
+        rig.tick(false);
+      }
+      assert(rig.everOutput);
+      assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLostSuppressed) == 1);
+    }
+
+    // A disarmed test delay is unaffected by the scanner: it never fires the pins,
+    // so it still shows detection even with the scanner down throughout.
+    {
+      Rig rig(M_ONE, 0, M_DELAY_SECS);
+
+      assert(rig.restart(false) == 0);
+      rig.hardware.scannerRunning = false;
+      rig.tap();
+      rig.tick(false);
+      rig.idleUntil(rig.hardware.delayEndMs);
+      while (rig.engine.DelayPendingArmed() || !rig.engine.DetectionMet()) {
+        rig.tick(false);
+      }
+      assert(rig.engine.DetectionMet() && !rig.everOutput);
+      assert(rig.hardware.countEvents(DetectionEventType::DelayExpired) == 1);
+      assert(rig.hardware.countEvents(DetectionEventType::DelayScanLost) == 0);
+      assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLostSuppressed) == 0);
+    }
+
+    // Healthy scanner, armed: fires, no scan-lost report.
+    {
+      Rig rig(M_ONE, 0, M_DELAY_SECS);
+
+      assert(rig.restart(true) == 0);
       rig.tap();
       rig.idleUntil(rig.hardware.delayEndMs);
-      assert(rig.engine.DetectionMet());
+      while (!rig.engine.DetectionMet()) {
+        rig.tick(false);
+      }
+      assert(rig.everOutput);
       assert(rig.hardware.countEvents(DetectionEventType::DelayScanLost) == 0);
-      assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLost) == 0);
+      assert(rig.hardware.countEvents(DetectionEventType::DelayExpiredScanLostSuppressed) == 0);
     }
     printf("detection engine scan lost during armed delay: OK\n");
   }

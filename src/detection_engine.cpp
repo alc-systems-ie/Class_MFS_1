@@ -106,6 +106,7 @@ namespace alc
   {
     bool risingEdge { false };
     bool delayWasArmed { false };
+    bool scanWasLost { false };
 
     m_armed = armed;
 
@@ -165,21 +166,27 @@ namespace alc
     // and m_delay_deadline_ms is what tells the two apart.
     if (m_delay_pending && !m_hardware.DelayTimerRunning() && nowMs >= m_delay_deadline_ms) {
       delayWasArmed = m_delay_armed;
+      scanWasLost   = m_delay_scan_lost;
       cancelDelay(armed); // clears the flag and restores duty-cycled scanning
-      m_detection_met = true;
 
-      // The delay outlived the AWAKE that started it, so AWAKE is already clear
-      // and would end detection on this very tick - the output would never
-      // assert. Hold detection for the same 5 s the loop period gives an
-      // undelayed trigger.
-      m_detection_hold_until_ms = nowMs + M_DELAYED_TRIGGER_HOLD_MS;
-      report(DetectionEventType::DelayExpired, armed);
+      if (delayWasArmed && scanWasLost) {
+        // Owner rule 2026-09-14: always fail safe. An ARMED delay that ran
+        // without a scanner may have missed a disarm, so it must not fire - no
+        // detection, no hold. App disarms as soon as the scanner is down while
+        // Active, so on target this is a defensive guard for a disarm that did
+        // not happen. A disarmed test delay never reaches here: it has no fire
+        // pins and does not track the scanner.
+        report(DetectionEventType::DelayExpiredScanLostSuppressed, armed);
+      } else {
+        m_detection_met = true;
 
-      // Andy's ruling: the alarm is prioritised over the risk of a missed
-      // disarm. A scanner outage during the delay does not suppress the
-      // trigger - it is reported instead, so a missed disarm is at least
-      // visible after the fact.
-      if (delayWasArmed && m_delay_scan_lost) { report(DetectionEventType::DelayExpiredScanLost, armed); }
+        // The delay outlived the AWAKE that started it, so AWAKE is already clear
+        // and would end detection on this very tick - the output would never
+        // assert. Hold detection for the same 5 s the loop period gives an
+        // undelayed trigger.
+        m_detection_hold_until_ms = nowMs + M_DELAYED_TRIGGER_HOLD_MS;
+        report(DetectionEventType::DelayExpired, armed);
+      }
     }
 
     // The detection's own AWAKE running to completion is what clears it - or,
