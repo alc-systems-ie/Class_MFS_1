@@ -21,7 +21,7 @@ LABEL_DAY_KEY = 0x02
 LABEL_ENC_KEY = 0x03
 LABEL_ROTATING_ID = 0x04
 LABEL_TIME_SYNC = 0x05
-PROTOCOL_VERSION = 0x02
+PROTOCOL_VERSION = 0x03
 TAG_BYTES = 4
 
 SECRET = bytes(range(0x00, 0x20))          # bench secret 00 01 .. 1F
@@ -63,10 +63,10 @@ def time_sync(provision_key, device_id, unix: int) -> bytes:
 
 
 CASES = [
-    # (name, day, slot, n, plaintext)
-    ("arm_slot1_n0", 256, 1, 0, bytes([0x01, 0x02, 128, 143, 0x1E, 0x02, 0x00, 0x00])),
-    ("disarm_slot7_n15", 256, 7, 15, bytes([0x00, 0x00, 0, 143, 0x9F, 0x05, 0xAA, 0xBB])),
-    ("mode_slot0_n3", 257, 0, 3, bytes([0x00, 0x20, 0, 200, 0x00, 0x00, 0x00, 0x00])),
+    # (name, day, slot, n, plaintext). Byte 1 bits 6-7: 01 Settings, 10 Arm, 11 Disarm.
+    ("arm_slot1_n0", 256, 1, 0, bytes([0x00, 0x80, 0, 0, 0x1E, 0x02, 0x00, 0x00])),
+    ("disarm_slot7_n15", 256, 7, 15, bytes([0x00, 0xC0, 0, 0, 0x9F, 0x05, 0xAA, 0xBB])),
+    ("settings_slot0_n3", 257, 0, 3, bytes([0x04, 0x62, 128, 200, 0x00, 0x00, 0x00, 0x00])),
 ]
 TIME_SYNC_UNIX = 1767225600 + 256 * 86400 + 4 * 3600 + 3723  # day 256, 05:02:03 UTC
 

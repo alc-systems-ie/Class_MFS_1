@@ -33,13 +33,13 @@ namespace
   }
 
   // Builds what the engineer's app would send.
-  void buildCommand(uint16_t day, uint8_t slot, uint32_t n, bool arm, uint16_t minute, uint8_t* onAir)
+  void buildCommand(uint16_t day, uint8_t slot, uint32_t n, protocol::CommandType type, uint16_t minute, uint8_t* onAir)
   {
     uint8_t dayKey[access::M_DAY_KEY_BYTES] {};
     uint8_t plaintext[protocol::M_PLAINTEXT_BYTES] {};
     protocol::Command command;
 
-    command.armActive   = arm;
+    command.type        = type;
     command.activations = 3;
     command.minuteOfDay = minute;
     protocol::EncodeCommand(command, plaintext);
@@ -64,7 +64,7 @@ void run_access_control_tests()
     PersistSpy spy;
     AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
     DeviceClock clock;
-    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::ClockInvalid);
     assert(spy.calls == 0);
   }
@@ -75,11 +75,11 @@ void run_access_control_tests()
     AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
 
-    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     AccessControl::Evaluation evaluation { access.Evaluate(onAir, sizeof(onAir), clock, 0) };
     assert(evaluation.verdict == Verdict::Accepted);
     assert(evaluation.slot == 1 && evaluation.n == 0);
-    assert(evaluation.command.armActive && evaluation.command.activations == 3);
+    assert(evaluation.command.type == protocol::CommandType::Arm && evaluation.command.activations == 3);
 
     // Persisted BEFORE returning: the rollover to day 256, then next[1] = 1.
     assert(spy.calls == 2);
@@ -91,23 +91,23 @@ void run_access_control_tests()
     assert(access.ConsecutiveFailures() == 0);
 
     // Desync: the phone sent 1..9 and none arrived. n = 10 is inside the window.
-    buildCommand(256, 1, 10, false, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 10, protocol::CommandType::Settings, M_MINUTE_0500, onAir);
     evaluation = access.Evaluate(onAir, sizeof(onAir), clock, 0);
     assert(evaluation.verdict == Verdict::Accepted && evaluation.n == 10);
     assert(access.State().next[1] == 11);
 
     // The skipped numbers are dead: n = 5 is now behind the window.
-    buildCommand(256, 1, 5, false, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 5, protocol::CommandType::Settings, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
 
     // Window edge: next = 11 accepts 26 (11 + 15) but not 27.
-    buildCommand(256, 1, 27, false, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 27, protocol::CommandType::Settings, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
-    buildCommand(256, 1, 26, false, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 26, protocol::CommandType::Settings, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted);
 
     // Slots are independent: slot 2 still starts at zero.
-    buildCommand(256, 2, 0, false, M_MINUTE_0500, onAir);
+    buildCommand(256, 2, 0, protocol::CommandType::Settings, M_MINUTE_0500, onAir);
     evaluation = access.Evaluate(onAir, sizeof(onAir), clock, 0);
     assert(evaluation.verdict == Verdict::Accepted && evaluation.slot == 2);
   }
@@ -122,16 +122,16 @@ void run_access_control_tests()
     restored.next[1] = 7;
     access.Restore(restored);
 
-    buildCommand(255, 1, 7, true, M_MINUTE_0500, onAir);
+    buildCommand(255, 1, 7, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
 
     // Restored state is honoured: n = 6 on day 256 is spent.
-    buildCommand(256, 1, 6, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 6, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
 
     // Tomorrow at 05:00: slot 1 is back at zero under the new key.
     constexpr int64_t M_TOMORROW { DeviceClock::M_SECONDS_PER_DAY };
-    buildCommand(257, 1, 0, true, M_MINUTE_0500, onAir);
+    buildCommand(257, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, M_TOMORROW).verdict == Verdict::Accepted);
     assert(access.State().day == 257 && access.State().next[1] == 1);
     assert(clock.FloorDay() == 257);
@@ -142,7 +142,7 @@ void run_access_control_tests()
     PersistSpy spy;
     AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
-    buildCommand(256, 3, 0, true, M_MINUTE_0500 - 11, onAir);
+    buildCommand(256, 3, 0, protocol::CommandType::Arm, M_MINUTE_0500 - 11, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Stale);
     assert(access.State().next[3] == 0);
     assert(access.ConsecutiveFailures() == 0);
@@ -153,10 +153,10 @@ void run_access_control_tests()
     PersistSpy spy;
     AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
-    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted); // rolls the day in
     spy.failWith = -EIO;
-    buildCommand(256, 1, 1, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 1, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::PersistFailed);
     assert(access.State().next[1] == 1);
     spy.failWith = 0;
@@ -186,7 +186,7 @@ void run_access_control_tests()
     AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
     AccessControl::Evaluation evaluation {};
-    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     onAir[protocol::M_OFFSET_TAG] ^= 0x01;
 
     for (int attempt = 0; attempt < AccessControl::M_MAX_ID_FAILURES; attempt++) {
@@ -205,18 +205,18 @@ void run_access_control_tests()
 
     // The GENUINE command for the same n is burned too - the id itself is
     // spent, not merely its wrong tags.
-    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
 
     // n+1's id was never attacked - its genuine command is accepted normally.
-    buildCommand(256, 1, 1, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 1, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     evaluation = access.Evaluate(onAir, sizeof(onAir), clock, 0);
     assert(evaluation.verdict == Verdict::Accepted && evaluation.n == 1);
 
     // Acceptance rebuilds the slot, which clears the per-id counters: a FRESH
     // corrupted id in the new window burns again only after its own eight
     // tries, none carried over from before the rebuild.
-    buildCommand(256, 1, 2, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 2, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     onAir[protocol::M_OFFSET_TAG] ^= 0x01;
     for (int attempt = 0; attempt < AccessControl::M_MAX_ID_FAILURES; attempt++) {
       assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AuthFailed);
@@ -232,7 +232,7 @@ void run_access_control_tests()
 
     // Corrupt slot 1, n = 0..15 (16 failures).
     for (uint32_t n = 0; n < 16; n++) {
-      buildCommand(256, 1, n, true, M_MINUTE_0500, onAir);
+      buildCommand(256, 1, n, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
       onAir[protocol::M_OFFSET_TAG] ^= 0x01;
       assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AuthFailed);
     }
@@ -241,7 +241,7 @@ void run_access_control_tests()
 
     // Corrupt slot 2, n = 0..3 (4 more = 20 total).
     for (uint32_t n = 0; n < 4; n++) {
-      buildCommand(256, 2, n, true, M_MINUTE_0500, onAir);
+      buildCommand(256, 2, n, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
       onAir[protocol::M_OFFSET_TAG] ^= 0x01;
       assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AuthFailed);
     }
@@ -268,14 +268,14 @@ void run_access_control_tests()
 
       // Corrupt slot 1, n = base..base+15 (16 failures).
       for (uint32_t n = 0; n < 16; n++) {
-        buildCommand(256, 1, restored.next[1] + n, true, M_MINUTE_0500, onAir);
+        buildCommand(256, 1, restored.next[1] + n, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
         onAir[protocol::M_OFFSET_TAG] ^= 0x01;
         assert(access.Evaluate(onAir, sizeof(onAir), clock, now).verdict == Verdict::AuthFailed);
       }
 
       // Corrupt slot 2, n = base..base+3 (4 more = 20 total).
       for (uint32_t n = 0; n < 4; n++) {
-        buildCommand(256, 2, restored.next[2] + n, true, M_MINUTE_0500, onAir);
+        buildCommand(256, 2, restored.next[2] + n, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
         onAir[protocol::M_OFFSET_TAG] ^= 0x01;
         assert(access.Evaluate(onAir, sizeof(onAir), clock, now).verdict == Verdict::AuthFailed);
       }
@@ -297,7 +297,7 @@ void run_access_control_tests()
     access.Restore(restored);
 
     spy.failWith = -EIO;
-    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::PersistFailed);
     assert(access.State().day == 255 && access.State().next[1] == 5);
     assert(clock.FloorDay() == 256); // Floor advanced despite persist failure.
@@ -315,7 +315,7 @@ void run_access_control_tests()
     access.Restore(restored);
 
     DeviceClock clock { syncedClock() }; // Day 256 from sync.
-    buildCommand(256, 1, 0, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::ClockInvalid);
   }
 
@@ -329,12 +329,12 @@ void run_access_control_tests()
     restored.next[1] = UINT32_MAX - 16;
     access.Restore(restored);
 
-    buildCommand(256, 1, UINT32_MAX - 16, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, UINT32_MAX - 16, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted);
     assert(access.State().next[1] == UINT32_MAX - 15);
 
     // Next window number wraps, so it is not in the window.
-    buildCommand(256, 1, UINT32_MAX - 15, true, M_MINUTE_0500, onAir);
+    buildCommand(256, 1, UINT32_MAX - 15, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
   }
 
@@ -349,8 +349,8 @@ void run_access_control_tests()
     assert(access::DeriveDayKey(access::vectors::M_SECRET, access::vectors::M_DEVICE_ID, 256, 1, dayKey) == 0);
 
     // Encode a command with minute 1440 (invalid). Plaintext[4:6] = 0xA0 0x05 (LE) = 1440.
-    plaintext[0] = 0;    // armActive = false
-    plaintext[1] = 0;    // activations = 0
+    plaintext[0] = 0;    // reserved bit 0, delay = 0
+    plaintext[1] = 0x40; // type Settings, so only the minute is wrong
     plaintext[2] = 0;    // cooldown = 0
     plaintext[3] = 0;    // sensitivity = 0
     plaintext[4] = 0xA0; // minute LE low byte = 0xA0
@@ -361,6 +361,24 @@ void run_access_control_tests()
 
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Malformed);
     assert(access.State().next[1] == 0); // Not consumed.
+    assert(access.ConsecutiveFailures() == 0);
+  }
+
+  // Reserved command type (00) is Malformed and NOT consumed - an authentic
+  // all-zero plaintext does nothing.
+  {
+    PersistSpy spy;
+    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+    uint8_t dayKey[access::M_DAY_KEY_BYTES] {};
+    uint8_t plaintext[protocol::M_PLAINTEXT_BYTES] {};
+
+    assert(access::DeriveDayKey(access::vectors::M_SECRET, access::vectors::M_DEVICE_ID, 256, 1, dayKey) == 0);
+    plaintext[4] = static_cast<uint8_t>(M_MINUTE_0500 & 0xFF);
+    plaintext[5] = static_cast<uint8_t>(M_MINUTE_0500 >> 8);
+    assert(access::SealCommand(dayKey, access::vectors::M_DEVICE_ID, 256, 1, 0, plaintext, onAir) == 0);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Malformed);
+    assert(access.State().next[1] == 0);
     assert(access.ConsecutiveFailures() == 0);
   }
 
@@ -403,7 +421,7 @@ void run_access_control_tests()
 
     // Advance() alone rebuilt the tables - an authentic command for the new day
     // is still accepted.
-    buildCommand(257, 1, 0, true, M_MINUTE_0500, onAir);
+    buildCommand(257, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, M_TOMORROW).verdict == Verdict::Accepted);
   }
 

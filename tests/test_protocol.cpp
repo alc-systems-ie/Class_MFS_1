@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstdio>
+#include <initializer_list>
 
 #include "mfs_protocol.hpp"
 
@@ -67,7 +68,7 @@ void run_command_codec_tests()
   assert(M_OFFSET_TAG == M_OFFSET_CIPHERTEXT + M_PLAINTEXT_BYTES);
 
   // Round trip, every field away from its default.
-  command.armActive       = true;
+  command.type            = CommandType::Settings;
   command.delayCode       = 119; // 1 h
   command.activations     = 16;  // the 4-bit maximum, stored as 15
   command.mode            = Mode::ReportAndTrigger;
@@ -76,7 +77,7 @@ void run_command_codec_tests()
   command.minuteOfDay     = 1439; // 23:59, the largest legal minute
   EncodeCommand(command, plaintext);
   assert(DecodeCommand(plaintext, decoded));
-  assert(decoded.armActive);
+  assert(decoded.type == CommandType::Settings);
   assert(decoded.delayCode == 119);
   assert(decoded.activations == 16);
   assert(decoded.mode == Mode::ReportAndTrigger);
@@ -84,25 +85,32 @@ void run_command_codec_tests()
   assert(decoded.sensitivityByte == 143);
   assert(decoded.minuteOfDay == 1439);
 
-  // Byte 0 is shared: arm bit and delay code must not bleed into each other.
-  assert(plaintext[M_PT_ARM_DELAY] == ((119 << 1) | 0x01));
+  // Byte 0: bit 0 is reserved and encodes as zero; delay code in bits 1-7.
+  assert(plaintext[M_PT_ARM_DELAY] == (119 << 1));
 
-  // Byte 1 is shared: activations - 1 in the low nibble, mode in bits 4-5.
-  assert(plaintext[M_PT_ACTIVATIONS_MODE] == (0x0F | (1 << 4)));
+  // Byte 1: activations - 1 low nibble, mode bits 4-5, type bits 6-7.
+  assert(plaintext[M_PT_ACTIVATIONS_MODE] == (0x0F | (1 << 4) | (1 << 6)));
 
-  // Activations 1 encodes as zero, so an all-zero plaintext is a legal command:
-  // Inactive, no delay, one activation, Trigger only, minute 0.
-  for (uint8_t& byte : plaintext) {
-    byte = 0;
+  // Every type round-trips.
+  for (CommandType type : { CommandType::Settings, CommandType::Arm, CommandType::Disarm }) {
+    command.type = type;
+    EncodeCommand(command, plaintext);
+    assert(DecodeCommand(plaintext, decoded) && decoded.type == type);
   }
-  assert(DecodeCommand(plaintext, decoded));
-  assert(decoded.activations == 1);
-  assert(!decoded.armActive);
+  command.type = CommandType::Settings;
 
   // Mode 3 is reserved and refused rather than treated as one of the others.
   EncodeCommand(command, plaintext);
   plaintext[M_PT_ACTIVATIONS_MODE] = static_cast<uint8_t>(plaintext[M_PT_ACTIVATIONS_MODE] | (3 << M_MODE_SHIFT));
   assert(!DecodeCommand(plaintext, decoded));
+
+  // Mode 3 rejects for an Arm command too - the reserved-mode check is not
+  // bypassed just because Arm carries no settings.
+  command.type = CommandType::Arm;
+  EncodeCommand(command, plaintext);
+  plaintext[M_PT_ACTIVATIONS_MODE] = static_cast<uint8_t>(plaintext[M_PT_ACTIVATIONS_MODE] | (3 << M_MODE_SHIFT));
+  assert(!DecodeCommand(plaintext, decoded));
+  command.type = CommandType::Settings;
 
   // Minute 1440 fits in eleven bits but is not a minute of any day.
   command.mode        = Mode::TriggerOnly;
@@ -116,13 +124,21 @@ void run_command_codec_tests()
   // there must still decode - validating them would make MFS_1 reject a future
   // app build the moment another variant starts using that space.
   EncodeCommand(command, plaintext);
-  plaintext[6]                     = 0xAA;
-  plaintext[7]                     = 0xBB;
-  plaintext[M_PT_ACTIVATIONS_MODE] = static_cast<uint8_t>(plaintext[M_PT_ACTIVATIONS_MODE] | 0xC0);
-  plaintext[M_PT_MINUTE + 1]       = static_cast<uint8_t>(plaintext[M_PT_MINUTE + 1] | 0xF8);
+  plaintext[6]               = 0xAA;
+  plaintext[7]               = 0xBB;
+  plaintext[M_PT_ARM_DELAY]  = static_cast<uint8_t>(plaintext[M_PT_ARM_DELAY] | 0x01);
+  plaintext[M_PT_MINUTE + 1] = static_cast<uint8_t>(plaintext[M_PT_MINUTE + 1] | 0xF8);
   assert(DecodeCommand(plaintext, decoded));
   assert(decoded.minuteOfDay == 1439);
   assert(decoded.mode == Mode::TriggerOnly);
+  assert(decoded.type == CommandType::Settings);
+
+  // AN ALL-ZERO PLAINTEXT IS NOT A COMMAND. Type 00 is reserved and rejects, so
+  // zeros can never mean "apply all-zero settings" (amendment section 2.1).
+  for (uint8_t& byte : plaintext) {
+    byte = 0;
+  }
+  assert(!DecodeCommand(plaintext, decoded));
 
   printf("command codec: OK\n");
 }

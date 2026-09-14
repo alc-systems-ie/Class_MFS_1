@@ -24,23 +24,26 @@ namespace alc::protocol
 
   // Never transmitted. Both sides supply it as CCM associated data, so a payload
   // built for another protocol version fails authentication rather than parsing.
-  constexpr uint8_t M_PROTOCOL_VERSION { 0x02 };
+  // 0x03 since 2026-09-14: the command type field. A 0x02 payload fails
+  // authentication instead of having its reserved bits read as a type.
+  constexpr uint8_t M_PROTOCOL_VERSION { 0x03 };
 
   // Plaintext layout, after decryption.
-  constexpr uint8_t M_PT_ARM_DELAY { 0 };        // bit 0 arm, bits 1-7 delay code
-  constexpr uint8_t M_PT_ACTIVATIONS_MODE { 1 }; // bits 0-3 activations - 1, bits 4-5 mode
+  constexpr uint8_t M_PT_ARM_DELAY { 0 };        // bit 0 reserved (was arm), bits 1-7 delay code
+  constexpr uint8_t M_PT_ACTIVATIONS_MODE { 1 }; // bits 0-3 activations - 1, bits 4-5 mode, bits 6-7 command type
   constexpr uint8_t M_PT_COOLDOWN { 2 };
   constexpr uint8_t M_PT_SENSITIVITY { 3 };
   constexpr uint8_t M_PT_MINUTE { 4 }; // uint16 LE, bits 0-10 UTC minute of day
   // Plaintext bytes 6-7 are per-variant extension space. MFS_1 MUST IGNORE THEM
   // and must never require them to be zero.
 
-  constexpr uint8_t M_ARM_BIT { 0x01 };
   constexpr uint8_t M_DELAY_SHIFT { 1 };
   constexpr uint8_t M_DELAY_MASK { 0x7F };
   constexpr uint8_t M_ACTIVATIONS_MASK { 0x0F };
   constexpr uint8_t M_MODE_SHIFT { 4 };
   constexpr uint8_t M_MODE_MASK { 0x03 };
+  constexpr uint8_t M_TYPE_SHIFT { 6 };
+  constexpr uint8_t M_TYPE_MASK { 0x03 };
   constexpr uint16_t M_MINUTE_MASK { 0x07FF };
   constexpr uint16_t M_MINUTES_PER_DAY { 1440 };
 
@@ -62,10 +65,27 @@ namespace alc::protocol
     Reserved         = 3, ///< Rejected.
   };
 
+  /**
+   * @brief What a command asks for. See the command types amendment section 2.
+   *
+   * Arm and Disarm carry NO settings - the device ignores every settings field in
+   * them, so an engineer can arm or disarm without knowing the device's tuning.
+   * Reserved (00) rejects, so an all-zero plaintext is never a command.
+   */
+  enum class CommandType : uint8_t {
+    Reserved = 0, ///< Rejected by DecodeCommand().
+    Settings = 1, ///< Apply the settings fields. Acted on only while Inactive.
+    Arm      = 2, ///< Be Active with the settings already stored.
+    Disarm   = 3, ///< Be Inactive.
+  };
+
+  /** @brief Short name for logs. */
+  const char* CommandTypeName(CommandType type);
+
   /** @brief A decrypted, decoded command. Byte encodings not yet resolved. */
   struct Command
   {
-      bool armActive { false };
+      CommandType type { CommandType::Reserved };
       uint8_t delayCode { 0 };
       uint8_t activations { 1 };
       Mode mode { Mode::TriggerOnly };
@@ -79,7 +99,7 @@ namespace alc::protocol
    *
    * @param plaintext Exactly M_PLAINTEXT_BYTES bytes.
    * @param out       Populated only on success.
-   * @return False for a reserved mode or a minute outside 0-1439.
+   * @return False for a reserved command type, a reserved mode or a minute outside 0-1439.
    */
   bool DecodeCommand(const uint8_t* plaintext, Command& out);
 

@@ -1194,8 +1194,8 @@ namespace alc
 
     // Decoded field by field on purpose: when a slider produces the wrong byte
     // this is where you see it, rather than inferring it from an LED.
-    LOG_INF("Command slot %u n %u: arm %s, delay %u s, activations %u, mode %u, cooldown %u s, threshold %u LSB, minute %u.", evaluation.slot,
-            evaluation.n, evaluation.command.armActive ? "ACTIVE" : "INACTIVE", protocol::DelayToSeconds(evaluation.command.delayCode),
+    LOG_INF("Command slot %u n %u: %s, delay %u s, activations %u, mode %u, cooldown %u s, threshold %u LSB, minute %u.", evaluation.slot,
+            evaluation.n, protocol::CommandTypeName(evaluation.command.type), protocol::DelayToSeconds(evaluation.command.delayCode),
             evaluation.command.activations, static_cast<unsigned>(evaluation.command.mode),
             protocol::CooldownToSeconds(evaluation.command.cooldownByte), protocol::SensitivityToThresholdLsb(evaluation.command.sensitivityByte),
             evaluation.command.minuteOfDay);

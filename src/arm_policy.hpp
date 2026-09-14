@@ -9,10 +9,11 @@ namespace alc
 
   /** @brief What an accepted command is allowed to do. */
   enum class ArmAction : uint8_t {
-    Ignore, ///< Armed, and the command does not disarm. NOTHING happens.
-    Disarm, ///< Armed -> Inactive. The only thing an armed device will do on command.
-    Arm,    ///< Inactive -> Active with the command's settings.
-    Tune,   ///< Inactive stays Inactive; settings applied for tuning.
+    Ignore,      ///< Reserved type. NOTHING happens (decode already rejects it).
+    Disarm,      ///< -> Inactive. From Active the only state change a command can make; from Inactive it ends tuning.
+    Arm,         ///< Inactive -> Active with the STORED settings.
+    Tune,        ///< Inactive stays Inactive; the command's settings applied for tuning.
+    ReplayArmed, ///< Armed, and the command does not disarm. State unchanged; LED A replays Armed.
   };
 
   struct ArmDecision
@@ -26,14 +27,25 @@ namespace alc
   /**
    * @brief THE SINGLE PATH. Decides what an accepted command may do. Pure.
    *
-   * **An armed device does exactly one thing on command: disarm.** A command with
-   * the arm bit set is ignored outright - no settings, no mode, no clock trim,
-   * no re-arm. A disarm applies nothing but the disarm: the settings, delay and
-   * mode it carries are ignored, and the engineer sends settings once Inactive.
+   * See the command types amendment section 2.2 for the full table. Summary:
    *
-   * An armed device therefore leaves the armed state only two ways: a disarm
-   * command, or firing (App latches Inactive when the output period ends). Power
-   * loss also leaves it Inactive, because cold start is Inactive.
+   * | Device is | Command  | Action                       | Settings | Mode | Trim |
+   * |-----------|----------|-------------------------------|----------|------|------|
+   * | Active    | Disarm   | Disarm                        | no       | no   | yes  |
+   * | Active    | Arm      | No change - replay Armed      | no       | no   | no   |
+   * | Active    | Settings | No change - replay Armed      | no       | no   | no   |
+   * | Inactive  | Arm      | Arm with the STORED settings  | no       | no   | yes  |
+   * | Inactive  | Disarm   | Stay Inactive, end any tuning | no       | no   | yes  |
+   * | Inactive  | Settings | Tune                          | yes      | slot 0 only | yes |
+   *
+   * **An armed device has only two ways out of the armed state: a disarm
+   * command, or firing** (App latches Inactive when the output period ends).
+   * Power loss also leaves it Inactive, because cold start is Inactive. Arm and
+   * Settings sent to an armed device change nothing but replay the Armed state
+   * on LED A, so an engineer who does not know the state learns it.
+   *
+   * Arm and Disarm carry no settings: arming uses exactly the settings already
+   * stored, never the command's own settings fields.
    *
    * App::applyCommand() must act on this decision and on nothing else.
    *
@@ -44,20 +56,33 @@ namespace alc
   {
     ArmDecision decision {};
 
-    if (armed) {
-      if (command.armActive) { return decision; }
+    if (command.type == protocol::CommandType::Reserved) { return decision; }
 
-      // The clock trim is the only side effect a disarm keeps. It changes no
-      // device behaviour, and the command is authentic and fresh.
+    if (command.type == protocol::CommandType::Disarm) {
+      // Armed or not. From Inactive it is the ordinary deactivation, so a Disarm
+      // sent blind to an Inactive device is harmless and ends any tuning session.
       decision.action    = ArmAction::Disarm;
       decision.trimClock = true;
       return decision;
     }
 
-    decision.action        = command.armActive ? ArmAction::Arm : ArmAction::Tune;
+    if (armed) {
+      // Arm or Settings while armed: no settings, no mode, no trim, no re-arm.
+      // LED A replays Armed so an engineer who did not know the state learns it.
+      decision.action = ArmAction::ReplayArmed;
+      return decision;
+    }
+
+    decision.trimClock = true;
+    if (command.type == protocol::CommandType::Arm) {
+      // The command carries no settings; arming uses those already stored.
+      decision.action = ArmAction::Arm;
+      return decision;
+    }
+
+    decision.action        = ArmAction::Tune;
     decision.applySettings = true;
     decision.applyMode     = fromNetworkManager;
-    decision.trimClock     = true;
     return decision;
   }
 
