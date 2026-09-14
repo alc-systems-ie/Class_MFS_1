@@ -752,8 +752,12 @@ subsequent command stale.
 3. ~~**Confirm the two `OutputSwitch` GPIOs.**~~ **RESOLVED 2026-09-12 — see §9.2.**
 4. ~~**AES-CCM with a 4-byte tag on Dart.**~~ **RESOLVED 2026-09-13** — `pointycastle`
    4.0.0 reproduces every vector from `tools/gen_access_vectors.py` byte for byte.
-5. **AES-CCM with a 4-byte tag on the nRF54L05 (PSA / CRACEN).** Proven only when the
-   boot self-test passes on hardware. Until then, nothing downstream is trustworthy.
+5. ~~**AES-CCM with a 4-byte tag on the nRF54L05 (PSA / CRACEN).**~~ **RESOLVED
+   2026-09-14 on hardware** (J-Link 853003346): `Crypto self-test passed: 3 command
+   vectors and the time-sync vector match.` The first attempt failed with
+   `HMAC key import failed: -141` (`PSA_ERROR_INSUFFICIENT_MEMORY`): PSA allocates
+   imported key buffers from the mbedtls heap, which an observer-only build does not
+   get implicitly. Fixed with `CONFIG_MBEDTLS_ENABLE_HEAP=y` in `prj.conf`.
 6. **Trim `&lfxo` by measurement.** The clock is now a security component with a
    10-minute freshness window riding on it.
 

@@ -93,8 +93,8 @@ fits the payload, and PSA supports it directly as
 **Proven cross-platform, 2026-09-13.** `tools/gen_access_vectors.py` (Python
 `cryptography`) generates known-answer vectors. Both OpenSSL on the host and
 `pointycastle` 4.0.0 on Dart 3.11 reproduce every vector byte for byte, including the
-4-byte CCM tag. PSA on the nRF54L05 is checked by the firmware's boot self-test
-against the same vectors.
+4-byte CCM tag. PSA on the nRF54L05 reproduces them too: the firmware's boot self-test checks it
+against the same vectors, and passed on hardware on 2026-09-14.
 
 Bench vector, for reference — secret `00 01 … 1F`, `id = 0x4D465331`, day 256,
 slot 1, n 0:
@@ -453,7 +453,6 @@ other days.
 | Item | Detail |
 |---|---|
 | **Trim `&lfxo` by measurement** | 9000 fF is nominal. The clock is a security component (`docs/power-budget.md` §8.5.3) |
-| **PSA self-test on target** | CCM with a 4-byte tag proven on OpenSSL and pointycastle; the nRF54L05 is proven only when the boot self-test passes on hardware |
 | Retain the clock across soft resets | GRTC retention or nPM2100 SCRATCHA, so a brownout needs no provisioner |
 | Android Keystore for day keys | No native AES-CCM; compose from Keystore AES or accept app-private storage |
 | Report modes | Still blocked on the report payload (design spec §6.5.2). Rotating IDs derived from a slot-0 key are a candidate for the device identifier |
