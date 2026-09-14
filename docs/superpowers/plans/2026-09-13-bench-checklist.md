@@ -28,7 +28,7 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 ## 2. Boot and access state (Task 9)
 
 - [x] First boot: `No access state stored - first boot, no day floor.`
-- [x] `Passive scan started: 100 ms window every 5906 ms.`
+- [x] `Passive scan started: 100 ms window every 5876 ms.`
 - [x] Temporarily enable `CONFIG_THREAD_ANALYZER=y` (and `CONFIG_THREAD_ANALYZER_AUTO=y` or a manual call point), flash, provision, send a command and trigger the device, then record the reported high-water marks for the main thread and the Bluetooth RX thread. Revert the Kconfig afterwards.
 
 ## 3. Provisioning and commands, end to end (Task 13)
@@ -264,11 +264,11 @@ fire line **is low / is not high**.
 ## 5d. Scan reliability and Send/Stop (plan 2026-09-14)
 
 1. [ ] After flashing, confirm the boot log shows `Passive scan started: 100 ms
-   window every 5906 ms.`
+   window every 5876 ms.`
 2. [ ] Mac: 10 Sends to the device. Count how many are heard at the first or
    second scan (RTT `Command slot ... n ...` or LED A's pattern). Expect nearly
-   all - 5906 ms is no longer a near-integer-multiple of the Mac's 187.5 ms
-   advertising interval.
+   all - `tools/scan_phase_check.py` reports zero misses for 5875.625 ms against
+   the Mac's 187.5 ms advertising interval (amendment §2).
 3. [ ] Arm, then within the 10 s exit delay: press **Stop**, set Disarmed, **Send**.
    Expect `Continuous scan: arming exit delay.` and `Scan cadence now
    CONTINUOUS.` logged when the Arm was accepted, the cancel heard within about
@@ -287,16 +287,38 @@ fire line **is low / is not high**.
 7. [ ] Production Android phone: run `tools/uuid_observer` while the class app
    Sends from that phone (foreground, release build) and measure its real
    advertising interval I from consecutive same-UUID timestamps. If I is longer
-   than the 100 ms window, check it against the period rule in the amendment §2:
-   d = min(P mod I, I − (P mod I)) with P = 5905.625 ms must give d × 5 ≥ I − 100.
-   Record I, d and the verdict here; a failure is a period problem, not a
-   phone problem.
+   than the 100 ms window, check it with `python3 tools/scan_phase_check.py I`
+   (the default period, 9401 units = 5875.625 ms, is used automatically).
+   Record I and the script's miss fraction and verdict here; a FAIL is a period
+   problem, not a phone problem - re-run `--sweep` to see whether any period
+   passes against this interval together with the rest of the default set
+   before concluding it cannot be covered (amendment §2).
 8. [ ] **Production-configuration gate — before any production build.** Confirm
    the bench-only options are off in the build actually being released:
    `grep -E 'CONFIG_MFS_(SCAN_DIAG|DEBUG_LED)' build/class_mfs_1/zephyr/.config`
    must show both as `# CONFIG_... is not set` (or `=n`), never `=y`. Neither may
    ship enabled — the bench `prj.conf` currently sets both to `y`, so a production
    build needs them turned off explicitly.
+
+## 5e. Owner decisions — no scanner/no arming, foreground-only sending (plan 2026-09-14)
+
+1. [ ] **No scanner, no arming is not bench-inducible.** Forcing the scanner down
+   on a running device (to exercise `ArmingActions::ScannerRunning()` returning
+   false) has no safe bench trigger - it is **host-tested only**, covered by
+   `tests/test_arming_sequence.cpp` (BeginArming refused while the scanner is
+   down; the fail-safe path at the exit-delay deadline). Mark this item
+   host-tested-only rather than attempting to induce it on the bench; do not
+   invent a way to stop the scanner from the app or RTT to force this path.
+2. [ ] **App foreground guard.** Arm page, **Send** an Arm; while it is
+   advertising, switch away from the class app (Home button / Cmd-Tab to
+   another app, not just another window). Expect the advert to stop at once -
+   confirm with the observer tool (`tools/uuid_observer`) that the UUID stops
+   appearing - and the page to show "Advertising stopped - keep the app open
+   while sending." Send is disabled until the app returns to the foreground.
+   **On macOS**, clicking another window so the class app's own window becomes
+   inactive (but the app is not hidden) must **not** stop the advert - that is
+   the `inactive` lifecycle state, which the app is required to treat as still
+   sending (amendment §6).
 
 ## 9. Bench log
 

@@ -23,51 +23,60 @@ a time sync missed by all 6 of its scans; four consecutive Disarms unheard.
 observed) re-broadcasts the previous advertising payload before the new one, even a
 minute after the previous advert ended.
 
-## 2. Scan period 5906 ms
+## 2. Scan period 5876 ms
 
-`CONFIG_MFS_SCAN_PERIOD_MS` default **6000 → 5906**. 5906 ms (9449 BLE units,
-5905.625 ms) is 31.5 × 187.5 ms, so each scan advances half an advertising interval
-against a 187.5 ms advertiser and consecutive scans sample opposite halves of its
-cycle. Against 35 ms (iOS) and 100 ms (Android low-latency) the window already spans
-an interval, so nothing changes. Window stays 100 ms; average current rises by
-6000/5906 on the scan terms (~1.6 %), negligible against the ~69 µA budget.
+`CONFIG_MFS_SCAN_PERIOD_MS` default **6000 → 5876**. 6000 ms is exactly 32 × 187.5 ms,
+the advertising interval measured from a macOS advertiser, so every scan landed at the
+same phase of its cycle and whole commands were missed.
 
-**Rule.** Let P be the scan period, W the scan window and N the number of scans inside
-one 30 s command (30 000 / 5905.625 ≈ 5.08, so **N = 5**). For every counterpart
-advertising interval **I longer than W**, the per-scan phase drift
+An earlier value, 5906 ms (9449 BLE units, 5905.625 ms), was chosen against a
+closed-form rule — for every counterpart interval I longer than the scan window W, the
+per-scan phase drift d = min(P mod I, I − (P mod I)) must satisfy d × N ≥ I − W — and
+reported a pass against the measured 187.5 ms interval. Review found the rule unsound:
+it is off by one (it does not correctly bound the worst-case start phase) and its own
+derivation assumes d ≤ W, which does not hold in general. A brute-force simulation
+confirmed the rule's own result was wrong in practice: 5905.625 ms misses **35 %** of
+commands against Apple's recommended 211.25 ms interval, not the pass the rule had
+reported for the case it was checked against, and the rule had already flagged 211.25 ms
+as a separate open failure before that. **The closed-form rule is withdrawn everywhere**
+in this project's documentation; the period is chosen and checked by simulation only.
 
-  d = min(P mod I, I − (P mod I))
+**Method: phase-coverage simulation, `tools/scan_phase_check.py`.** For a scan period P,
+window W and N consecutive scans (30 000 ms / P ≈ 5.1 at these periods, so **N = 5**),
+and a counterpart advertising interval I modelled as an instant repeating every I ms at
+an unknown start phase φ: scan k opens a window [kP, kP + W], which catches an advert at
+phase φ + jI exactly when (φ − kP) mod I ≤ W. The script sweeps 2000 phase samples over
+one interval [0, I) and reports the fraction for which none of the N windows catch it —
+the fraction of commands, starting at a uniformly random moment, that would be missed
+entirely. An interval I ≤ W is exempt (a single window always contains an advert). The
+script's docstring has the full derivation and its limitations (instantaneous adverts,
+no advDelay jitter — both of which make the model pessimistic, not optimistic).
 
-must satisfy **d × N ≥ I − W**. Each scan lands d ms later (or earlier) in the
-advertiser's cycle than the one before; if N scans cannot sweep the I − W of the cycle
-the window does not already cover, a command that starts at an unlucky phase is missed
-by every one of its scans. Being "not within a few ms of a multiple" is necessary but
-not sufficient: a drift of 9 ms is not a multiple, and still fails. An interval I ≤ W is
-exempt — a 100 ms window always contains at least one advert.
+Results at W = 100 ms, N = 5, 2000 phase steps, for the default interval set (measured
+and plausible counterpart intervals):
 
-Check for P = 5905.625 ms (the real value of 9449 × 0.625 ms), W = 100 ms, N = 5:
+| Period | 152.5 | 187.5 (Mac, measured) | 211.25 (Apple rec.) | 318.75 | 417.5 | 546.25 | 760 | 852.5 | 1022.5 | 1285 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 6000 ms | PASS | **FAIL 47%** | PASS | PASS | FAIL 5% | FAIL 75% | FAIL 45% | FAIL 73% | FAIL 51% | FAIL 75% |
+| 5905.625 ms | PASS | PASS | **FAIL 35%** | FAIL 21% | FAIL 18% | FAIL 8% | FAIL 39% | FAIL 59% | FAIL 51% | FAIL 61% |
+| **5875.625 ms (new default)** | PASS | **PASS** | **PASS** | **PASS** | FAIL 47% | FAIL 24% | FAIL 40% | FAIL 45% | FAIL 59% | FAIL 61% |
 
-| Counterpart | I (ms) | P mod I | d (ms) | d × N | I − W | Verdict |
-|---|---|---|---|---|---|---|
-| macOS, measured | 187.5 | 93.125 | 93.125 | 465.6 | 87.5 | **Pass** |
-| iPhone, measured | ~35 | — | — | — | — | Exempt (I ≤ W) |
-| Android low-latency, nominal | ~100 | — | — | — | — | Exempt (I ≤ W) — **to be measured** on the production phone |
-| Apple recommended interval | 211.25 | 201.875 | 9.375 | 46.9 | 111.25 | **FAIL** |
+(35 ms and 100 ms are exempt at every period, I ≤ W.) 5875.625 ms (9401 BLE units) is
+the shortest period at this window/N that clears every measured or plausible interval up
+to 318.75 ms; the sweep in the script's `--sweep` mode shows the pass region ends at
+9403 units and the next unit above it already fails against 318.75 ms. Window stays
+100 ms; average current rises by 6000/5876 on the scan terms (~2.1 %), negligible
+against the ~69 µA budget (`docs/power-budget.md` §3).
 
-(Against 187.5 ms, d ≈ I/2, so the scans alternate between two phases 93 ms apart; two
-100 ms windows at those phases cover 193 ms of a 187.5 ms cycle, so the pass is real,
-not an artefact of the formula.)
-
-**OPEN — 211.25 ms fails.** An advertiser at Apple's recommended 211.25 ms drifts only
-9.375 ms per scan against 5905.625 ms — five scans sweep 47 ms of the 111 ms the window
-misses, so a command starting at a bad phase is unheard by all of them. Neither Apple
-device measured so far used 211.25 ms (Mac 187.5 ms, iPhone ~35 ms in the foreground),
-but iOS moves a backgrounded advertiser to a slower interval, and a future OS or the
-production Android phone could land on this or another failing value. The period is
-**not** changed by this amendment; resolving this — a period that passes against every
-interval the app can plausibly present, or a guarantee that the app only advertises in
-the foreground — is an open item. The production Android phone's interval must be
-measured with `tools/uuid_observer` and checked against this rule (bench checklist §5d).
+**Intervals from about 5 × W upward cannot be fully covered by any period at N = 5.**
+546.25 ms and above fail at all three periods above: a single 100 ms window can
+intersect at most one cycle of an advertiser that slow per scan, so five scans sweep at
+most 5 × W = 500 ms of the I − W gap the window does not already cover — for I well past
+1000 ms that is a small fraction of the gap, and no choice of P closes it. This is not a
+period-tuning problem; it is why the app's foreground-only, fast-advertising guarantee
+(§6, owner decision) is the actual protection against a slow or backgrounded advertiser,
+not this scan period. The production Android phone's interval must still be measured
+with `tools/uuid_observer` and checked with the script (bench checklist §5d).
 
 ## 3. Continuous scanning during Arming
 
@@ -112,3 +121,33 @@ before the next one. Consequences, all acceptable:
   lets the engineer end an advert once LED A confirms, which reduces what can linger.
 
 No firmware change; documented so an unexpected acknowledgement is explicable.
+
+## 6. Owner decisions 2026-09-14
+
+Following review of §2 and the "OPEN" item it raised, the owner made three decisions
+that together close the gap a period alone cannot:
+
+- **No scanner, no arming.** An Arm is refused when the scanner is not running, both
+  when the Arm is accepted (no Arming state entered) and, fail-safe, at the end of the
+  exit delay before the armed restart — a device that could not hear a Disarm must never
+  reach Active. The refusal raises the warning pattern (LED B), names the scanner as the
+  reason, and gives no LED A acknowledgement; the device stays Inactive with pins
+  isolated and the detection test running. Implemented in the host-tested
+  `ArmingSequence` via `ArmingActions::ScannerRunning()` — never a second check in `App`.
+- **Foreground-only sending, enforced by the app.** Send is disabled unless the app
+  lifecycle is `resumed`; when the app becomes `hidden`, `paused` or `detached`, any
+  advert (or a pending start) is stopped at once and the page shows "Advertising
+  stopped - keep the app open while sending." `inactive` (visible but unfocused — a
+  macOS window losing focus, or an iOS system sheet) does **not** stop an advert; that
+  state is common and momentary, not a reason to interrupt a Send. This is what
+  actually bounds the slow-interval case §2 identifies as uncoverable by any scan
+  period: the app never leaves the counterpart advertising fast in the background for
+  the scanner to contend with.
+- **Scan period 5876 ms, checked by simulation.** §2 above; `CONFIG_MFS_SCAN_PERIOD_MS`
+  default 5876 (9401 BLE units, 5875.625 ms), verified with `tools/scan_phase_check.py`
+  rather than the withdrawn closed-form rule.
+
+Together these replace the §2 "OPEN — 211.25 ms fails" item: 5876 ms now passes against
+211.25 ms directly (see the table in §2), and the no-scanner/no-arming and
+foreground-only rules remove the two ways a slower or backgrounded advertiser could
+otherwise leave the device unable to hear a Disarm.

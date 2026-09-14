@@ -29,7 +29,7 @@ design toward so that later work does not require rework.
      software timer.
 
 Also required, because it is how commands arrive: the 100 ms passive scan
-loop (every 6 s as originally scoped; now every 5906 ms, and continuous during the
+loop (every 6 s as originally scoped; now every 5876 ms, and continuous during the
 arming exit delay — `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`)
 and day-key command validation (`docs/tan-scheme.md`).
 
@@ -422,24 +422,28 @@ Derived from `docs/power-budget.md` §3: per-wake cost 393 µC (380 µC scan +
 | 9 | 20 s | 23 µA | 7.1 years |
 | 10 | 30 s | 17 µA | 9.8 years |
 
-**Amended 2026-09-14:** the actual default is now **5906 ms** (5.906 s), not
+**Amended 2026-09-14:** the actual default is now **5876 ms** (5.876 s), not
 preset 5's 6000 ms — 6000 ms is exactly 32 × 187.5 ms, a Mac's measured
 advertising interval, so every scan landed at the same phase of its cycle and
-whole commands were missed; 5906 ms samples opposite halves instead. Average
-current at 5906 ms recomputes to **~69.5 µA**, still ~2.4 years on a CR123A.
-See `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` and
+whole commands were missed. (An intermediate value, 5906 ms, was tried first
+against a closed-form drift rule that review later proved unsound; a
+brute-force phase-coverage simulation showed it still misses 35 % of commands
+against Apple's recommended 211.25 ms interval.) Average current at 5876 ms
+recomputes to **~69.9 µA**, still ~2.4 years on a CR123A. See
+`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` and
 `docs/power-budget.md` §3. The ladder above is otherwise unaffected — it is
 kept as the derivation record for the other nine cadences, none of which
 changed.
 
 **The ladder's cadences are NOT all usable as periods.** Presets 3 (3 s), 8 (15 s)
 and 10 (30 s) are exact multiples of the Mac's measured 187.5 ms (16×, 80× and 160×),
-so their per-scan phase drift is zero and they **violate the period rule** in the
-amendment §2 exactly as 6000 ms (32×) did: a command starting at a bad phase is missed
-by every scan. The rule is a drift test (d × N ≥ I − W), not a multiple test, so any
-other preset must also be checked against every measured interval before it is
-adopted — at 15 s and above a 30 s command holds only one or two scans and the rule is
-hard to meet at all.
+so their per-scan phase drift is zero and they **fail the phase-coverage simulation**
+in the amendment §2 exactly as 6000 ms (32×) did: a command starting at a bad phase is
+missed by every scan. "Not a near-multiple" is necessary but not sufficient — check any
+candidate period against every measured interval with `tools/scan_phase_check.py`
+before adopting it, not by inspection; the withdrawn closed-form rule (d × N ≥ I − W)
+must not be used for this. At 15 s and above a 30 s command holds only one or two
+scans, and passing the simulation is hard to achieve at all.
 
 ### 7.2 Why the ladder stops at 30 s
 

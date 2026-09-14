@@ -29,7 +29,7 @@ Hardware is the `alc_drawer_master` board **minus the FEM**: **nRF54L05 + nPM210
 | Decision | Value |
 |----------|-------|
 | Sleep architecture | **System ON idle + RTC wake** — *not* nPM2100 Hibernate |
-| Scan | **100 ms passive every 5.906 s** (1.693% RX duty cycle) |
+| Scan | **100 ms passive every 5.876 s** (1.702% RX duty cycle) |
 | ADXL367 | Continuous measurement mode, 100 Hz ODR |
 | nRF21540 FEM | **Not fitted** — costs 3 dB TX (+7 dBm native vs +10 dBm) |
 | Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version 0x03 with an explicit command type |
@@ -142,24 +142,26 @@ Constraints from that analysis that are easy to violate by accident:
 - **Hibernate_PT cannot power the ADXL367** — it force-disables LDOSW and resets
   the PMIC registers. Only plain Hibernate can hold LSOUT up in ULP mode.
 - **Never enable an nRF21540 LNA for scanning** in any future FEM-equipped
-  variant — +5 mA at 1.693% duty is +84.7 µA, more than doubling the whole budget.
+  variant — +5 mA at 1.702% duty is +85.1 µA, more than doubling the whole budget.
 - **The counterpart's advertising interval is not ours to set.** Measured
   (2026-09-14, `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`
   §1): **187.5 ms, steady**, from a Mac (`CoreBluetooth`, foreground); **~35 ms,
   steady for 30 s**, from an iPhone (iOS 26.6.1, foreground, release build).
   Both are well outside the 20–50 ms this project originally assumed, and
   iOS/macOS do not expose the interval as a setting. The app compensates with a
-  30 s advertising window rather than a fast interval. **Rule: for every
-  counterpart interval I longer than the scan window W, the per-scan phase drift
-  d = min(P mod I, I − (P mod I)) must satisfy d × N ≥ I − W**, where P is the
-  scan period and N the scans in one 30 s command (5); otherwise a command
-  starting at an unlucky phase is missed by every scan. `CONFIG_MFS_SCAN_PERIOD_MS`
-  at 6000 ms was exactly 32 × 187.5 ms (d = 0), so whole commands were missed;
-  the default moved to 5906 ms (5905.625 ms real), which passes against the
-  Mac's 187.5 ms (d = 93.1, d × N = 466 ≥ 87.5). **It FAILS against Apple's
-  recommended 211.25 ms** (d = 9.4, d × N = 47 < 111.25) — an open item, recorded
-  with the full check in the scan-reliability amendment §2. The production
-  Android phone's interval is still to be measured against the rule.
+  30 s advertising window rather than a fast interval. **Check any period or
+  newly measured interval with `tools/scan_phase_check.py`** — a phase-coverage
+  simulation, not a closed-form rule; a prior closed-form rule (d × N ≥ I − W)
+  was proved unsound (off by one, and invalid once the drift exceeds the scan
+  window) and is withdrawn. `CONFIG_MFS_SCAN_PERIOD_MS` at 6000 ms was exactly
+  32 × 187.5 ms, so whole commands were missed; the default is now **5876 ms**
+  (5875.625 ms real, 9401 BLE units), which the script reports as a clean pass
+  (zero misses) against the Mac's 187.5 ms and every Apple interval up to
+  318.75 ms, including the 211.25 ms Apple recommends. Intervals from about
+  5 × the 100 ms window upward cannot be fully covered by any period at this
+  scan count — the owner decisions below (foreground-only sending; no scanner,
+  no arming) are what actually bound that case, not the period. The production
+  Android phone's interval is still to be measured and checked with the script.
 
 Full access design — derivation, key issue, wire format, acceptance, time, threat
 review: **`docs/tan-scheme.md`**. The wire format and firmware units are in
@@ -201,6 +203,14 @@ next 04:00 UTC only — `docs/power-budget.md` §8.1):
   path in `App`.
 - **The app never stores device settings** (owner decision 2026-09-14, amendment
   §4) — a lost phone must not become a map of every sensor's tuning.
+- **No scanner, no arming** (owner decision 2026-09-14, amendment §6). An Arm is
+  refused when the scanner is not running, both when the Arm is accepted (no
+  Arming state entered) and, fail-safe, at the end of the exit delay before the
+  armed restart — a device that could not hear a Disarm must never reach Active.
+  The refusal raises the warning pattern (LED B) naming the scanner, gives no LED
+  A acknowledgement, and leaves the device Inactive with pins isolated and the
+  detection test running. Checked in the host-tested `ArmingSequence` via
+  `ArmingActions::ScannerRunning()` — never a second check in `App`.
 - **Persist before acting**, and **failures emit nothing** — no advert, no LED. LED A
   acknowledges only *accepted* commands, never a failed authentication.
 - **The device never advertises to solicit contact.** It scans. Report modes are
@@ -247,6 +257,14 @@ against a nominally 8 pF crystal on this same board.
 same protocol works from iOS (`CBPeripheralManager` cannot send manufacturer data at
 all). There is **no fixed prefix**: bytes 0–3 are a rotating ID only a key holder can
 produce.
+
+**Foreground-only sending** (owner decision 2026-09-14, amendment §6): Send is
+disabled unless the app lifecycle is `resumed`; when the app becomes `hidden`,
+`paused` or `detached`, any advert (or a pending start) is stopped at once and the
+page shows "Advertising stopped - keep the app open while sending." `inactive`
+(visible but unfocused — a macOS window losing focus, or an iOS system sheet) does
+**not** stop an advert. This is what actually bounds the slow-advertiser case the
+scan period alone cannot cover (see the Scan section above).
 
 **Malformed, replayed and out-of-range payloads are tested on the host** (plan
 Tasks 3–5), against

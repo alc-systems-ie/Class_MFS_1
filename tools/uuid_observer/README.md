@@ -14,6 +14,12 @@ This is what produced the measurements behind
 Mac's steady 187.5 ms advertising interval, the iPhone's ~35 ms interval, and
 iOS's brief re-broadcast of the previous payload at the start of a new Send.
 
+Once a new counterpart interval has been measured this way, check it against
+the scan period with `tools/scan_phase_check.py` (a phase-coverage simulation
+- see the amendment §2), not by inspection: `python3 tools/scan_phase_check.py
+<interval_ms>`. A FAIL means the scan period needs revisiting for that
+interval; it is not a fault in this observer.
+
 It does not touch MFS_1's protocol, keys or access logic at all — it is a
 plain `bt_le_scan_start` passive scan with a UUID-list AD parser. Nothing here
 is specific to CLASS; it would work as a general BLE service-UUID sniffer on
