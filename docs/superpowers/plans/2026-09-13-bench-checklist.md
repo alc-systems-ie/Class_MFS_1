@@ -58,7 +58,7 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 ## 6. Armed path, one-shot, LED A (Task 16) — STOP if 6.2–6.4 fail
 
 1. [ ] Disarm if not already; Settings page, **Send**: one blink. Report+Trig and Report are disabled in the app's mode selector as of the final fix wave (Task 18 item 3) - confirm they cannot be selected and the note under the selector is visible. To exercise the firmware's refusal directly, send a hand-crafted slot-0 command with the mode bits set to `10` (Report): expect **one blink** (SettingsApplied, not ModeChanged - the mode is refused) and `Mode 2 refused - reporting is not implemented yet; device stays Trigger only.`. Power-cycle and confirm the boot `Settings:` line still reports mode 0.
-2. [ ] Arm page, Send Armed (activations 1, delay 0 already stored): rapid flash. **While still armed**, go out of range (or cover the device) so the Disarm is not heard, Arm page Send Disarmed, then press **Disarmed — open settings** anyway; Settings page, **Send**: expect **rapid flash** (Armed replay), RTT `Armed: Settings from slot 1 n X changes nothing - replaying Armed.`, and the device still armed (tap: fires). Back on the Arm page, Send Armed again: **rapid flash replay**, `Armed: Arm from slot 1 n ... changes nothing - replaying Armed.`. The Network Manager button is disabled while the Armed toggle is on.
+2. [ ] Arm page, Send Armed (activations 1, delay 0 already stored): rapid flash. **While still armed**, go out of range (or cover the device) so the Disarm is not heard, Arm page, Send Disarmed, then press **Disarmed — open settings** anyway; come back in range (uncover the device), Settings page, **Send**: expect **rapid flash** (Armed replay), RTT `Armed: Settings from slot 1 n X changes nothing - replaying Armed.`, and the device still armed (tap: fires). Back on the Arm page, Send Armed again: **rapid flash replay**, `Armed: Arm from slot 1 n ... changes nothing - replaying Armed.`.
 3. [ ] Trigger: output for about 5 s, then `Trigger complete - latched Inactive.`. Trigger again: **the output never asserts**.
 4. [ ] Arm with delay 60 s, trigger, and within the minute, Arm page Send Disarmed: **double blink**, `Disarmed with a trigger PENDING`, no fire. Settings page, change activations to 7, **Send**: one blink, and `Applied:` now shows 7.
 5. [ ] **Tune-then-arm (the fixed hazard):** Settings page, activations 1 and delay 60 s, **Send** (single blink); handle the device, then Arm page Send Armed within 60 s. The output must **not** assert a minute later.
@@ -80,7 +80,7 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 ## 5a. Command types (plan 2026-09-14) — do this first on the new build
 
 1. [ ] Flash with `--recover`, provision the clock.
-2. [ ] Inactive, Arm page Send Armed → rapid flash; RTT `Command slot 1 n X: Arm` and `Applied:` shows the **stored** settings (not app defaults).
+2. [ ] Inactive, Arm page Send Armed → rapid flash; RTT `Command slot 1 n X: Arm, minute M.` and `Applied:` shows the **stored** settings (not app defaults).
 3. [ ] Armed, Send Armed again → rapid flash replay; RTT `Armed: Arm from slot 1 n X changes nothing - replaying Armed.`; still armed (tap: fires).
 4. [ ] Armed, Send Disarmed → slow flash; the app prompt appears with the fault-finding text; press Disarmed — open settings.
 5. [ ] Settings page: sliders at defaults; Send → single blink; LED B simulates at those settings.
@@ -88,8 +88,8 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 7. [ ] Back → Arm page shows Armed. Send → rapid flash; RTT `Applied:` shows the settings from step 5.
 8. [ ] Inactive, Send Disarmed → slow flash replay, LED B stops if tuning.
 9. [ ] Prompt "Not seen" stays on the Arm page, and Settings is unreachable without a confirmed disarm.
-10. [ ] Turn Bluetooth off on the Mac, Send → an on-screen advertising error, no countdown, no prompt.
-11. [ ] Old-app regression: none needed (nothing deployed); note that a `0x02` command is silent.
+10. [ ] Turn Bluetooth off on the Mac: Send is disabled and the Arm page shows "Bluetooth is off." (the advertising-error path — "Not sent: …", no countdown, no dialog — is covered by host tests in `class_app/test/advertiser_test.dart`, not exercised here).
+11. [ ] Old-app regression: none needed (nothing deployed); a `0x02` command from an old app build is silent, but its rotating ID still matches (the ID does not depend on the protocol version), so each one counts as an authentication failure toward the 20-failure lockout — make sure no old app build is on a bench phone.
 
 ## 9. Bench log
 

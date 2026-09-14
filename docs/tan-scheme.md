@@ -79,7 +79,7 @@ timeSync(t)           = t(4, LE) ‖ HMAC( provisionKey, id(4) ‖ t(4) ‖ 0x05
 | `day` | 16 bits | Day index (§4) |
 | `slot` | 8 bits | 0–7. **Slot 0 is the Network Manager's**; 1–7 are engineers (§5) |
 | `n` | 32 bits | Sequence number within (device, day, slot) |
-| `protocolVersion` | 8 bits | `0x02`. Never on air — both sides supply it, so a payload from another version fails authentication instead of mis-parsing |
+| `protocolVersion` | 8 bits | `0x03` since 2026-09-14 (command types amendment, was `0x02`). Never on air — both sides supply it, so a payload from another version fails authentication instead of mis-parsing |
 
 **Labels `0x02`–`0x05` give domain separation.** `0x00` and `0x01` were the retired
 paper-TAN and session-key labels and **must not be reused**.

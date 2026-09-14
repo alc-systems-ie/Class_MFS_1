@@ -41,6 +41,8 @@ code**.
 
 ## 2. Decisions
 
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree.
+
 1. **Cooldown is a refractory blanking window.** An activation increments the
    count, then motion is ignored for the cooldown, then the sensor re-arms. The
    count **never expires** — it persists until the device triggers or is
@@ -101,9 +103,11 @@ Amended 2026-09-13 (security) — full reasoning in `docs/tan-scheme.md`:
     measurement instead.
 21. **The clock is invalid on every boot** until an authenticated provisioner sync.
     Nothing resumes from NVS except the day floor.
-22. **One path in the armed state.** On command, an armed device does exactly one
-    thing: disarm. Every other command is ignored outright, and a disarm applies
-    nothing but the disarm — not the settings, delay or mode it carries.
+22. **One path in the armed state.** Armed, the only command that changes state is
+    Disarm; an Arm or Settings command to an armed device replays the Armed
+    pattern and changes nothing, and a Disarm applies nothing but the disarm — not
+    the settings, delay or mode (settings travel only in a Settings command, which
+    an armed device cannot apply).
 23. **Triggers are one-shot.** Once the output period ends the device latches
     Inactive. Disarm and trigger are the only two ways out of the armed state
     (power loss also ends it, because cold start is Inactive). This supersedes
@@ -459,10 +463,12 @@ then `Standby()`. A subsequent Tune restarts the engine for tuning.
 
 ### 6.5 There is no test code
 
-Retired 2026-09-13. Tuning uses ordinary authenticated commands with the arm bit
-clear (§4.2). The property the test code existed to guarantee — tuning can never arm
-the device — now holds trivially: every command is authenticated, and a command
-arms the device only if its arm bit says so.
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree.
+
+Retired 2026-09-13. Tuning uses ordinary authenticated commands with an explicit
+Settings type, not an arm bit (§4.2). The property the test code existed to
+guarantee — tuning can never arm the device — now holds trivially: every command
+is authenticated, and a command arms the device only if its type is Arm.
 
 ### 6.5.1 THE DELAY INTERLOCK — safety critical
 

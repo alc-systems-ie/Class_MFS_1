@@ -1,8 +1,9 @@
 # MFS_1 Command Types — Design Amendment
 
 **Date:** 2026-09-14 (bench session 1)
-**Amends:** `docs/superpowers/specs/2026-09-12-app-control-design.md` §4, §4.1, §4.2,
-§6.4, §6.7, §8.1, §8.2; `docs/tan-scheme.md` §3 (`protocolVersion`), §6.1, §6.5.
+**Amends:** `docs/superpowers/specs/2026-09-12-app-control-design.md` §2, §4, §4.1,
+§4.2, §6.4, §6.5, §6.7, §8.1, §8.2; `docs/tan-scheme.md` §3 (`protocolVersion`), §6.1,
+§6.5.
 Where this document and those sections disagree, **this document wins**.
 
 ## 1. The finding
