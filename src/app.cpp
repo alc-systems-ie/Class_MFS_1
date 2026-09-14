@@ -80,7 +80,8 @@ namespace alc
     // the compiler try to initialise the first member from the whole list.
 
     // LED A — on while Inactive. LED B (bench only) — on while detection is met,
-    // in either arm state; see the disarmed test mode amendment section 2.
+    // Inactive or Active, and suppressed while Arming; see the disarmed test mode
+    // amendment section 2 and the arming sequence amendment section 3.
     const struct gpio_dt_spec s_led_a = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
     const struct gpio_dt_spec s_led_b = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
 
@@ -125,6 +126,33 @@ namespace alc
           return "CryptoError";
       }
       return "Unknown"; // Unreachable while every Verdict is handled above - -Wswitch warns if a new one is added.
+    }
+
+    const char* armStateName(ArmState state)
+    {
+      switch (state) {
+        case ArmState::Inactive:
+          return "Inactive";
+        case ArmState::Arming:
+          return "Arming";
+        case ArmState::Active:
+          return "Active";
+      }
+      return "Unknown"; // Unreachable while every ArmState is handled above - -Wswitch warns if a new one is added.
+    }
+
+    // The warning reason for a failed arming step.
+    const char* armingStepReason(ArmingStep step)
+    {
+      switch (step) {
+        case ArmingStep::DisablePins:
+          return "fire pins could not be isolated";
+        case ArmingStep::RestartDetection:
+          return "arming failed - detection would not restart armed";
+        case ArmingStep::EnablePins:
+          return "arming failed - fire pins would not enable";
+      }
+      return "unknown arming step"; // Unreachable while every ArmingStep is handled above - -Wswitch warns if a new one is added.
     }
 
     const char* resetReasonName(Npm2100::ResetReason reason)
@@ -175,7 +203,6 @@ namespace alc
       , m_last_advance_secs(0)
       , m_access_ready(false)
       , m_output_switch()
-      , m_arm_state(ArmState::Inactive)
       , m_output_active(false)
       , m_settings()
       , m_delay_timer {}
@@ -184,6 +211,7 @@ namespace alc
       , m_scan_outage_logged(false)
       , m_logging_cooldown(false)
       , m_engine(*this)
+      , m_arming(*this)
       , m_led_sequencer()
       , m_led_timer {}
       , m_initialised(false)
@@ -210,16 +238,20 @@ namespace alc
     k_timer_init(&m_led_timer, &App::ledTimerHandler, nullptr);
     k_timer_user_data_set(&m_led_timer, this);
 
-    // THE FIRE OUTPUT IS BROUGHT UP FIRST, before the I2C bus, the FEM or the
-    // LEDs. The external 10k pull-downs hold both lines de-energised from reset,
-    // and this takes active ownership of them at the earliest opportunity so the
-    // window in which they depend on the pull-downs alone is as short as
-    // possible. If it fails, the device refuses to run: a sensor that cannot
-    // prove its output is safe has no business continuing to boot.
+    // THE FIRE OUTPUT IS CHECKED FIRST, before the I2C bus, the FEM or the LEDs.
+    // It is not driven: the external 10k pull-downs hold both gates off from
+    // reset, and Init() only reads each pin as a plain input - it must read low
+    // - and leaves both disconnected. The pins get a driver only as the last
+    // step of arming (arming sequence amendment section 1).
+    //
+    // A failed check does NOT stop the boot. The switch is then latched faulty
+    // with its pins isolated, which is safe, and every arming attempt fails safe
+    // to the warning - while commands, the LEDs and RTT keep the device
+    // diagnosable.
     result = m_output_switch.Init();
     if (result < 0) {
-      LOG_ERR("Failed to initialise the fire output: %d!", result);
-      return result;
+      LOG_ERR("Fire output failed its boot check (%d) - pins isolated and latched faulty; booting on, but the device will NOT arm!", result);
+      signalWarning("fire pins failed the boot check", result);
     }
 
     // Installed before anything can ask the switch to assert.
@@ -269,10 +301,12 @@ namespace alc
     LOG_INF("Settings: %u activations, %u s cooldown, %u LSB, %u s delay, mode %u.", m_settings.Activations(), m_settings.CooldownSeconds(),
             m_settings.ThresholdLsb(), m_settings.DelaySeconds(), static_cast<unsigned>(m_settings.OperatingMode()));
 
-    // Cold start defaults to Inactive — see docs/v1-scope.md section 6. Inactive
+    // Cold start defaults to Inactive — see docs/v1-scope.md section 6. The pins
+    // are already isolated by Init(); this is the ordinary disarm path, so the
+    // boot state is reached exactly as every later disarm reaches it. Inactive
     // is not idle: this configures the ADXL367 and starts the detection test at
     // the stored settings (disarmed test mode amendment, section 3).
-    setArmState(ArmState::Inactive);
+    (void)disarmDevice();
 
     result = m_scanner.Start();
     if (result < 0) {
@@ -289,6 +323,19 @@ namespace alc
       serviceDayRollover();
       serviceScanHealth();
 
+      // The exit delay. At the deadline, in one synchronous call: restart
+      // detection armed -> enable the fire pins -> Active. Before the output is
+      // derived below, so nothing ticks the engine or derives the output between
+      // the armed restart and Active. Only a completed arming is acknowledged.
+      if (m_arming.Service(k_uptime_get())) {
+        LOG_INF("Arm state: Active - fire pins enabled (uptime %lld ms).", k_uptime_get());
+        playLedPattern(LedPattern::Armed);
+      }
+
+      // A failed arming has already failed safe and raised the warning inside
+      // Service(). No LED A acknowledgement.
+      logArmingFailure();
+
 #if defined(CONFIG_MFS_BATTERY_TEST)
       if (++blinkTicks >= M_BLINK_PERIOD_TICKS) {
         blinkTicks   = 0;
@@ -302,12 +349,12 @@ namespace alc
       updateOutputState(EngineTick::Run);
 
       // Firing is one of the only two ways out of the armed state. Acted on here,
-      // not inside updateOutputState(), because setArmState() re-enters it. The
+      // not inside updateOutputState(), because the disarm path re-enters it. The
       // flag is taken on every tick; the engine only raises it for an ARMED
       // output, and a disarmed test carries on.
-      if (m_engine.TakeTriggerComplete() && m_arm_state == ArmState::Active) {
+      if (m_engine.TakeTriggerComplete() && m_arming.State() == ArmState::Active) {
         LOG_WRN("Trigger complete - latched Inactive. Re-arming needs an engineer command.");
-        setArmState(ArmState::Inactive);
+        (void)disarmDevice();
       }
 
       // Compute the LED states HERE, once, so the log below reports what is
@@ -326,8 +373,9 @@ namespace alc
       } else {
 #if !defined(CONFIG_MFS_BATTERY_TEST)
 #if defined(CONFIG_MFS_DEBUG_LED)
-        // Bench only, between patterns: LED A is lit while Inactive, as before.
-        ledA = (m_arm_state == ArmState::Inactive);
+        // Bench only, between patterns: LED A is lit while Inactive, as before,
+        // and dark while Arming - nothing is shown until the arm is acknowledged.
+        ledA = (m_arming.State() == ArmState::Inactive);
 #else
         // Production: between patterns LED A must be explicitly turned off - left
         // unassigned, it would stick at whatever level the last pattern ended on,
@@ -340,21 +388,23 @@ namespace alc
       }
 
 #if defined(CONFIG_MFS_DEBUG_LED)
-      // LED B shows DETECTION, in either arm state, for the 5 s ADXL loop period.
-      // Inactive it shows test triggers; Active it confirms one. It is
-      // a bench indicator, not an output consumer - OutputSwitch is the example
+      // LED B shows DETECTION for the 5 s ADXL loop period. Inactive it shows
+      // test triggers; Active it confirms one. While Arming it is SUPPRESSED - the
+      // engineer is walking away and nothing may be visible; the test running
+      // underneath is discarded when arming completes or is cancelled. It is a
+      // bench indicator, not an output consumer - OutputSwitch is the example
       // future consumers copy (design spec section 6.2).
-      ledB = m_engine.DetectionMet();
+      ledB = m_engine.DetectionMet() && (m_arming.State() != ArmState::Arming);
 
-      // Logged on transitions, in either arm state. While Inactive nothing else
-      // reports a test trigger - the Output line below only fires armed - so
-      // without this a test shows "Activation 3 of 3." and then silence, and
-      // LED B is the only evidence (bench, 2026-09-14).
+      // Logged on transitions of LED B itself, so the log follows the LED. While
+      // Inactive nothing else reports a test trigger - the Output line below only
+      // fires armed - so without this a test shows "Activation 3 of 3." and then
+      // silence, and LED B is the only evidence (bench, 2026-09-14).
       if (ledB != previousDetection) {
         previousDetection = ledB;
         if (ledB) {
           detectionStartMs = ledNowMs;
-          LOG_INF("Detection met (%s) - LED B on.", m_arm_state == ArmState::Active ? "armed" : "test");
+          LOG_INF("Detection met (%s) - LED B on.", m_arming.State() == ArmState::Active ? "armed" : "test");
         } else {
           LOG_INF("Detection cleared after %lld ms - LED B off.", ledNowMs - detectionStartMs);
         }
@@ -366,8 +416,8 @@ namespace alc
       // which is how the LED behaviour went unexplained for a whole test cycle.
       if (IsOutputActive() != previousTriggered) {
         previousTriggered = IsOutputActive();
-        LOG_INF("Output %s. Arm %s, LED A %s, LED B %s.", previousTriggered ? "ASSERTED" : "cleared",
-                m_arm_state == ArmState::Active ? "Active" : "Inactive", ledA ? "ON" : "off", ledB ? "ON" : "off");
+        LOG_INF("Output %s. Arm %s, LED A %s, LED B %s.", previousTriggered ? "ASSERTED" : "cleared", armStateName(m_arming.State()),
+                ledA ? "ON" : "off", ledB ? "ON" : "off");
       }
 
       // LED A is written here ONLY while no pattern is playing - see
@@ -520,7 +570,7 @@ namespace alc
   {
     // Called right after initAccelerometer(), which only probes the part and
     // parks it in standby - well before the detection engine's first loop-mode
-    // configure in setArmState(Inactive) below. Standby current is already
+    // configure in the boot disarmDevice() below. Standby current is already
     // uA-level, so LDOSW no longer needs High Power here; the loop-mode current
     // once configured stays within ULP's headroom too. ULP still supplies up to
     // 2 mA. Auto is not used: it follows the device mode, and MFS_1 stays in
@@ -573,7 +623,7 @@ namespace alc
     // ================================================================
     //  THE SINGLE SOURCE OF TRUTH FOR THE DEVICE OUTPUT.
     //
-    //  m_arm_state IS DEFINITIVE. The accelerometer is only ever ANDed
+    //  THE ARM STATE IS DEFINITIVE. The accelerometer is only ever ANDed
     //  with it. Nothing downstream may read INT1, the AWAKE bit, or the
     //  ADXL367 in any form and act on it directly - in the product this
     //  output switches a voltage, and a device that fires while
@@ -587,19 +637,21 @@ namespace alc
     bool awake { gpio_pin_get_dt(&s_adxl_int1) > 0 };
 
     // The detection engine counts, cools down, delays and runs the stuck-AWAKE
-    // watchdog identically in both arm states - it never sees the output. The
+    // watchdog identically armed and disarmed - it never sees the output. While
+    // Arming it runs disarmed: the test carries on invisibly. The
     // disarm path skips the tick: it must take the output low without counting
     // an edge or starting a cooldown on the way, and restarts the engine next.
-    if (tick == EngineTick::Run) { m_engine.Tick(detectionSettings(), m_arm_state == ArmState::Active, awake, k_uptime_get()); }
+    if (tick == EngineTick::Run) { m_engine.Tick(detectionSettings(), m_arming.State() == ArmState::Active, awake, k_uptime_get()); }
 
     // LAYER ONE of the delay interlock is the last term: while a delay is
     // pending - armed trigger or test - detection cannot reach the output.
-    m_output_active = (m_arm_state == ArmState::Active) && m_engine.DetectionMet() && delayPermitsFiring();
+    m_output_active = (m_arming.State() == ArmState::Active) && m_engine.DetectionMet() && delayPermitsFiring();
 
     // The fire output is driven HERE, in the same breath as the condition is
     // derived, rather than from the main loop. A consumer that lives at the
     // derivation point cannot be forgotten by a future edit to the loop, and
-    // there is no second call site that could disagree with this one.
+    // there is no second call site that could disagree with this one. While the
+    // device is not Active the pins are disabled and Set(false) does nothing.
     m_output_switch.Set(m_output_active);
 
     // ONE-SHOT. The engine tracks the output App actually derived, and flags the
@@ -607,7 +659,63 @@ namespace alc
     m_engine.NoteOutput(m_output_active);
   }
 
-  void App::setArmState(ArmState state)
+  bool App::disarmDevice()
+  {
+    // ================================================================
+    //  DISARM ORDER - SAFETY CRITICAL (arming sequence amendment 2).
+    //
+    //  ArmingSequence::Disarm() disables the fire pins FIRST - driven
+    //  low, then disconnected - then sets Inactive and cancels any
+    //  arming, then calls RestartDetection(false), which re-derives the
+    //  output through the single derivation point and only then restarts
+    //  the engine. The pins go safe before any state changes. The pending
+    //  state is deliberately not persisted, so a reset loses a pending
+    //  trigger too - the fail-safe direction.
+    // ================================================================
+    bool cancelled { m_arming.Disarm() };
+
+    logArmingFailure();
+
+    // Deliberately says nothing about the LEDs: the main loop logs their actual
+    // applied values.
+    LOG_INF("Arm state: Inactive%s (uptime %lld ms).", cancelled ? " - arming cancelled" : "", k_uptime_get());
+    return cancelled;
+  }
+
+  void App::logArmingFailure()
+  {
+    ArmingStep step { ArmingStep::DisablePins };
+    int result { 0 };
+
+    if (!m_arming.TakeFailure(step, result)) { return; }
+
+    switch (step) {
+      case ArmingStep::DisablePins:
+        LOG_ERR("Fire pin disable failed (%d) - fire pins may NOT be isolated!", result);
+        break;
+
+      case ArmingStep::RestartDetection:
+        LOG_ERR("Arming failed at the detection restart (%d) - device Inactive, fire pins disabled, no acknowledgement!", result);
+        break;
+
+      case ArmingStep::EnablePins:
+        LOG_ERR("Arming failed at the fire pin enable (%d) - device Inactive, fire pins disabled, no acknowledgement!", result);
+        break;
+    }
+  }
+
+  void App::signalWarning(const char* reason, int result)
+  {
+    LOG_ERR("WARNING (light TBC): %s (%d)!", reason, result);
+  }
+
+  int App::DisableFirePins()
+  {
+    // Must not call back into m_arming - it runs inside the fail-safe itself.
+    return m_output_switch.Disable();
+  }
+
+  int App::RestartDetection(bool armed)
   {
     // EDGE-TRIGGERED ARMING - SAFETY CRITICAL.
     //
@@ -622,55 +730,53 @@ namespace alc
     // moment. In the product the trigger switches a voltage, so a false fire on
     // activation is dangerous, not merely untidy.
     //
-    // The part now runs in BOTH arm states (disarmed test mode amendment), so
-    // the mechanism is RECONFIGURE ON EVERY RESTART: every transition restarts
-    // the detection engine from zero, which configures the part afresh through
-    // the loop-mode bootstrap. That drives AWAKE low, so there is no stale level
-    // to inherit, and any AWAKE still reported after it is suppressed until a
-    // fresh edge. The restart also discards the test's count, cooldown, delay and
+    // The part runs in every arm state (disarmed test mode amendment), so the
+    // mechanism is RECONFIGURE ON EVERY RESTART: every transition restarts the
+    // detection engine from zero, which configures the part afresh through the
+    // loop-mode bootstrap. That drives AWAKE low, so there is no stale level to
+    // inherit, and any AWAKE still reported after it is suppressed until a fresh
+    // edge. The restart also discards the test's count, cooldown, delay and
     // detection latch, so nothing from a test can reach the armed output
     // (amendment section 3.2). alc_drawer_master solves the equivalent problem
     // differently - it uses latched activity, so it clears the latch immediately
     // before arming (ReadActivityLatched) - but a latch clear has no effect on a
     // level.
+    //
+    // Must not call back into m_arming. Nothing below services the scanner queue,
+    // so no command can be handled from inside it.
     int result { 0 };
 
-    if (state == ArmState::Active) {
-      // Restart first, boolean second. A device that cannot configure its
-      // accelerometer must NOT report itself armed: it would be a silent loss of
-      // function. It stays Inactive and LED A shows the Arm Refused pattern, so
-      // the refusal is visible. The part is NOT stood down for good - the engine
-      // retries the configure at 1 Hz, so the test resumes once the part responds.
-      result = restartEngine(true);
-      if (result < 0) {
-        LOG_ERR("Arm request rejected - device stays Inactive!");
-        return;
-      }
-      m_arm_state = ArmState::Active;
-    } else {
-      // ================================================================
-      //  DISARM ORDER - SAFETY CRITICAL.
-      //
-      //  Boolean first, then the output re-derived through the single
-      //  derivation point - so the fire GPIOs are off - and only then the
-      //  engine restarted and the part touched. There is no instant at
-      //  which a deactivated device still drives the output. The pending
-      //  state is deliberately not persisted, so a reset loses a pending
-      //  trigger too - the fail-safe direction.
-      // ================================================================
-      m_arm_state = ArmState::Inactive;
+    if (!armed) {
+      // Disarm order step 3. The state is already Inactive, so the output
+      // re-derives false without an engine tick - no edge counted, no cooldown
+      // started - and Set(false) on the disabled switch does nothing.
       updateOutputState(EngineTick::Skip);
-
-      // Whatever was counted, latched or pending belongs to the session that just
-      // ended. The test starts again from zero.
-      result = restartEngine(false);
-      if (result < 0) { LOG_ERR("Detection test could not start - retrying the accelerometer every %u ms!", M_ENGINE_RETRY_MS); }
     }
 
-    // Deliberately says nothing about the LEDs: the main loop logs their actual
-    // applied values. An earlier version asserted "LED A ON" here from the arm
-    // state alone, which was wrong in any build that does not drive LED A.
-    LOG_INF("Arm state: %s (uptime %lld ms).", state == ArmState::Active ? "Active" : "Inactive", k_uptime_get());
+    // Whatever was counted, latched or pending belongs to the session that just
+    // ended. Armed, the state is still Arming, so nothing derives an output from
+    // this session until the pins are enabled and the state is Active.
+    result = restartEngine(armed);
+    if (result < 0) {
+      if (armed) {
+        LOG_ERR("Arming: the accelerometer would not configure (%d) - arming fails safe!", result);
+      } else {
+        LOG_ERR("Detection test could not start - retrying the accelerometer every %u ms!", M_ENGINE_RETRY_MS);
+      }
+    }
+    return result;
+  }
+
+  int App::EnableFirePins()
+  {
+    // The LAST step of arming. Must not call back into m_arming.
+    return m_output_switch.Enable();
+  }
+
+  void App::SignalWarning(ArmingStep step, int result)
+  {
+    // Must not call back into m_arming.
+    signalWarning(armingStepReason(step), result);
   }
 
   DetectionSettings App::detectionSettings() const
@@ -1101,16 +1207,25 @@ namespace alc
   {
     const protocol::Command& command { evaluation.command };
     bool fromNetworkManager { evaluation.slot == access::M_SLOT_NETWORK_MANAGER };
-    ArmDecision decision { DecideCommand(m_arm_state, fromNetworkManager, command) };
+    ArmDecision decision { DecideCommand(m_arming.State(), fromNetworkManager, command) };
     protocol::Mode previousMode { m_settings.OperatingMode() };
     bool armedDelayWasPending { m_engine.DelayPendingArmed() };
     int result { 0 };
     LedPattern pattern { LedPattern::None };
 
     // THE SINGLE PATH. Everything below acts on `decision` and on nothing else -
-    // see DecideCommand(). On command, an armed device only ever disarms.
+    // see DecideCommand(). On command, an armed or arming device only ever disarms.
+    //
+    // Ignore has two sources, told apart by type for the log only: a reserved
+    // type, or an Arm or Settings during the exit delay. Neither changes
+    // anything - no LED, no trim, no settings.
     if (decision.action == ArmAction::Ignore) {
-      LOG_WRN("Command slot %u n %u has a reserved type - ignored.", evaluation.slot, evaluation.n);
+      if (command.type == protocol::CommandType::Reserved) {
+        LOG_WRN("Command slot %u n %u has a reserved type - ignored.", evaluation.slot, evaluation.n);
+      } else {
+        LOG_INF("Arming: %s from slot %u n %u ignored - only a disarm is accepted while arming.", protocol::CommandTypeName(command.type),
+                evaluation.slot, evaluation.n);
+      }
       return;
     }
 
@@ -1149,15 +1264,17 @@ namespace alc
 
     switch (decision.action) {
       case ArmAction::Disarm:
-        // Armed or not. From Active this is the only state change a command can
-        // make; from Inactive it is the same deactivation, which restarts the
-        // test from zero - the engineer's way to reset a long cooldown or delay
-        // (amendment section 3.1). A disarm carries no settings.
+        // Any state. From Active this is the only state change a command can
+        // make; from Arming it cancels the exit delay; from Inactive it is the
+        // same deactivation, which restarts the test from zero - the engineer's
+        // way to reset a long cooldown or delay (amendment section 3.1). A
+        // disarm carries no settings.
         //
         // The double blink means a pending TRIGGER was cancelled, so it plays
         // only for an ARMED delay, read before disarming. Cancelling a test
-        // delay is not a cancelled trigger.
-        setArmState(ArmState::Inactive);
+        // delay is not a cancelled trigger, and while Arming the engine runs
+        // disarmed, so a cancelled arming plays the plain Disarmed flash.
+        if (disarmDevice()) { LOG_INF("Arming cancelled by slot %u n %u.", evaluation.slot, evaluation.n); }
         pattern = armedDelayWasPending ? LedPattern::DisarmedDelayCancelled : LedPattern::Disarmed;
         if (armedDelayWasPending) { LOG_WRN("Disarmed with a trigger PENDING - the trigger is cancelled."); }
         break;
@@ -1166,15 +1283,15 @@ namespace alc
         // The command carries no settings; arming uses m_settings exactly as
         // already stored, never the command's own settings fields.
         //
-        // setArmState() restarts the engine from zero - discarding the test's
-        // count, cooldown, delay and detection - and configures the part and
-        // confirms AWAKE clear, which makes arming edge-triggered. It refuses if
-        // the part will not configure.
-        setArmState(ArmState::Active);
-        pattern = (m_arm_state == ArmState::Active) ? LedPattern::Armed : LedPattern::ArmRefused;
-        if (pattern == LedPattern::ArmRefused) {
-          LOG_ERR("Arming refused - command slot %u n %u is spent; send again!", evaluation.slot, evaluation.n);
+        // Only the exit delay starts here. The pins stay isolated and NOTHING is
+        // acknowledged: LED A stays silent until the main loop's Service() has
+        // restarted detection armed and enabled the pins. A failure then fails
+        // safe to the warning, not to LED A.
+        if (!m_arming.BeginArming(k_uptime_get())) {
+          LOG_ERR("Arming not started - device was not Inactive!");
+          return;
         }
+        LOG_INF("Arming: fire pins isolated, arming in %u s.", static_cast<unsigned>(ArmingSequence::M_EXIT_DELAY_MS / MSEC_PER_SEC));
         break;
 
       case ArmAction::Tune:
@@ -1194,9 +1311,11 @@ namespace alc
     // above refuses any mode but Trigger only at the point of application, so
     // m_settings.OperatingMode() can no longer hold anything else.
 
-    LOG_INF("Applied: arm %s, %u activations, %u s cooldown, %u LSB, %u s delay.", m_arm_state == ArmState::Active ? "Active" : "Inactive",
-            m_settings.Activations(), m_settings.CooldownSeconds(), m_settings.ThresholdLsb(), m_settings.DelaySeconds());
-    playLedPattern(pattern);
+    LOG_INF("Applied: arm %s, %u activations, %u s cooldown, %u LSB, %u s delay.", armStateName(m_arming.State()), m_settings.Activations(),
+            m_settings.CooldownSeconds(), m_settings.ThresholdLsb(), m_settings.DelaySeconds());
+
+    // An accepted Arm has nothing to show yet - see ArmAction::Arm above.
+    if (pattern != LedPattern::None) { playLedPattern(pattern); }
   }
 
   void App::playLedPattern(LedPattern pattern)

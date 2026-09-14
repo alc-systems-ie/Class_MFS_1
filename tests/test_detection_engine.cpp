@@ -198,11 +198,14 @@ namespace
         }
       }
 
-      // App::setArmState(Inactive), exactly: boolean first, then the output
-      // re-derived through updateOutputState(EngineTick::Skip) - no engine tick,
-      // so the output is simply false while the arm flag is false - then
-      // restartEngine(false). No time passes: App does all three in one call,
-      // between two poll-loop ticks.
+      // App's disarm path (App::disarmDevice() -> ArmingSequence::Disarm()),
+      // exactly as far as the engine sees it: the fire pins are disabled first
+      // (no engine effect, so not modelled), then the state goes Inactive, then
+      // App::RestartDetection(false) re-derives the output through
+      // updateOutputState(EngineTick::Skip) - no engine tick, so the output is
+      // simply false while the device is not Active - then restartEngine(false).
+      // No time passes: App does all of it in one call, between two poll-loop
+      // ticks.
       void disarm()
       {
         armed = false;
@@ -1013,18 +1016,18 @@ namespace
   void testAppDisarmSeam()
   {
     // App's seam, reproduced exactly (Rig::disarm() mirrors
-    // App::setArmState(Inactive); the Run() latch is reproduced inline below,
+    // App::disarmDevice(); the Run() latch is reproduced inline below,
     // mirroring App::Run()'s TakeTriggerComplete() check after
     // updateOutputState()). Both cases are safety-critical: a stale
     // m_trigger_complete surviving a restart would report a trigger the
     // moment the device is next armed, with no activation behind it.
 
     // (a) Output asserted while armed, then App's disarm cuts it off mid-
-    // assertion (boolean first, output re-derived false, NoteOutput(false)
-    // still runs against the engine's own m_armed - still true at that point
-    // - before Restart() clears it). TakeTriggerComplete() must read false
-    // afterwards, and a fresh arm must show no stale completion and no output
-    // until a fresh, complete count.
+    // assertion (fire pins disabled first, then Inactive, output re-derived
+    // false, NoteOutput(false) still runs against the engine's own m_armed -
+    // still true at that point - before Restart() clears it).
+    // TakeTriggerComplete() must read false afterwards, and a fresh arm must
+    // show no stale completion and no output until a fresh, complete count.
     {
       Rig rig(M_ONE, 0, 0);
 

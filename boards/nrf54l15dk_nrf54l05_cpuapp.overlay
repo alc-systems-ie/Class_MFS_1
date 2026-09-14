@@ -88,15 +88,18 @@
          * Fire1 and Fire2 assert TOGETHER as one logical channel. They are not a
          * set/reset pair and must never be driven independently. In the product
          * this output switches a voltage, so only alc::OutputSwitch may touch
-         * these pins — it owns them privately and exposes Set() alone. Nothing
-         * else may take a handle to them.
+         * these pins — it owns them privately and exposes Enable(), Set() and
+         * Disable() alone. Nothing else may take a handle to them.
          *
          * ACTIVE_HIGH because both lines carry external 10k pull-downs. That
          * makes the hardware fail-safe through reset: the nRF54L brings GPIOs up
-         * high-Z, so the pull-downs hold the output de-energised until firmware
-         * configures the pins, and a reset or brownout loop cannot fire it.
-         * Firmware must not undo that — GPIO_OUTPUT_INACTIVE only, never
-         * GPIO_OUTPUT_ACTIVE, driven low early in boot.
+         * high-Z, so the pull-downs hold the output de-energised. Firmware keeps
+         * it that way: the pins have NO driver (GPIO_DISCONNECTED) whenever the
+         * device is not armed. Boot only reads each pin as a plain input (it
+         * must read low) and disconnects it; the pins become outputs —
+         * GPIO_OUTPUT_INACTIVE only, never GPIO_OUTPUT_ACTIVE — as the last step
+         * of arming, and every disarm drives them low and disconnects them
+         * again. See docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md.
          *
          * !!! BOTH PINS ARE CLAIMED BY THE DK BOARD FILES AND ARE ONLY FREE HERE
          * !!! BECAUSE OF TWO OVERRIDES MADE FOR UNRELATED REASONS:

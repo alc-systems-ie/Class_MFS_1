@@ -9,6 +9,7 @@
 #include "access_control.hpp"
 #include "adxl367.hpp"
 #include "arm_policy.hpp"
+#include "arming_sequence.hpp"
 #include "command_scanner.hpp"
 #include "detection_engine.hpp"
 #include "device_clock.hpp"
@@ -29,8 +30,11 @@ namespace alc
    * Implements DetectionHardware privately: the detection engine drives the
    * ADXL367, the PMIC cooldown timer, the GRTC delay timer and the scanner
    * through it, and nothing outside App can.
+   *
+   * Implements ArmingActions privately: the arming sequence isolates and enables
+   * the fire pins, restarts detection and raises the warning through it.
    */
-  class App : private DetectionHardware
+  class App : private DetectionHardware, private ArmingActions
   {
     public:
       App();
@@ -42,8 +46,9 @@ namespace alc
        * @brief The device output state — the ONLY sanctioned trigger source.
        *
        * True only when the device is Active AND the ADXL367 is reporting motion
-       * that began after arming. **m_arm_state is definitive**; the accelerometer
-       * is only ever ANDed with it.
+       * that began after arming. **The arm state (m_arming.State()) is
+       * definitive**; the accelerometer is only ever ANDed with it. Arming is not
+       * Active.
        *
        * Every consumer must use this. Nothing may read INT1, the AWAKE bit or the
        * ADXL367 directly and act on it: in the product this output switches a
@@ -69,7 +74,7 @@ namespace alc
 
       // Drops LDOSW to Ultra-Low Power once the ADXL367 has been probed and
       // parked in standby - the loop-mode configure that actually needs power
-      // happens afterwards, when setArmState() starts the detection test. The
+      // happens afterwards, when the boot disarm starts the detection test. The
       // rail is brought up in High Power because the ADXL367 needs >250 uA
       // during power-up for correct fuse loading.
       int lowerLsoutToUlp();
@@ -88,7 +93,29 @@ namespace alc
       // re-derives without advancing the engine, for the disarm path.
       void updateOutputState(EngineTick tick);
 
-      void setArmState(ArmState state);
+      // Every disarm path - command, trigger latch, boot - comes through here:
+      // ArmingSequence::Disarm() (pins disabled FIRST, then Inactive, then
+      // RestartDetection(false)), then any failure it recorded is logged.
+      // Returns whether arming was cancelled.
+      bool disarmDevice();
+
+      // Logs a failure ArmingSequence recorded, if any. The warning was already
+      // raised by the sequence through SignalWarning().
+      void logArmingFailure();
+
+      // The warning light - TBC (arming sequence amendment section 4). A named
+      // stub: logs and does nothing else, so wiring a pin later is one place.
+      void signalWarning(const char* reason, int result);
+
+      // ArmingActions - see arming_sequence.hpp for each contract.
+      //
+      // NONE of these may call back into m_arming, directly or indirectly.
+      // Commands are handled only from the main loop, in serviceCandidates(), and
+      // nothing these call services the scanner queue.
+      int DisableFirePins() override;
+      int RestartDetection(bool armed) override;
+      int EnableFirePins() override;
+      void SignalWarning(ArmingStep step, int result) override;
 
       // The engine's settings, built from m_settings on every call - never cached,
       // so a Settings command reaches the engine on its very next use.
@@ -178,8 +205,6 @@ namespace alc
       // its pins privately; nothing else can reach them.
       OutputSwitch m_output_switch;
 
-      ArmState m_arm_state;
-
       // The definitive output state. Written only by updateOutputState(), read
       // only via IsOutputActive().
       bool m_output_active;
@@ -215,6 +240,11 @@ namespace alc
       // stuck-AWAKE watchdog - in both arm states. Declared after everything its
       // DetectionHardware calls touch.
       DetectionEngine m_engine;
+
+      // Inactive -> Arming -> Active, and every way back. The arm state lives
+      // here and nowhere else. Declared after everything its ArmingActions calls
+      // touch - the fire output, the engine and the output state.
+      ArmingSequence m_arming;
 
       // LED A acknowledgement patterns. The sequencer is read from the timer
       // handler and written from the main loop; see playLedPattern().
