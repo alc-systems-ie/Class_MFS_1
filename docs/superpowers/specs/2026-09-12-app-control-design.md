@@ -357,9 +357,11 @@ tool is retired, so no dual parsing.
 > the snippet below and the pin model it implies. The state lives in
 > `m_arming.State()` (`ArmingSequence`), not a bare `m_arm_state` member, and
 > has a third value, `ArmState::Arming`, between Inactive and Active. The fire
-> pins are `GPIO_DISCONNECTED` except in the moment between a successful arm
-> restart and `Active`, so `OutputSwitch` has no driver to move outside that
-> window regardless of what `m_output_switch.Set()` is asked for.
+> pins are `GPIO_DISCONNECTED` at all times **except while the device is
+> `Active`**: they become outputs (driven low, read back) as the last step of
+> arming, immediately before `Active`, and are disabled first on every disarm,
+> trigger latch or failure. Outside `Active` `OutputSwitch` has no driver to
+> move, whatever `m_output_switch.Set()` is asked for.
 
 `docs/v1-scope.md` §1.0 stands, with one change: **LED B is no longer the output
 mirror.** It becomes a tuning indicator. `OutputSwitch` becomes the worked example
@@ -464,7 +466,8 @@ settings it carries are discarded.
 **Only two ways out of the armed state: disarm, or trigger.** A trigger is one-shot:
 when the output period ends, `updateOutputState()` flags the trigger complete and
 the main loop latches the device Inactive. (It is flagged rather than acted on in
-place because `setArmState()` re-enters `updateOutputState()`.) Power loss also ends
+place because the disarm path — `App::disarmDevice()` → `ArmingSequence::Disarm()`
+— re-enters `updateOutputState()`.) Power loss also ends
 the armed state, because cold start is Inactive.
 
 **Arming — order is load-bearing.** Running detection while deactivated re-opens the
@@ -483,11 +486,17 @@ non-zero. The teardown-and-rebuild is what preserves §1.0.1.
 **The sequence number is consumed first, deliberately** — for ignored commands too.
 The old ordering consumed the code last so a failed configure could not burn it.
 With an unbounded sequence that protection is worthless and the replay protection is
-not. A refused arm shows the Arm Refused pattern and the engineer presses Send
-again, which uses the next number.
+not. A failed arming (superseded by the arming sequence amendment: the failure
+comes at the end of the 10 s exit delay, not at acceptance) shows **no LED A
+acknowledgement**; it raises the warning, which until the dedicated light is chosen
+is three long pulses on **LED B** (amendment §4). The device stays Inactive; the
+engineer may press Send again, which uses the next number, but a repeat means the
+device is faulty.
 
-**Disarming is the mirror:** boolean first, cancel any delay, re-derive the output,
-then `Standby()`. A subsequent Tune restarts the engine for tuning.
+**Disarming is not a mirror any more** (superseded by the arming sequence amendment
+§2): disable the fire pins **first** (drive low, disconnect), then Inactive and
+cancel any arming or delay, then re-derive the output, then restart the disarmed
+test from zero.
 
 ### 6.5 There is no test code
 
@@ -499,6 +508,14 @@ guarantee — tuning can never arm the device — now holds trivially: every com
 is authenticated, and a command arms the device only if its type is Arm.
 
 ### 6.5.1 THE DELAY INTERLOCK — safety critical
+
+> **Further amended 2026-09-14 (bench session 1) — arming sequence and
+> fire-pin isolation:**
+> `docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md` supersedes
+> this section's disarm order and state names. There is no `setArmState()`: the
+> arm state lives in `ArmingSequence` (`Inactive`, `Arming`, `Active`), every
+> disarm runs its §2 order (fire pins disabled first), and the delay code here
+> now lives in `DetectionEngine`. The two-witness interlock itself is unchanged.
 
 > **Amended 2026-09-14 — disarmed test mode:**
 > `docs/superpowers/specs/2026-09-14-disarmed-test-mode-amendment.md` supersedes
@@ -572,9 +589,10 @@ App installs `delayPermitsFiring()` as that interlock at startup. The result is
 Layer 2 fires a `LOG_ERR` and latches faulty if it ever refuses, because reaching
 it means layer 1 has already failed and that is a bug, not a routine condition.
 
-**Deactivating cancels a pending delay unconditionally.** `setArmState(Inactive)`
-stops the timer, clears the flag, zeroes the activation count and re-derives the
-output. A delay does not survive disarming, and it does not survive a reset either
+**Deactivating cancels a pending delay unconditionally.** The disarm path
+(`App::disarmDevice()` → `ArmingSequence::Disarm()`, after disabling the fire pins
+first) re-derives the output and restarts the engine, which stops the timer, clears
+the flag and zeroes the activation count. A delay does not survive disarming, and it does not survive a reset either
 — the pending state is deliberately **not** persisted, so a reboot loses the
 trigger, which is the fail-safe direction.
 
@@ -644,7 +662,6 @@ it.
 | **Disarmed** | slow flash 1 Hz (500 / 500) | 3 s |
 | *(Inactive, Disarm received)* | slow flash — the ordinary disarm | 3 s |
 | **Disarmed, pending delay cancelled** | double blink each second (100 on / 100 off / 100 on / 700 off) | 3 s |
-| **Arm refused** (ADXL367 would not configure) | three long pulses (700 on / 300 off) | 3 s |
 | **Settings applied while Inactive** | one 200 ms blink | 0.2 s |
 | **Mode changed** (slot 0) | two 200 ms blinks | 0.6 s |
 
@@ -653,12 +670,22 @@ Settings Applied.
 
 - **"Delay cancelled" tells the engineer a trigger really was pending** when they
   disarmed.
-- **"Arm refused" stops a hardware fault looking like a jammed command.** It is not a
-  breach of silence on failure: that rule covers failed authentication, and a refused
-  arm comes from a valid key holder.
-- **No flash means the command did not land.** Every accepted command plays a
-  pattern — including a replay that changes nothing — so a dark LED A still means
-  authentication or freshness failed. Send again.
+- **An arming failure shows nothing on LED A** (arming sequence amendment §3, §4). The
+  old "Arm refused" three long pulses on LED A are gone. A failure at the end of the
+  exit delay raises the **warning** instead — until the dedicated warning light is
+  chosen, **three long pulses (700 on / 300 off, 3 s) on LED B**, in every build —
+  so a hardware fault still does not look like a jammed command. It is not a breach
+  of silence on failure: that rule covers failed authentication, and an arming
+  failure follows an accepted command from a valid key holder.
+- **No flash means the command did not take effect.** Every accepted command plays a
+  pattern — including a replay that changes nothing while `Active` — with three
+  exceptions: an **Arm**, which shows nothing for the 10 s exit delay and then the
+  rapid flash only if arming completes; an **Arm or Settings received while
+  `Arming`**, which is ignored with no LED; and an **arming failure**, which shows
+  LED B's warning instead. So a dark LED A means authentication or freshness failed,
+  the command arrived during an exit delay, or — if LED B showed three long pulses —
+  the device could not arm. Send again only in the first two cases; a repeated
+  warning means the device is faulty.
 
 A 10 ms `k_timer` renders the pattern while one is active, because the 100 ms main
 loop cannot draw a 60 ms phase. The patterns total a few seconds per command, so they
@@ -666,7 +693,8 @@ cost nothing against the power budget. Between patterns, a bench build
 (`CONFIG_MFS_DEBUG_LED`) keeps LED A lit while Inactive as before.
 
 **LED B lights for the 5 s detection period on every detection**, armed or not
-(`ledB = m_detection_met`). Inactive, that simulates triggers during tuning; Active,
+(`ledB = m_detection_met`; suppressed while `Arming`, and overridden while the
+interim warning plays — arming sequence amendment §4). Inactive, that simulates triggers during tuning; Active,
 it confirms a real trigger. **Testbed behaviour**: an LED that lights when an
 intruder disturbs the area reveals the sensor, and the final firmware switches the
 output and shows nothing.
@@ -786,9 +814,12 @@ by a request to the real Network Manager.
    blink** — a pending trigger was cancelled). No flash — send again.
 3. Adjust settings; Send. **Single blink** — applied.
 4. Observe LED B simulating triggers at the chosen sensitivity.
-5. Toggle to Armed; Send with the final settings. **Rapid flash** — armed with
-   exactly the settings just watched. **Three long pulses** — arming refused; check
-   the device.
+5. Toggle to Armed; Send. Leave the area: nothing shows for the 10 s exit delay
+   (arming sequence amendment §3). **Rapid flash** on LED A — armed with exactly the
+   settings just watched. **Three long pulses on LED B** and no LED A flash — the
+   device could not arm (a fault) and stays disarmed; if it repeats, the device is
+   faulty. To cancel during the exit delay, toggle to Disarmed and Send — the app
+   lets the Disarm replace an Arm still advertising.
 
 ### 8.3 What the app must be honest about
 
