@@ -456,7 +456,7 @@ namespace alc
 
     // ARMED ONLY: stay awake and scan continuously. The deactivate path is the
     // most important thing the device does while a trigger is pending, and at
-    // the duty-cycled 5906 ms cadence an abort takes ~30 s to be heard with
+    // the duty-cycled 5970 ms cadence an abort takes ~30 s to be heard with
     // confidence. A disarmed test delay has nothing dangerous pending, so a
     // 9 h test costs no extra battery (amendment section 2).
     if (armed) {

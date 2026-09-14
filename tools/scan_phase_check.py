@@ -64,7 +64,7 @@ plausible counterpart intervals is used.
 import argparse
 import sys
 
-DEFAULT_PERIOD_UNITS = 9401
+DEFAULT_PERIOD_UNITS = 9552
 BLE_UNIT_MS = 0.625
 DEFAULT_WINDOW_MS = 100.0
 DEFAULT_SCANS = 5

@@ -249,8 +249,8 @@ on each accepted command.
 
 Without a day key, a guess must first hit one of 128 unpredictable 32-bit IDs, then a
 32-bit tag: 128/2³² × 2⁻³², about **2⁻⁵⁷ per advert**. A dongle parked beside the
-device at 20 ms lands ~5 guesses per 5876 ms wake (2026-09-14, was 6 s -
-`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`), ~73,000
+device at 20 ms lands ~5 guesses per 5970 ms wake (2026-09-14, was 6 s -
+`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`), ~72,000
 (≈ 2¹⁶) a day — **~2⁻⁴¹ per day**. Brute force is not a
 threat, with or without the lockout.
 
@@ -341,7 +341,7 @@ refinement (§11).
 ### 7.2 Provisioner sync
 
 `timeSync(t)` (§3): a 12-byte truncated HMAC under the **provisioning key**. A 96-bit
-tag is ample: the device checks at most a handful of adverts per 5876 ms wake.
+tag is ample: the device checks at most a handful of adverts per 5970 ms wake.
 
 The device accepts it only when **all** hold:
 

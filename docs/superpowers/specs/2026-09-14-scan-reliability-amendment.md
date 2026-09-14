@@ -23,7 +23,7 @@ a time sync missed by all 6 of its scans; four consecutive Disarms unheard.
 observed) re-broadcasts the previous advertising payload before the new one, even a
 minute after the previous advert ended.
 
-## 2. Scan period 5876 ms
+## 2. Scan period 5970 ms (initially set to 5876 ms)
 
 `CONFIG_MFS_SCAN_PERIOD_MS` default **6000 → 5876**. 6000 ms is exactly 32 × 187.5 ms,
 the advertising interval measured from a macOS advertiser, so every scan landed at the
@@ -59,27 +59,42 @@ and plausible counterpart intervals):
 |---|---|---|---|---|---|---|---|---|---|---|
 | 6000 ms | PASS | **FAIL 47%** | PASS | PASS | FAIL 5% | FAIL 75% | FAIL 45% | FAIL 73% | FAIL 51% | FAIL 75% |
 | 5905.625 ms | PASS | PASS | **FAIL 35%** | FAIL 21% | FAIL 18% | FAIL 8% | FAIL 39% | FAIL 59% | FAIL 51% | FAIL 61% |
-| **5875.625 ms (new default)** | PASS | **PASS** | **PASS** | **PASS** | FAIL 47% | FAIL 24% | FAIL 40% | FAIL 45% | FAIL 59% | FAIL 61% |
+| 5875.625 ms (superseded) | PASS | **PASS** | **PASS** | **PASS** | FAIL 47% | FAIL 24% | FAIL 40% | FAIL 45% | FAIL 59% | FAIL 61% |
+| **5970.000 ms (current default)** | **PASS** | **PASS** | **PASS** | **PASS** | FAIL 12% | FAIL 53% | FAIL 34% | FAIL 87% | FAIL 51% | FAIL 64% |
 
 (35 ms and 100 ms are exempt at every period, I ≤ W.) 5875.625 ms (9401 BLE units)
-**passes every measured or plausible interval up to 318.75 ms** — it is not the
+**passed every measured or plausible interval up to 318.75 ms** — it was not the
 *shortest* period with that property, and passing periods are not unique: sweeping
 `--sweep` over a wide range against this interval set turns up several other passing
-islands, for example around 9335 units (5834.375 ms) and 9537–9553 units
-(5960.625–5970.625 ms). 9401 is simply the owner's choice — chosen from inside a
-passing island wide enough to have margin, not because it is extremal in any sense.
+islands, for example around 9335 units (5834.375 ms) and 9537–9565 units
+(5960.625–5978.125 ms). 9401 was simply the owner's first choice — chosen from inside a
+passing island wide enough to have margin, not because it was extremal in any sense.
 
 **Margin at 9401.** Sweeping the 61 units either side of it (9371–9431) shows the
 island containing 9401 runs from **9355 to 9403 units (5846.875–5876.875 ms)** — a
 49-unit-wide (30.6 ms) contiguous run that all pass against every interval up to
 318.75 ms — before failing at 9404 units (0.8% against 318.75 ms, rising steadily
-with distance from the island). 9401 sits 3 units from the island's upper edge and
-46 from its lower edge, so it has some margin against a future re-measurement nudging
-an interval slightly, but not a great deal on the upper side; re-run the sweep before
-assuming a similar value is safe.
+with distance from the island). 9401 sat 3 units from that island's upper edge and
+46 from its lower edge, so it had some margin against a future re-measurement nudging
+an interval slightly, but not a great deal on the upper side.
 
-Window stays 100 ms; average current rises by 6000/5876 on the scan terms (~2.1 %),
-negligible against the ~70 µA budget (`docs/power-budget.md` §3).
+**Superseded 2026-09-14 (follow-up task): moved to 9552 units (5970.000 ms).**
+"Less battery is always good" — re-sweeping (`--sweep 9530 9570 --max-interval-ms
+320`) confirmed a second, wider passing island at **9537–9565 units
+(5960.625–5978.125 ms)**, 29 units wide against the first island's 49 (but with the
+narrow edge nowhere near either side): the owner picked its middle, **9552 units
+(15 units of margin below, 13 above)**, both to get away from 5876 ms's 3-unit edge
+margin and because 5970 ms sits closer to the unconstrained 6000 ms optimum, which
+lowers the scan-power term slightly versus 5876 ms (see below). `--period-units
+9552` reports 0 % miss against 152.5/187.5/211.25/318.75 ms; the immediate
+neighbours outside the island fail — 9536 misses 152.5 ms at 1.6 %, 9566 misses
+187.5 ms at 1.35 % — confirming the edges. `CONFIG_MFS_SCAN_PERIOD_MS` default and
+`tools/scan_phase_check.py`'s `DEFAULT_PERIOD_UNITS` both move to **9552**. Re-run
+the sweep before assuming a similar value stays safe if intervals are re-measured.
+
+Window stays 100 ms; average current rises by 6000/5970 on the scan terms (~0.5 %),
+negligible against the ~70 µA budget (`docs/power-budget.md` §3) — a smaller rise
+than 5876 ms's 6000/5876 (~2.1 %), since 5970 ms is closer to 6000 ms.
 
 **Intervals from about 5 × W upward cannot be fully covered by any period at N = 5.**
 546.25 ms and above fail at all three periods above: a single 100 ms window can
@@ -156,11 +171,13 @@ that together close the gap a period alone cannot:
   actually bounds the slow-interval case §2 identifies as uncoverable by any scan
   period: the app never leaves the counterpart advertising fast in the background for
   the scanner to contend with.
-- **Scan period 5876 ms, checked by simulation.** §2 above; `CONFIG_MFS_SCAN_PERIOD_MS`
-  default 5876 (9401 BLE units, 5875.625 ms), verified with `tools/scan_phase_check.py`
-  rather than the withdrawn closed-form rule.
+- **Scan period 5970 ms, checked by simulation.** §2 above; `CONFIG_MFS_SCAN_PERIOD_MS`
+  default 5970 (9552 BLE units, 5970.000 ms — initially set to 5876 ms, 9401 units,
+  5875.625 ms, then moved by the owner to the middle of a wider passing island,
+  9537–9565 units), verified with `tools/scan_phase_check.py` rather than the
+  withdrawn closed-form rule.
 
-Together these replace the §2 "OPEN — 211.25 ms fails" item: 5876 ms now passes against
+Together these replace the §2 "OPEN — 211.25 ms fails" item: 5970 ms now passes against
 211.25 ms directly (see the table in §2), and the no-scanner/no-arming and
 foreground-only rules remove the two ways a slower or backgrounded advertiser could
 otherwise leave the device unable to hear a Disarm.

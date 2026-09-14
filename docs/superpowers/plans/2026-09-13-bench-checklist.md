@@ -28,7 +28,7 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 ## 2. Boot and access state (Task 9)
 
 - [x] First boot: `No access state stored - first boot, no day floor.`
-- [ ] `Passive scan started: 100 ms window every 5876 ms.` (re-verify at 5876 ms —
+- [ ] `Passive scan started: 100 ms window every 5970 ms.` (re-verify at 5970 ms —
   this line was last observed on hardware at the earlier 5906 ms default)
 - [x] Temporarily enable `CONFIG_THREAD_ANALYZER=y` (and `CONFIG_THREAD_ANALYZER_AUTO=y` or a manual call point), flash, provision, send a command and trigger the device, then record the reported high-water marks for the main thread and the Bluetooth RX thread. Revert the Kconfig afterwards.
 
@@ -266,10 +266,10 @@ fire line **is low / is not high**.
 ## 5d. Scan reliability and Send/Stop (plan 2026-09-14)
 
 1. [ ] After flashing, confirm the boot log shows `Passive scan started: 100 ms
-   window every 5876 ms.`
+   window every 5970 ms.`
 2. [ ] Mac: 10 Sends to the device. Count how many are heard at the first or
    second scan (RTT `Command slot ... n ...` or LED A's pattern). Expect nearly
-   all - `tools/scan_phase_check.py` reports zero misses for 5875.625 ms against
+   all - `tools/scan_phase_check.py` reports zero misses for 5970.000 ms against
    the Mac's 187.5 ms advertising interval (amendment §2).
 3. [ ] Arm, then within the 10 s exit delay: press **Stop**, set Disarmed, **Send**.
    Expect `Continuous scan: arming exit delay.` and `Scan cadence now
@@ -290,7 +290,7 @@ fire line **is low / is not high**.
    Sends from that phone (foreground, release build) and measure its real
    advertising interval I from consecutive same-UUID timestamps. If I is longer
    than the 100 ms window, check it with `python3 tools/scan_phase_check.py I`
-   (the default period, 9401 units = 5875.625 ms, is used automatically).
+   (the default period, 9552 units = 5970.000 ms, is used automatically).
    Record I and the script's miss fraction and verdict here; a FAIL is a period
    problem, not a phone problem - re-run `--sweep` to see whether any period
    passes against this interval together with the rest of the default set

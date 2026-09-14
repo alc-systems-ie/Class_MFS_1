@@ -12,8 +12,8 @@ them.
 | Decision | Value | Rationale |
 |----------|-------|-----------|
 | Sleep architecture | **System ON idle + RTC wake** | Not nPM2100 Hibernate — see §4 |
-| Scan period | **5876 ms** (5.876 s since 2026-09-14, see scan-reliability amendment) | `CONFIG_MFS_SCAN_PERIOD_MS=5876` |
-| Scan window | **100 ms** passive | 1.702% RX duty cycle (5876 ms period); detection margin per §6 |
+| Scan period | **5970 ms** (5.970 s since 2026-09-14, see scan-reliability amendment) | `CONFIG_MFS_SCAN_PERIOD_MS=5970` |
+| Scan window | **100 ms** passive | 1.675% RX duty cycle (5970 ms period); detection margin per §6 |
 | ADXL367 | Continuous measurement mode | Always-on motion detect, 100 Hz ODR |
 | nRF21540 FEM | **Not fitted in this version** | Costs 3 dB TX; saves BOM and risk — see §5 |
 | Battery | CR123A (3.0 V Li-MnO2) | ~1450 mAh usable behind the nPM2100 |
@@ -51,34 +51,41 @@ CR123A discharge curve is usable. 1450 mAh is taken as usable capacity against a
 ## 3. The budget
 
 **Amended 2026-09-14** (`docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`
-§2): the scan period moved from 6000 ms to **5876 ms** — 6000 ms was exactly
-32 × 187.5 ms, the advertising interval measured from a Mac, so every scan
-landed at the same phase of its cycle and whole commands were missed. An
-intermediate value, 5906 ms, was chosen against a closed-form drift rule that
-review later proved unsound; a brute-force phase-coverage simulation
+§2): the scan period moved from 6000 ms to 5876 ms, then to **5970 ms** — 6000 ms
+was exactly 32 × 187.5 ms, the advertising interval measured from a Mac, so
+every scan landed at the same phase of its cycle and whole commands were
+missed. An intermediate value, 5906 ms, was chosen against a closed-form drift
+rule that review later proved unsound; a brute-force phase-coverage simulation
 (`tools/scan_phase_check.py`) showed 5906 ms still misses 35 % of commands
 against Apple's recommended 211.25 ms interval. 5876 ms (9401 BLE units,
-5875.625 ms) is the value the script reports as a clean pass against every
-measured or plausible interval up to 318.75 ms — see the amendment §2 for the
-full results table. The figures below are recomputed for 5876 ms with the same
-formulas as before.
+5875.625 ms) passed the script but sat only 3 units from its passing island's
+edge; the owner subsequently chose **5970 ms (9552 BLE units, 5970.000 ms)**,
+the middle of the wider passing island 9537–9565 units (15 units of margin
+below, 13 above) — "less battery is always good", and the wider margin costs
+less power besides, since 5970 ms is closer to the unconstrained 6000 ms
+optimum than 5876 ms was. The script reports a clean pass at 5970 ms against
+every measured or plausible interval up to 318.75 ms — see the amendment §2
+for the full results table. The figures below are recomputed for 5970 ms with
+the same formulas as before.
 
-System ON idle, 100 ms passive scan every 5876 ms. Duty cycle 100/5876 = 1.702%
-(was 100/6000 = 1.667%).
+System ON idle, 100 ms passive scan every 5970 ms. Duty cycle 100/5970 = 1.675%
+(was 100/5876 = 1.702%, 100/6000 = 1.667% originally).
 
 | Contributor | Basis | Average current |
 |-------------|-------|-----------------|
-| Passive scan RX | 3.8 mA × 1.702% | **64.7 µA** (was 63.3 µA) |
-| Scan start/stop CPU + HFXO ramp | 2.6 mA × ~5 ms / 5876 ms | 2.2 µA (unchanged) |
+| Passive scan RX | 3.8 mA × 1.675% | **63.7 µA** (was 64.7 µA at 5876 ms) |
+| Scan start/stop CPU + HFXO ramp | 2.6 mA × ~5 ms / 5970 ms | 2.2 µA (unchanged) |
 | nRF54L05 System ON idle (RAM retention + RTC) | continuous | 2.5 µA |
 | ADXL367, autosleep in wake-up mode while still | continuous | 0.2 µA |
 | nPM2100 quiescent (pass-through / ULP) | continuous | 0.3 µA |
-| **Total** | | **≈ 69.9 µA** (was ≈ 68.5 µA) |
+| **Total** | | **≈ 68.8 µA** (was ≈ 69.9 µA at 5876 ms) |
 
-**1450 mAh ÷ 0.0699 mA = 20,745 h ≈ 864 days ≈ 2.4 years.** (Was 1450 mAh ÷
-0.0685 mA = 21,170 h ≈ 882 days ≈ 2.4 years at 6000 ms — the shorter period
-costs about 18 days across the service life, about 2.1% (6000/5876), matching
-the Kconfig help's estimate, and does not change the headline life figure.)
+**1450 mAh ÷ 0.0688 mA = 21,067 h ≈ 878 days ≈ 2.4 years.** (Was 1450 mAh ÷
+0.0699 mA = 20,745 h ≈ 864 days at 5876 ms, and 1450 mAh ÷ 0.0685 mA = 21,170 h
+≈ 882 days ≈ 2.4 years at the original 6000 ms — the longer period claws back
+most of the 5876 ms penalty: it now costs only about 4 days across the service
+life, about 0.5% (6000/5970 = 1.005) rather than 5876 ms's 2.1% (6000/5876),
+and does not change the headline life figure.)
 
 The ADXL367 line is 0.2 µA rather than the 0.89 µA of measurement mode because
 **AUTOSLEEP** drops the part into wake-up mode (~180 nA) whenever it is still, and
@@ -217,7 +224,7 @@ board. It also removes the standing risk recorded below.
 
 Retained for the record, and because it applies to any future FEM-equipped
 variant: the nRF21540 LNA draws ~5 mA when active. Enabled across the 100 ms scan
-window it would add 5 mA × 1.702% = **85.1 µA** — more than doubling the total
+window it would add 5 mA × 1.675% = **83.8 µA** — more than doubling the total
 budget and cutting life to roughly 10 months. Any FEM-equipped variant of this
 design must keep the LNA off for the periodic scan and engage the FEM only for the
 transmit/connect burst following a detected event, at POUTB (+10 dB) per the Irish
@@ -529,7 +536,7 @@ This unifies two cases that look different but are the same operation:
 
 The obvious construction is to have the device advertise on cold start so a
 provisioner can find and connect to it. **That is not necessary, and it is worse.**
-The device already scans every 5876 ms — that is an inbound channel. The provisioner
+The device already scans every 5970 ms — that is an inbound channel. The provisioner
 advertises a **signed time payload**, the device catches it in an ordinary scan
 window and applies it. No mode switch, no advertising, no state machine.
 
@@ -619,7 +626,7 @@ Full definitions: `docs/tan-scheme.md` §3.
 The time sync needs **no anti-replay counter**: the device accepts a sync only while
 its clock is invalid, and never below the persisted floor (§8.7.3), so a replayed
 sync is refused. A 96-bit MAC is ample — the device checks at most a handful of
-adverts per 5876 ms scan window, so online brute force is not a threat.
+adverts per 5970 ms scan window, so online brute force is not a threat.
 
 Two iOS caveats to record in case the option is ever taken up:
 

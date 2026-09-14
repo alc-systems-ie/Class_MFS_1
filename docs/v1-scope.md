@@ -29,7 +29,7 @@ design toward so that later work does not require rework.
      software timer.
 
 Also required, because it is how commands arrive: the 100 ms passive scan
-loop (every 6 s as originally scoped; now every 5876 ms, and continuous during the
+loop (every 6 s as originally scoped; now every 5970 ms, and continuous during the
 arming exit delay — `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`)
 and day-key command validation (`docs/tan-scheme.md`).
 
@@ -422,14 +422,17 @@ Derived from `docs/power-budget.md` §3: per-wake cost 393 µC (380 µC scan +
 | 9 | 20 s | 23 µA | 7.1 years |
 | 10 | 30 s | 17 µA | 9.8 years |
 
-**Amended 2026-09-14:** the actual default is now **5876 ms** (5.876 s), not
+**Amended 2026-09-14:** the actual default is now **5970 ms** (5.970 s), not
 preset 5's 6000 ms — 6000 ms is exactly 32 × 187.5 ms, a Mac's measured
 advertising interval, so every scan landed at the same phase of its cycle and
 whole commands were missed. (An intermediate value, 5906 ms, was tried first
 against a closed-form drift rule that review later proved unsound; a
 brute-force phase-coverage simulation showed it still misses 35 % of commands
-against Apple's recommended 211.25 ms interval.) Average current at 5876 ms
-recomputes to **~69.9 µA**, still ~2.4 years on a CR123A. See
+against Apple's recommended 211.25 ms interval. A later value, 5876 ms, passed
+the simulation but sat only 3 BLE units from its passing island's edge; the
+owner moved the default to 5970 ms, the middle of the wider 9537–9565 island.)
+Average current at 5970 ms recomputes to **~68.8 µA**, still ~2.4 years on a
+CR123A. See
 `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` and
 `docs/power-budget.md` §3. The ladder above is otherwise unaffected — it is
 kept as the derivation record for the other nine cadences, none of which

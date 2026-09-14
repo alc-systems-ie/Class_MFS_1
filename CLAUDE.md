@@ -29,7 +29,7 @@ Hardware is the `alc_drawer_master` board **minus the FEM**: **nRF54L05 + nPM210
 | Decision | Value |
 |----------|-------|
 | Sleep architecture | **System ON idle + RTC wake** — *not* nPM2100 Hibernate |
-| Scan | **100 ms passive every 5.876 s** (1.702% RX duty cycle) |
+| Scan | **100 ms passive every 5.970 s** (1.675% RX duty cycle) |
 | ADXL367 | Continuous measurement mode, 100 Hz ODR |
 | nRF21540 FEM | **Not fitted** — costs 3 dB TX (+7 dBm native vs +10 dBm) |
 | Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version 0x03 with an explicit command type |
@@ -166,9 +166,11 @@ Constraints from that analysis that are easy to violate by accident:
   simulation, not a closed-form rule; a prior closed-form rule (d × N ≥ I − W)
   was proved unsound (off by one, and invalid once the drift exceeds the scan
   window) and is withdrawn. `CONFIG_MFS_SCAN_PERIOD_MS` at 6000 ms was exactly
-  32 × 187.5 ms, so whole commands were missed; the default is now **5876 ms**
-  (5875.625 ms real, 9401 BLE units), which the script reports as a clean pass
-  (zero misses) against the Mac's 187.5 ms and every Apple interval up to
+  32 × 187.5 ms, so whole commands were missed; an intermediate 5876 ms passed
+  the script but sat only 3 BLE units from its passing island's edge, so the
+  owner moved the default to **5970 ms** (5970.000 ms real, 9552 BLE units),
+  the middle of the wider 9537–9565 island, which the script reports as a clean
+  pass (zero misses) against the Mac's 187.5 ms and every Apple interval up to
   318.75 ms, including the 211.25 ms Apple recommends. Intervals from about
   5 × the 100 ms window upward cannot be fully covered by any period at this
   scan count — the owner decisions below (foreground-only sending; no scanner,

@@ -1037,7 +1037,7 @@ namespace alc
 
     // Scan continuously while armed and pending. The deactivate path is the most
     // important thing the device does while a trigger is pending, and at the
-    // duty-cycled 5906 ms cadence an abort takes ~30 s to be heard with
+    // duty-cycled 5970 ms cadence an abort takes ~30 s to be heard with
     // confidence. The request is one input to the cadence arbiter - Arming also scans
     // continuously - so the result returned is that of the COMBINED cadence. A
     // failure is reported by the engine (DelayFastScanFailed or

@@ -118,7 +118,7 @@ Amended 2026-09-13 (security) — full reasoning in `docs/tan-scheme.md`:
 **Amended 2026-09-14 — scan reliability:**
 `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` §1–2 supersedes
 the 6 s scan cadence assumed below — the default `CONFIG_MFS_SCAN_PERIOD_MS` is
-now **5906 ms** — and adds the measured iPhone advertising interval (~35 ms,
+now **5970 ms** — and adds the measured iPhone advertising interval (~35 ms,
 against the Mac's 187.5 ms measured here) and the root cause of the unreliable
 commands that measurement explains. Where they disagree, the amendment wins.
 

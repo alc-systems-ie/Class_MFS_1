@@ -2,7 +2,7 @@ mainmenu "Project CLASS Multi-Function Sensor 1 (nRF54L05)"
 
 config MFS_SCAN_PERIOD_MS
 	int "Passive scan period (milliseconds)"
-	default 5876
+	default 5970
 	range 1000 10240
 	help
 	  How often the device wakes to scan. Valid range 1000-10240 ms: the
@@ -14,27 +14,35 @@ config MFS_SCAN_PERIOD_MS
 	  fails to compile rather than wrapping silently. Above a few thousand ms
 	  the cell's shelf life, not the radio, becomes the limiting factor.
 
-	  The default 5876 ms (9401 BLE units, 5875.625 ms) replaces preset 5's
+	  The default 5970 ms (9552 BLE units, 5970.000 ms) replaces preset 5's
 	  6000 ms from the ladder in docs/v1-scope.md section 7.1. 6000 ms is
 	  exactly 32 x 187.5 ms, the advertising interval measured from a macOS
 	  advertiser, so every scan landed at the same phase of its cycle and a
 	  command was caught on almost every scan or on almost none. An earlier
 	  choice of 5906 ms fixed that but was proved unsound by a brute-force
 	  simulation: it still misses 35 % of commands against Apple's
-	  recommended 211.25 ms interval.
+	  recommended 211.25 ms interval. A later choice, 5876 ms, passed the
+	  simulation but sat only 3 BLE units from the edge of its passing
+	  island.
 
 	  The period is now chosen and verified by simulation, not a closed-form
 	  rule: tools/scan_phase_check.py sweeps 2000 start phases per interval
 	  and reports the fraction of commands (N = 5 consecutive scans) that
-	  every one of those scans would miss. At 5876 ms it reports zero misses
-	  against the measured macOS interval (187.5 ms) and every Apple interval
-	  up to 318.75 ms. Intervals from about 5 x the 100 ms window upward
-	  (roughly 500 ms and beyond) cannot be fully covered by any period at
-	  N = 5 - the app's foreground-only, fast-advertising guarantee is what
-	  protects those cases, not this period. Run the script before changing
-	  this value or adding a newly measured interval; there is no formula to
-	  hand-check against instead. The shorter period raises the scan terms of
-	  the ~69 uA budget by 6000/5876, about 2.1 %, which is negligible.
+	  every one of those scans would miss. 9552 units is the middle of the
+	  passing island 9537-9565 units (15 units of margin below, 13 above),
+	  found with --sweep, so a one-unit build or clock error cannot tip it
+	  into a failing phase the way 9401 (5876 ms) could have. At 5970 ms it
+	  reports zero misses against the measured macOS interval (187.5 ms) and
+	  every Apple interval up to 318.75 ms. Intervals from about 5 x the
+	  100 ms window upward (roughly 500 ms and beyond) cannot be fully
+	  covered by any period at N = 5 - the app's foreground-only,
+	  fast-advertising guarantee is what protects those cases, not this
+	  period. Run the script before changing this value or adding a newly
+	  measured interval; there is no formula to hand-check against instead.
+	  The longer period versus 5876 ms also lowers the scan terms of the
+	  ~69 uA budget slightly, since 5970 ms sits closer to the unconstrained
+	  6000 ms optimum: it raises the budget by only 6000/5970, about 0.5 %,
+	  against 5876 ms's 2.1 %.
 
 config MFS_SCAN_WINDOW_MS
 	int "Passive scan window (milliseconds)"
@@ -120,8 +128,8 @@ config MFS_BATTERY_TEST
 	  is still armed by the engineer toggle.
 
 	  READ THIS BEFORE TRUSTING THE RESULT: the blink dominates the power
-	  budget. At an assumed 2 mA of LED current, 500 ms every 5876 ms is 8.51%
-	  duty, i.e. ~170 uA against a ~69 uA operating budget - so the measurement
+	  budget. At an assumed 2 mA of LED current, 500 ms every 5970 ms is 8.38%
+	  duty, i.e. ~168 uA against a ~69 uA operating budget - so the measurement
 	  becomes mostly a measurement of the LED. See docs/battery-test.md.
 
 config MFS_BLINK_MS
