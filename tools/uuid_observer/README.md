@@ -111,3 +111,11 @@ were steady to within a couple of ms.
 A change in UUID marks exactly when a new command (a new `Send`) went on air;
 counting how many scan-equivalent windows separate that change from the
 previous one is how the amendment's "commands missed" observations were made.
+
+**Check for dropped log lines before reading a gap as a missed advert.** The
+observer uses deferred logging (`CONFIG_LOG_MODE_DEFERRED=y`, 8 KB buffer). An
+iPhone at ~35 ms produces ~800 adverts per 30 s Send, and at that rate the log
+backend can fall behind and discard messages - Zephyr then prints a line
+reporting how many messages were dropped. Search the capture for `messages
+dropped` first; if it appears, gaps in the timestamps near it say nothing about
+the advertiser, and the interval must be computed from an undropped stretch.

@@ -151,8 +151,13 @@ namespace alc
       //
       // Called from SetTriggerPendingScan(), after a successful BeginArming(), and
       // from the main loop only when the desired cadence differs from the one last
-      // requested - never directly from an ArmingActions implementation. It only
-      // reads m_arming.State(); it never calls into the sequence.
+      // requested - never directly from an ArmingActions implementation. It IS
+      // reached indirectly from one: RestartDetection() restarts the detection
+      // engine, whose cancelDelay() calls SetTriggerPendingScan(false), which lands
+      // here while the arming sequence is still inside its own call. That is safe
+      // only because this function reads m_arming.State() and never calls into the
+      // sequence. Keep it that way: a call into ArmingSequence from here would
+      // re-enter it.
       int applyScanCadence();
 
       // DetectionHardware - see detection_engine.hpp for each contract.

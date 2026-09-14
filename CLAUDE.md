@@ -149,12 +149,17 @@ Constraints from that analysis that are easy to violate by accident:
   steady for 30 s**, from an iPhone (iOS 26.6.1, foreground, release build).
   Both are well outside the 20–50 ms this project originally assumed, and
   iOS/macOS do not expose the interval as a setting. The app compensates with a
-  30 s advertising window rather than a fast interval. **Rule: the scan period
-  must not sit within a few ms of an integer multiple of any measured
-  counterpart interval longer than the scan window** — `CONFIG_MFS_SCAN_PERIOD_MS`
-  at 6000 ms was exactly 32 × 187.5 ms, so every scan landed at the same phase
-  of the Mac's advertising cycle and whole commands were missed; the default
-  moved to 5906 ms (31.5 × 187.5 ms) for exactly this reason.
+  30 s advertising window rather than a fast interval. **Rule: for every
+  counterpart interval I longer than the scan window W, the per-scan phase drift
+  d = min(P mod I, I − (P mod I)) must satisfy d × N ≥ I − W**, where P is the
+  scan period and N the scans in one 30 s command (5); otherwise a command
+  starting at an unlucky phase is missed by every scan. `CONFIG_MFS_SCAN_PERIOD_MS`
+  at 6000 ms was exactly 32 × 187.5 ms (d = 0), so whole commands were missed;
+  the default moved to 5906 ms (5905.625 ms real), which passes against the
+  Mac's 187.5 ms (d = 93.1, d × N = 466 ≥ 87.5). **It FAILS against Apple's
+  recommended 211.25 ms** (d = 9.4, d × N = 47 < 111.25) — an open item, recorded
+  with the full check in the scan-reliability amendment §2. The production
+  Android phone's interval is still to be measured against the rule.
 
 Full access design — derivation, key issue, wire format, acceptance, time, threat
 review: **`docs/tan-scheme.md`**. The wire format and firmware units are in

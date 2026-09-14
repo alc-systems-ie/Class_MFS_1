@@ -284,6 +284,19 @@ fire line **is low / is not high**.
    being re-broadcast for a second or two at the start of the next Send (see
    the 2026-09-14 bench log entry below) - harmless, documented in
    `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` §5.
+7. [ ] Production Android phone: run `tools/uuid_observer` while the class app
+   Sends from that phone (foreground, release build) and measure its real
+   advertising interval I from consecutive same-UUID timestamps. If I is longer
+   than the 100 ms window, check it against the period rule in the amendment §2:
+   d = min(P mod I, I − (P mod I)) with P = 5905.625 ms must give d × 5 ≥ I − 100.
+   Record I, d and the verdict here; a failure is a period problem, not a
+   phone problem.
+8. [ ] **Production-configuration gate — before any production build.** Confirm
+   the bench-only options are off in the build actually being released:
+   `grep -E 'CONFIG_MFS_(SCAN_DIAG|DEBUG_LED)' build/class_mfs_1/zephyr/.config`
+   must show both as `# CONFIG_... is not set` (or `=n`), never `=y`. Neither may
+   ship enabled — the bench `prj.conf` currently sets both to `y`, so a production
+   build needs them turned off explicitly.
 
 ## 9. Bench log
 

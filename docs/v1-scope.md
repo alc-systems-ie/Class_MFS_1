@@ -28,8 +28,10 @@ design toward so that later work does not require rework.
      tuning while Inactive, that 5 s being the ADXL367 loop period rather than a
      software timer.
 
-Also required, because it is how commands arrive: the 100 ms / 6 s passive scan
-loop and day-key command validation (`docs/tan-scheme.md`).
+Also required, because it is how commands arrive: the 100 ms passive scan
+loop (every 6 s as originally scoped; now every 5906 ms, and continuous during the
+arming exit delay — `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`)
+and day-key command validation (`docs/tan-scheme.md`).
 
 ### 1.0 THE ARM BOOLEAN IS DEFINITIVE — architectural invariant
 
@@ -429,6 +431,15 @@ See `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` and
 `docs/power-budget.md` §3. The ladder above is otherwise unaffected — it is
 kept as the derivation record for the other nine cadences, none of which
 changed.
+
+**The ladder's cadences are NOT all usable as periods.** Presets 3 (3 s), 8 (15 s)
+and 10 (30 s) are exact multiples of the Mac's measured 187.5 ms (16×, 80× and 160×),
+so their per-scan phase drift is zero and they **violate the period rule** in the
+amendment §2 exactly as 6000 ms (32×) did: a command starting at a bad phase is missed
+by every scan. The rule is a drift test (d × N ≥ I − W), not a multiple test, so any
+other preset must also be checked against every measured interval before it is
+adopted — at 15 s and above a 30 s command holds only one or two scans and the rule is
+hard to meet at all.
 
 ### 7.2 Why the ladder stops at 30 s
 

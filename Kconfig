@@ -24,11 +24,20 @@ config MFS_SCAN_PERIOD_MS
 	  100 ms (Android low-latency) intervals the 100 ms window already spans
 	  an interval, so nothing changes there.
 
-	  Rule: the period must not be within a few ms of an integer multiple of
-	  any measured counterpart advertising interval longer than the scan
-	  window (docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md
-	  section 2). The shorter period raises the scan terms of the ~69 uA
-	  budget by 6000/5906, about 1.6 %, which is negligible.
+	  Rule (docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md
+	  section 2): for every counterpart advertising interval I longer than
+	  the scan window W, the per-scan phase drift
+	  d = min(P mod I, I - (P mod I)) must satisfy d x N >= I - W, where P is
+	  this period and N the number of scans in one 30 s command (about 5).
+	  Otherwise a command that starts at an unlucky phase is missed by every
+	  one of its scans; not being a near-multiple of I is not enough. At
+	  5905.625 ms: 187.5 ms (Mac) gives d = 93.1, d x N = 466 >= 87.5, pass;
+	  ~35 ms (iPhone) and ~100 ms (Android low-latency, still to be measured)
+	  are <= W and exempt; 211.25 ms (Apple's recommended interval) gives
+	  d = 9.4, d x N = 47 < 111.25 and FAILS - an open item in the amendment.
+	  Re-run the check for any new period or newly measured interval. The
+	  shorter period raises the scan terms of the ~69 uA budget by 6000/5906,
+	  about 1.6 %, which is negligible.
 
 config MFS_SCAN_WINDOW_MS
 	int "Passive scan window (milliseconds)"
