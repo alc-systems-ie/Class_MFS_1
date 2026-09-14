@@ -35,7 +35,7 @@ Hardware is the `alc_drawer_master` board **minus the FEM**: **nRF54L05 + nPM210
 | Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version 0x03 with an explicit command type |
 | Day boundary | **04:00 UTC**, no multi-day validity window |
 | Timekeeping | **LFXO** 32.768 kHz (fitted), GRTC-sourced. **No external RTC** (BOM, reaffirmed 2026-09-13). Invalid on every boot until provisioner sync |
-| Battery | CR123A, ~2.4 year expected life at ~69 µA average |
+| Battery | CR123A, ~2.4 year expected life at ~70 µA average |
 
 Full derivation, component figures with citations, and the reasoning behind each
 choice: **`docs/power-budget.md`**. Read it before changing the duty cycle, the

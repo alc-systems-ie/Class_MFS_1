@@ -217,7 +217,7 @@ board. It also removes the standing risk recorded below.
 
 Retained for the record, and because it applies to any future FEM-equipped
 variant: the nRF21540 LNA draws ~5 mA when active. Enabled across the 100 ms scan
-window it would add 5 mA × 1.693% = **84.7 µA** — more than doubling the total
+window it would add 5 mA × 1.702% = **85.1 µA** — more than doubling the total
 budget and cutting life to roughly 10 months. Any FEM-equipped variant of this
 design must keep the LNA off for the periodic scan and engage the FEM only for the
 transmit/connect burst following a detected event, at POUTB (+10 dB) per the Irish

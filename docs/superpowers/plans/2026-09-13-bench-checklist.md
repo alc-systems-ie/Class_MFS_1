@@ -28,7 +28,8 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 ## 2. Boot and access state (Task 9)
 
 - [x] First boot: `No access state stored - first boot, no day floor.`
-- [x] `Passive scan started: 100 ms window every 5876 ms.`
+- [ ] `Passive scan started: 100 ms window every 5876 ms.` (re-verify at 5876 ms —
+  this line was last observed on hardware at the earlier 5906 ms default)
 - [x] Temporarily enable `CONFIG_THREAD_ANALYZER=y` (and `CONFIG_THREAD_ANALYZER_AUTO=y` or a manual call point), flash, provision, send a command and trigger the device, then record the reported high-water marks for the main thread and the Bluetooth RX thread. Revert the Kconfig afterwards.
 
 ## 3. Provisioning and commands, end to end (Task 13)

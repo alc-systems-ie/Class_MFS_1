@@ -61,12 +61,25 @@ and plausible counterpart intervals):
 | 5905.625 ms | PASS | PASS | **FAIL 35%** | FAIL 21% | FAIL 18% | FAIL 8% | FAIL 39% | FAIL 59% | FAIL 51% | FAIL 61% |
 | **5875.625 ms (new default)** | PASS | **PASS** | **PASS** | **PASS** | FAIL 47% | FAIL 24% | FAIL 40% | FAIL 45% | FAIL 59% | FAIL 61% |
 
-(35 ms and 100 ms are exempt at every period, I ≤ W.) 5875.625 ms (9401 BLE units) is
-the shortest period at this window/N that clears every measured or plausible interval up
-to 318.75 ms; the sweep in the script's `--sweep` mode shows the pass region ends at
-9403 units and the next unit above it already fails against 318.75 ms. Window stays
-100 ms; average current rises by 6000/5876 on the scan terms (~2.1 %), negligible
-against the ~69 µA budget (`docs/power-budget.md` §3).
+(35 ms and 100 ms are exempt at every period, I ≤ W.) 5875.625 ms (9401 BLE units)
+**passes every measured or plausible interval up to 318.75 ms** — it is not the
+*shortest* period with that property, and passing periods are not unique: sweeping
+`--sweep` over a wide range against this interval set turns up several other passing
+islands, for example around 9335 units (5834.375 ms) and 9537–9553 units
+(5960.625–5970.625 ms). 9401 is simply the owner's choice — chosen from inside a
+passing island wide enough to have margin, not because it is extremal in any sense.
+
+**Margin at 9401.** Sweeping the 61 units either side of it (9371–9431) shows the
+island containing 9401 runs from **9355 to 9403 units (5846.875–5876.875 ms)** — a
+49-unit-wide (30.6 ms) contiguous run that all pass against every interval up to
+318.75 ms — before failing at 9404 units (0.8% against 318.75 ms, rising steadily
+with distance from the island). 9401 sits 3 units from the island's upper edge and
+46 from its lower edge, so it has some margin against a future re-measurement nudging
+an interval slightly, but not a great deal on the upper side; re-run the sweep before
+assuming a similar value is safe.
+
+Window stays 100 ms; average current rises by 6000/5876 on the scan terms (~2.1 %),
+negligible against the ~70 µA budget (`docs/power-budget.md` §3).
 
 **Intervals from about 5 × W upward cannot be fully covered by any period at N = 5.**
 546.25 ms and above fail at all three periods above: a single 100 ms window can
