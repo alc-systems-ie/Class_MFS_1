@@ -227,6 +227,10 @@ namespace alc
     bool previousTriggered { false };
     bool ledA { false };
     bool ledB { false };
+#if defined(CONFIG_MFS_DEBUG_LED)
+    bool previousDetection { false };
+    int64_t detectionStartMs { 0 };
+#endif
 #if defined(CONFIG_MFS_BATTERY_TEST)
     uint32_t blinkTicks { 0 };
     uint32_t blinkOnTicks { 0 };
@@ -372,6 +376,20 @@ namespace alc
       // a bench indicator, not an output consumer - OutputSwitch is the example
       // future consumers copy (design spec section 6.2).
       ledB = m_detection_met;
+
+      // Logged on transitions, in either arm state. While Inactive nothing else
+      // reports a simulated trigger - the Output line below only fires armed -
+      // so without this a tuning session shows "Activation 3 of 3." and then
+      // silence, and LED B is the only evidence (bench, 2026-09-14).
+      if (m_detection_met != previousDetection) {
+        previousDetection = m_detection_met;
+        if (m_detection_met) {
+          detectionStartMs = ledNowMs;
+          LOG_INF("Detection met (%s) - LED B on.", m_arm_state == ArmState::Active ? "armed" : "tuning");
+        } else {
+          LOG_INF("Detection cleared after %lld ms - LED B off.", ledNowMs - detectionStartMs);
+        }
+      }
 #endif
 
       // Log only on transitions. A periodic dump floods the 4 KB RTT buffer in
