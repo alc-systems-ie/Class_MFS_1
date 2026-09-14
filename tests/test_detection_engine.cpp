@@ -21,6 +21,14 @@ namespace
   constexpr uint16_t M_DELAY_SECS { 30 };
   constexpr uint32_t M_DERIVATION_TICKS { 20 };
   constexpr int M_CONFIGURE_FAILURE { -EIO };
+  constexpr int M_STANDBY_FAILURE { -EIO };
+  constexpr int M_TIMER_FAILURE { -EIO };
+  constexpr int64_t M_RETRY_MS { DetectionEngine::M_COOLDOWN_RETRY_MS };
+  constexpr uint32_t M_TICKS_PER_SECOND { DetectionEngine::M_TICKS_PER_SECOND };
+
+  // INT1 toggle periods for "motion during a blanked period" loops.
+  constexpr int64_t M_SLOW_TOGGLE_MS { 1000 };
+  constexpr int64_t M_FAST_TOGGLE_MS { 200 };
   constexpr bool M_BOTH_STATES[] { false, true };
 
   class FakeHardware : public DetectionHardware
@@ -55,7 +63,7 @@ namespace
       {
         stopCooldownCalls++;
         cooldownRunning = false;
-        return 0;
+        return stopCooldownResult;
       }
 
       int CooldownTimerExpired(bool& expired) override
@@ -123,6 +131,7 @@ namespace
       uint32_t startCooldownCalls { 0 };
       uint32_t lastCooldownMs { 0 };
       uint32_t stopCooldownCalls { 0 };
+      int stopCooldownResult { 0 };
       bool cooldownRunning { false };
       bool cooldownExpired { false };
       uint32_t clearEventCalls { 0 };
@@ -312,7 +321,11 @@ namespace
 
   void testCooldown()
   {
-    constexpr int64_t M_DEADLINE_MS { M_COOLDOWN_SECS * M_MSEC_PER_SEC + (M_COOLDOWN_SECS * M_MSEC_PER_SEC) / 10 + 2000 };
+    // Independent restatement of the fallback: +-10% PMIC tolerance plus 2 s grace.
+    constexpr int64_t M_PMIC_TOLERANCE_DIVISOR { 10 };
+    constexpr int64_t M_LOOP_GRACE_MS { 2000 };
+    constexpr int64_t M_COOLDOWN_MS { M_COOLDOWN_SECS * M_MSEC_PER_SEC };
+    constexpr int64_t M_DEADLINE_MS { M_COOLDOWN_MS + M_COOLDOWN_MS / M_PMIC_TOLERANCE_DIVISOR + M_LOOP_GRACE_MS };
 
     // Section 2: the cooldown between activations runs identically in both states.
     for (bool armed : M_BOTH_STATES) {
@@ -392,7 +405,7 @@ namespace
 
       // Detection waits for the delay; edges during it are not counted.
       while (rig.hardware.nowMs + M_TICK_MS < expiryMs) {
-        assert(!rig.tick(rig.hardware.nowMs % 1000 == 0));
+        assert(!rig.tick(rig.hardware.nowMs % M_SLOW_TOGGLE_MS == 0));
         assert(!rig.engine.DetectionMet());
       }
       assert(rig.hardware.countEvents(DetectionEventType::Activation) == 1);
@@ -454,7 +467,8 @@ namespace
 
   void testArmingMidTest()
   {
-    constexpr uint32_t M_PAST_ANY_DEADLINE_TICKS { (M_DELAY_SECS + M_COOLDOWN_SECS * 2) * 10 };
+    constexpr uint32_t M_COOLDOWNS_TO_OUTLAST { 2 };
+    constexpr uint32_t M_PAST_ANY_DEADLINE_TICKS { (M_DELAY_SECS + M_COOLDOWN_SECS * M_COOLDOWNS_TO_OUTLAST) * M_TICKS_PER_SECOND };
 
     // ================================================================
     //  SAFETY - section 3.2. Arming at any moment of a test starts the
@@ -509,7 +523,7 @@ namespace
 
   void testConfigureFailureOnArm()
   {
-    constexpr int64_t M_RETRY_MS { DetectionEngine::M_COOLDOWN_RETRY_MS };
+    constexpr uint32_t M_SECOND_RETRY { 2 };
 
     // Section 3: a failed configure refuses the arm, and the engine retries at 1 Hz.
     Rig rig(M_THREE, 0, 0);
@@ -532,12 +546,12 @@ namespace
 
     // No more than one attempt per M_COOLDOWN_RETRY_MS, and no counting meanwhile.
     while (rig.hardware.nowMs + M_TICK_MS < failedAtMs + M_RETRY_MS) {
-      assert(!rig.tick(rig.hardware.nowMs % 200 == 0));
+      assert(!rig.tick(rig.hardware.nowMs % M_FAST_TOGGLE_MS == 0));
       assert(rig.hardware.configureCalls == 2);
     }
     rig.tick(false);
     assert(rig.hardware.configureCalls == 3);
-    while (rig.hardware.nowMs + M_TICK_MS < failedAtMs + 2 * M_RETRY_MS) {
+    while (rig.hardware.nowMs + M_TICK_MS < failedAtMs + M_SECOND_RETRY * M_RETRY_MS) {
       rig.tick(false);
       assert(rig.hardware.configureCalls == 3);
     }
@@ -551,6 +565,49 @@ namespace
     rig.tap();
     assert(rig.engine.ActivationCount() == 1);
     assert(!rig.everOutput);
+    assert(rig.hardware.countEvents(DetectionEventType::RestartStandbyFailed) == 0);
+
+    // A refused arm is not tagged armed: an output note after it is no one-shot.
+    {
+      Rig refused(M_ONE, 0, 0);
+
+      refused.hardware.configureResult = M_CONFIGURE_FAILURE;
+      assert(refused.restart(true) == M_CONFIGURE_FAILURE);
+      refused.engine.NoteOutput(true);
+      refused.engine.NoteOutput(false);
+      assert(!refused.engine.TakeTriggerComplete());
+    }
+
+    // The best-effort standby after a refused arm fails too: reported, and the
+    // retry still runs.
+    {
+      Rig refused(M_THREE, 0, 0);
+
+      refused.hardware.configureResult = M_CONFIGURE_FAILURE;
+      refused.hardware.standbyResult   = M_STANDBY_FAILURE;
+      assert(refused.restart(true) == M_CONFIGURE_FAILURE);
+      assert(refused.hardware.countEvents(DetectionEventType::RestartStandbyFailed) == 1);
+      assert(refused.hardware.events.back().armed && refused.hardware.events.back().result == M_STANDBY_FAILURE);
+      refused.hardware.configureResult = 0;
+      refused.idleUntil(refused.hardware.nowMs + M_RETRY_MS);
+      assert(!refused.engine.InCooldown());
+      refused.tap();
+      assert(refused.engine.ActivationCount() == 1);
+    }
+
+    // A Restart that cannot stop a running cooldown timer reports it and still
+    // discards the cooldown.
+    {
+      Rig stuck(M_THREE, M_COOLDOWN_SECS, 0);
+
+      assert(stuck.restart(false) == 0);
+      stuck.tap();
+      assert(stuck.engine.InCooldown());
+      stuck.hardware.stopCooldownResult = M_TIMER_FAILURE;
+      assert(stuck.restart(true) == 0);
+      assert(stuck.hardware.countEvents(DetectionEventType::RestartCooldownStopFailed) == 1);
+      assert(!stuck.engine.InCooldown() && stuck.engine.ActivationCount() == 0);
+    }
     printf("detection engine configure failure on arm: OK\n");
   }
 
@@ -583,7 +640,7 @@ namespace
 
       // No counting during the detection period, armed or not.
       while (rig.engine.DetectionMet()) {
-        rig.tick(rig.hardware.nowMs % 200 == 0);
+        rig.tick(rig.hardware.nowMs % M_FAST_TOGGLE_MS == 0);
         if (rig.engine.DetectionMet()) { assert(!rig.engine.TakeTriggerComplete()); }
       }
       assert(rig.hardware.countEvents(DetectionEventType::Activation) == activations);
@@ -628,7 +685,7 @@ namespace
       assert(rig.engine.IgnoringStaleAwake());
       assert(rig.hardware.countEvents(DetectionEventType::WatchdogRearm) == 1);
       for (const DetectionEvent& event : rig.hardware.events) {
-        if (event.type == DetectionEventType::WatchdogRearm) { assert(event.seconds == M_STUCK_TICKS / 10); }
+        if (event.type == DetectionEventType::WatchdogRearm) { assert(event.seconds == M_STUCK_TICKS / M_TICKS_PER_SECOND); }
       }
       rig.tick(true);
       assert(!rig.engine.DetectionMet() && rig.engine.ActivationCount() == 0);
@@ -655,7 +712,7 @@ namespace
       rig.hardware.configureResult = 0;
       rig.tick(false);
       assert(rig.hardware.configureCalls == configureBefore + 2);
-      rig.idleUntil(rig.hardware.nowMs + DetectionEngine::M_COOLDOWN_RETRY_MS);
+      rig.idleUntil(rig.hardware.nowMs + M_RETRY_MS);
       assert(rig.hardware.configureCalls == configureBefore + 3 && !rig.engine.InCooldown());
     }
     printf("detection engine watchdog: OK\n");
@@ -715,6 +772,232 @@ namespace
     printf("detection engine scan lost during armed delay: OK\n");
   }
 
+  // Ticks until the next configure attempt, asserting it comes no sooner than
+  // M_COOLDOWN_RETRY_MS after the previous one and no later than one tick past.
+  void expectRetryAfter(Rig& rig, int64_t previousAttemptMs)
+  {
+    uint32_t configureBefore { rig.hardware.configureCalls };
+
+    while (rig.hardware.nowMs + M_TICK_MS < previousAttemptMs + M_RETRY_MS) {
+      assert(!rig.tick(rig.hardware.nowMs % M_FAST_TOGGLE_MS == 0));
+      assert(rig.hardware.configureCalls == configureBefore);
+    }
+    rig.tick(false);
+    assert(rig.hardware.configureCalls == configureBefore + 1);
+  }
+
+  void testCooldownFailures()
+  {
+    // Every cooldown failure branch must end with detection restored or a 1 Hz
+    // retry pending - never a part stood down with nothing to bring it back.
+    for (bool armed : M_BOTH_STATES) {
+      // Timer start fails AND the restoring configure fails.
+      {
+        Rig rig(M_THREE, M_COOLDOWN_SECS, 0);
+        int64_t attemptMs { 0 };
+
+        assert(rig.restart(armed) == 0);
+        rig.hardware.startCooldownResult = M_TIMER_FAILURE;
+        rig.hardware.stopCooldownResult  = M_TIMER_FAILURE;
+        rig.hardware.configureResult     = M_CONFIGURE_FAILURE;
+        rig.tick(true);
+        attemptMs = rig.hardware.nowMs;
+        assert(rig.hardware.countEvents(DetectionEventType::CooldownTimerFailed) == 1);
+        assert(rig.hardware.countEvents(DetectionEventType::CooldownTimerStopFailed) == 1);
+        assert(rig.hardware.countEvents(DetectionEventType::CooldownRestoreFailed) == 1);
+        assert(rig.engine.InCooldown() && rig.engine.ActivationCount() == 1);
+
+        // A configure attempt every M_COOLDOWN_RETRY_MS, no counting meanwhile.
+        expectRetryAfter(rig, attemptMs);
+        attemptMs = rig.hardware.nowMs;
+        expectRetryAfter(rig, attemptMs);
+        attemptMs = rig.hardware.nowMs;
+        assert(rig.engine.InCooldown() && rig.engine.ActivationCount() == 1);
+
+        // The PMIC timer that never started is never consulted for expiry.
+        rig.hardware.cooldownExpired = true;
+        rig.tick(false);
+        assert(rig.hardware.clearEventCalls == 0);
+
+        rig.hardware.configureResult     = 0;
+        rig.hardware.startCooldownResult = 0;
+        expectRetryAfter(rig, attemptMs);
+        assert(!rig.engine.InCooldown());
+        rig.tap();
+        assert(rig.engine.ActivationCount() == 2);
+        assert(!rig.everOutput);
+      }
+
+      // Timer start fails, restore succeeds: fail toward detecting at once.
+      {
+        Rig rig(M_THREE, M_COOLDOWN_SECS, 0);
+
+        assert(rig.restart(armed) == 0);
+        rig.hardware.startCooldownResult = M_TIMER_FAILURE;
+        rig.tick(true);
+        assert(rig.hardware.countEvents(DetectionEventType::CooldownTimerFailed) == 1);
+        assert(rig.hardware.countEvents(DetectionEventType::CooldownRestoreFailed) == 0);
+        assert(!rig.engine.InCooldown());
+        rig.tick(false);
+        rig.tick(true);
+        assert(rig.engine.ActivationCount() == 2);
+      }
+
+      // Standby fails part-way (INT1 may already be unmapped).
+      {
+        Rig rig(M_THREE, M_COOLDOWN_SECS, 0);
+        uint32_t configureBefore { 0 };
+        int64_t attemptMs { 0 };
+
+        assert(rig.restart(armed) == 0);
+        configureBefore            = rig.hardware.configureCalls;
+        rig.hardware.standbyResult = M_STANDBY_FAILURE;
+        rig.tick(true);
+        attemptMs = rig.hardware.nowMs;
+        assert(rig.hardware.countEvents(DetectionEventType::CooldownStandbyFailed) == 1);
+        assert(rig.hardware.startCooldownCalls == 0);
+        assert(rig.engine.InCooldown());
+
+        // The full bootstrap runs within M_COOLDOWN_RETRY_MS.
+        rig.hardware.standbyResult = 0;
+        expectRetryAfter(rig, attemptMs);
+        assert(rig.hardware.configureCalls == configureBefore + 1 && !rig.engine.InCooldown());
+        rig.tap();
+        assert(rig.engine.ActivationCount() == 2);
+        assert(!rig.everOutput);
+      }
+    }
+    printf("detection engine cooldown failures: OK\n");
+  }
+
+  // The session after an accepted arm is fresh: nothing pending retries, nothing
+  // counted, no output for the derivation window and past every deadline, and
+  // the first edge reads as activation 1 (or, for N = 1, is the first fire).
+  void assertFreshArmedSession(Rig& rig, uint32_t configureAtArm)
+  {
+    constexpr uint32_t M_PAST_RETRY_AND_DEADLINES_TICKS { (M_DELAY_SECS + M_COOLDOWN_SECS) * M_TICKS_PER_SECOND };
+
+    assert(rig.armed);
+    assertRestartedFromZero(rig);
+    assert(!rig.engine.IgnoringStaleAwake());
+    for (uint32_t i = 0; i < M_PAST_RETRY_AND_DEADLINES_TICKS; i++) {
+      assert(!rig.tick(false));
+    }
+
+    // No stale retry configured the part again, and nothing was counted.
+    assert(rig.hardware.configureCalls == configureAtArm);
+    assert(rig.engine.ActivationCount() == 0 && !rig.everOutput);
+
+    if (rig.settings.activations > 1) {
+      assert(!rig.tick(true));
+      assert(rig.engine.ActivationCount() == 1);
+    } else {
+      // Teeth: the rig can fire, so the silence above was the engine's doing.
+      assert(rig.tick(true));
+    }
+  }
+
+  void testArmingFromRetryState()
+  {
+    constexpr uint8_t M_ACTIVATION_CASES[] { M_ONE, M_THREE };
+
+    // SAFETY - section 3.2 applied to the retry path.
+    for (uint8_t activations : M_ACTIVATION_CASES) {
+      // (a) Disarmed watchdog re-arm fails -> retry pending -> Arm succeeds.
+      {
+        Rig rig(activations, 0, 0);
+
+        assert(rig.restart(false) == 0);
+        rig.hardware.configureResult = M_CONFIGURE_FAILURE;
+        for (uint32_t i = 0; i < DetectionEngine::M_AWAKE_STUCK_TICKS; i++) {
+          rig.tick(true);
+        }
+        assert(rig.engine.InCooldown());
+        rig.hardware.configureResult = 0;
+        assert(rig.restart(true) == 0);
+        assertFreshArmedSession(rig, rig.hardware.configureCalls);
+      }
+
+      // (b) Refused arm -> accepted arm.
+      {
+        Rig rig(activations, 0, 0);
+
+        assert(rig.restart(false) == 0);
+        rig.tick(true);
+        rig.hardware.configureResult = M_CONFIGURE_FAILURE;
+        assert(rig.restart(true) == M_CONFIGURE_FAILURE && !rig.armed);
+        assert(!rig.engine.DetectionMet() && rig.engine.ActivationCount() == 0);
+        for (uint32_t i = 0; i < M_DERIVATION_TICKS; i++) {
+          assert(!rig.tick(i % 2 == 0));
+        }
+        rig.hardware.configureResult = 0;
+        assert(rig.restart(true) == 0);
+        assertFreshArmedSession(rig, rig.hardware.configureCalls);
+      }
+    }
+    printf("detection engine SAFETY arming from the retry state: OK\n");
+  }
+
+  void testArmingMidTestSingleActivation()
+  {
+    // SAFETY - section 3.2 with N = 1, delay 0: the case where ANY inherited edge,
+    // level or latch would fire the output on the spot.
+
+    // A test detection in progress, AWAKE still asserted and still reported by
+    // STATUS after the configure.
+    {
+      Rig rig(M_ONE, 0, 0);
+
+      assert(rig.restart(false) == 0);
+      rig.tick(true);
+      rig.tick(true);
+      assert(rig.engine.DetectionMet() && !rig.everOutput);
+
+      rig.hardware.awakeAfterConfigure = true;
+      assert(rig.restart(true) == 0);
+      rig.hardware.awakeAfterConfigure = false;
+      for (uint32_t i = 0; i < M_DERIVATION_TICKS; i++) {
+        assert(!rig.tick(true));
+      }
+      for (uint32_t i = 0; i < M_DERIVATION_TICKS; i++) {
+        assert(!rig.tick(false));
+      }
+      assert(!rig.everOutput);
+
+      // A fresh edge after release does fire - so the silence above has teeth.
+      assert(rig.tick(true));
+    }
+
+    // A test detection in progress, released at arming.
+    {
+      Rig rig(M_ONE, 0, 0);
+
+      assert(rig.restart(false) == 0);
+      rig.tick(true);
+      assert(rig.engine.DetectionMet());
+      assert(rig.restart(true) == 0);
+      for (uint32_t i = 0; i < M_DERIVATION_TICKS; i++) {
+        assert(!rig.tick(false));
+      }
+      assert(!rig.everOutput);
+      assert(rig.tick(true));
+    }
+
+    // A test delay pending at arming (N = 1, delay 30 s) never fires.
+    {
+      Rig rig(M_ONE, 0, M_DELAY_SECS);
+      int64_t oldDeadlineMs { 0 };
+
+      assert(rig.restart(false) == 0);
+      rig.tap();
+      oldDeadlineMs = rig.hardware.delayEndMs;
+      assert(rig.restart(true) == 0);
+      rig.idleUntil(oldDeadlineMs + DetectionEngine::M_DELAYED_TRIGGER_HOLD_MS);
+      assert(!rig.everOutput && !rig.engine.DetectionMet());
+    }
+    printf("detection engine SAFETY arming mid-test, N = 1: OK\n");
+  }
+
 }
 
 void run_detection_engine_tests()
@@ -724,6 +1007,9 @@ void run_detection_engine_tests()
   testDelay();
   testRestartFromEverySubState();
   testArmingMidTest();
+  testArmingMidTestSingleActivation();
+  testArmingFromRetryState();
+  testCooldownFailures();
   testConfigureFailureOnArm();
   testOneShot();
   testWatchdog();

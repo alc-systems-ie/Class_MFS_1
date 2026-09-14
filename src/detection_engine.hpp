@@ -3,17 +3,21 @@
 #include <cstdint>
 
 // Pure: no Zephyr headers, so the engine compiles and is tested on the host.
-// Kconfig values reach it only through the CONFIG_ macros Zephyr pre-includes;
-// the host build takes the Kconfig defaults below.
+// Kconfig values reach it only through the CONFIG_ macros Zephyr pre-includes.
+// The host fallback below applies ONLY when the host Makefile defines
+// ALC_HOST_BUILD; any other build without the Kconfig value fails to compile,
+// so the fallback can never silently apply on target.
 
 namespace alc
 {
 
 #if defined(CONFIG_MFS_ADXL_INACTIVITY_SECS)
   constexpr uint32_t M_DETECTION_INACTIVITY_SECS { CONFIG_MFS_ADXL_INACTIVITY_SECS };
-#else
+#elif defined(ALC_HOST_BUILD)
   // Host build only: the Kconfig default of MFS_ADXL_INACTIVITY_SECS.
   constexpr uint32_t M_DETECTION_INACTIVITY_SECS { 5 };
+#else
+#error "CONFIG_MFS_ADXL_INACTIVITY_SECS is not defined - the detection engine needs the Kconfig value on target."
 #endif
 
   /**
@@ -207,7 +211,10 @@ namespace alc
       int enableAccelerometer(const DetectionSettings& settings, bool armed);
 
       // Stands the ADXL367 down and starts the PMIC timer for the cooldown between
-      // counted activations. No-op when the cooldown is zero.
+      // counted activations. No-op when the cooldown is zero. On any failure that
+      // can leave the part unconfigured - a failed standby, or a failed timer
+      // start whose restoring configure also fails - it hands over to the retry
+      // path, so the device is never left deaf with nothing to bring it back.
       int beginCooldown(const DetectionSettings& settings, bool armed, int64_t nowMs);
 
       // Polls the PMIC timer; on expiry re-arms the ADXL367 through the full
@@ -296,7 +303,8 @@ namespace alc
       // requests no latch.
       bool m_test_detection_active;
 
-      // The armed flag of the most recent Restart() or Tick(), for NoteOutput().
+      // The armed flag of the most recent Tick(), or of a Restart() whose configure
+      // succeeded (a refused arm leaves it false), for NoteOutput().
       bool m_armed;
   };
 

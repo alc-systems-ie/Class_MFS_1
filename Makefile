@@ -7,8 +7,12 @@ HOST_SRCS = src/mfs_protocol.cpp src/access_keys.cpp src/device_clock.cpp src/ac
 TEST_SRCS = $(wildcard tests/test_*.cpp)
 SRCS      = $(HOST_SRCS) $(TEST_SRCS)
 
+# Separate from CXXFLAGS so an override cannot drop it: it is what lets
+# detection_engine.hpp take its host fallback instead of failing with #error.
+HOST_DEFINES = -DALC_HOST_BUILD
+
 test: $(SRCS)
-	$(CXX) $(CXXFLAGS) $(SRCS) -o test_runner $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) $(HOST_DEFINES) $(SRCS) -o test_runner $(LDFLAGS)
 	./test_runner
 
 clean:

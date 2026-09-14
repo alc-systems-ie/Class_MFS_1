@@ -44,7 +44,10 @@ namespace alc
     int result { 0 };
     int standbyResult { 0 };
 
-    m_armed = armed;
+    // Tagged armed only once the configure has succeeded, below - a refused arm
+    // must not drive NoteOutput()'s armed one-shot. Events raised during the
+    // restart still carry the REQUESTED armed flag, so App can word them.
+    m_armed = false;
 
     // A pending delay - armed trigger or test - never outlives a restart. The
     // pending state is also deliberately not persisted, so a reset loses it too
@@ -95,6 +98,7 @@ namespace alc
       return result;
     }
 
+    m_armed = armed;
     return 0;
   }
 
@@ -150,7 +154,8 @@ namespace alc
         }
       } else {
         // Result not checked here - beginCooldown() already reports its own
-        // failure, and on failure it has itself restored detection.
+        // failure, and on failure it has itself restored detection or handed
+        // over to the retry path.
         beginCooldown(settings, armed, nowMs);
       }
     }
@@ -316,6 +321,13 @@ namespace alc
     result = m_hardware.StandbyAccelerometer();
     if (result < 0) {
       report(DetectionEventType::CooldownStandbyFailed, armed, result);
+
+      // NEVER just return. Standby is several register writes, and INT1 is
+      // unmapped before POWER_CTL is written - a failure part-way leaves the part
+      // deaf with INT1 silent, which the stuck-AWAKE watchdog cannot see. Hand
+      // over to the retry path so the full bootstrap runs within
+      // M_COOLDOWN_RETRY_MS and keeps running at 1 Hz until detection is back.
+      handOverToRetry(nowMs + M_COOLDOWN_RETRY_MS, true);
       return result;
     }
 
@@ -328,7 +340,16 @@ namespace alc
       cleanupResult = m_hardware.StopCooldownTimer();
       if (cleanupResult < 0) { report(DetectionEventType::CooldownTimerStopFailed, armed, cleanupResult); }
       cleanupResult = enableAccelerometer(settings, armed);
-      if (cleanupResult < 0) { report(DetectionEventType::CooldownRestoreFailed, armed, cleanupResult); }
+      if (cleanupResult < 0) {
+        report(DetectionEventType::CooldownRestoreFailed, armed, cleanupResult);
+
+        // The part is stood down and would not configure. Without a hand-over
+        // nothing would ever bring it back: not in cooldown, so no retry, and
+        // INT1 silent, so no watchdog - a SILENT loss of the alarm. The retry
+        // path treats the window as already expired, so the PMIC timer that
+        // failed to start is never consulted.
+        handOverToRetry(nowMs + M_COOLDOWN_RETRY_MS, true);
+      }
       return result;
     }
 
