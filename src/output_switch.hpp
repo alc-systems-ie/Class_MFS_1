@@ -35,8 +35,9 @@ namespace alc
    *   Both writes are always attempted, so a gate is never left energised because
    *   an earlier call bailed out.
    * - A failure **latches the switch faulty** and it refuses to assert again.
-   *   Refusing to fire is the safe failure. A lost clear also latches, because the
-   *   series redundancy it depended on is then spent.
+   *   Refusing to fire is the safe failure. A lost clear - a failed write or a
+   *   read-back that is not low - also latches and isolates both pins, because
+   *   the series redundancy it depended on is then spent.
    * - **The pins have no driver unless the switch is enabled.** The gates carry
    *   external 10 kΩ pull-downs, so both MOSFETs are off from reset and the
    *   hardware is already fail-safe. While the device is not Active both pins are
@@ -122,6 +123,12 @@ namespace alc
        * @note Asserting while faulty is refused and both lines are forced low.
        *       Clearing an enabled switch is always attempted, whatever the state
        *       of the object.
+       * @note A failed clear on an enabled switch - a write error on either pin,
+       *       or a read-back that is not low - latches the switch faulty and
+       *       isolates both pins, exactly as enterFaultState() does for every
+       *       other failure. Both gates failing is logged as an emergency, one as
+       *       lost redundancy. The switch is then disabled, so later Set(false)
+       *       calls return 0 without logging again.
        */
       int Set(bool assert);
 
@@ -170,7 +177,9 @@ namespace alc
       int driveBoth(bool assert);
 
       // Confirms both pins read back at the level just driven. Returns 0 when
-      // read-back is unsupported, so an unverifiable build still operates.
+      // read-back is unsupported, so an unverifiable build still operates. A
+      // clear that did not take is logged with the one-versus-both distinction.
+      // Does not latch the fault - the caller does.
       int verifyBoth(bool assert);
 
       // Drives both lines low, then disconnects both, attempting every step on both

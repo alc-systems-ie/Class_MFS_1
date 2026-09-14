@@ -215,10 +215,16 @@ namespace alc
 
       m_asserted = false;
 
+      // A failed clear - a write error or a read-back that is not low - LATCHES
+      // the switch faulty and isolates both pins, whichever way it failed.
+      // enterFaultState() leaves the switch disabled, so every later Set(false)
+      // takes the disabled early return above: the fault is logged once, not
+      // once per main-loop tick.
       if (result1 < 0 && result2 < 0) {
         // Nothing in software can stop the current now. Only the external gate
         // pull-downs remain.
         LOG_ERR("BOTH FIRE GATES FAILED TO CLEAR (%d, %d) - THE DEVICE MAY BE FIRING!", result1, result2);
+        enterFaultState("both fire gates failed to clear", result1);
         return result1;
       }
 
@@ -226,13 +232,21 @@ namespace alc
         // Safe, because the surviving MOSFET blocks the circuit on its own. But
         // the series redundancy that made it safe is now spent, and a second
         // failure would fire the device.
+        result = result1 < 0 ? result1 : result2;
         LOG_ERR("Fire gate %s failed to clear: %d! Output is SAFE - the other MOSFET blocks - but redundancy is LOST!", result1 < 0 ? "1" : "2",
-                result1 < 0 ? result1 : result2);
-        m_faulted = true;
-        return result1 < 0 ? result1 : result2;
+                result);
+        enterFaultState("a fire gate failed to clear", result);
+        return result;
       }
 
-      return verifyBoth(false);
+      // The writes succeeded; prove the pins went low. verifyBoth() names a gate
+      // still reading high with the same one-versus-both wording as above.
+      result = verifyBoth(false);
+      if (result < 0) {
+        enterFaultState("fire pins did not read back low on clear", result);
+        return result;
+      }
+      return 0;
     }
 
     if (!IsUsable()) {
@@ -333,11 +347,26 @@ namespace alc
     // but raw is what is actually on the pin and the point of a read-back is to
     // learn what the hardware did, not what the logical layer believes.
     int expected { assert ? M_GATE_ON : M_GATE_OFF };
+    bool clearing { !assert };
     int level1 { gpio_pin_get_raw(s_fire1.port, s_fire1.pin) };
     int level2 { gpio_pin_get_raw(s_fire2.port, s_fire2.pin) };
 
     if (level1 < 0) { return level1; }
     if (level2 < 0) { return level2; }
+
+    // A clear that did not take is reported with the one-versus-both distinction.
+    // The gates are in SERIES: one still high is safe but has spent the
+    // redundancy, both still high means the device may be conducting right now.
+    if (clearing && level1 != M_GATE_OFF && level2 != M_GATE_OFF) {
+      LOG_ERR("BOTH FIRE GATES FAILED TO CLEAR (read back Fire1 %d Fire2 %d) - THE DEVICE MAY BE FIRING!", level1, level2);
+      return -EIO;
+    }
+
+    if (clearing && (level1 != M_GATE_OFF || level2 != M_GATE_OFF)) {
+      LOG_ERR("Fire gate %s failed to clear: read back high! Output is SAFE - the other MOSFET blocks - but redundancy is LOST!",
+              level1 != M_GATE_OFF ? "1" : "2");
+      return -EIO;
+    }
 
     if (level1 != expected || level2 != expected) {
       // Named per channel. With two series MOSFETs, knowing WHICH gate misbehaved

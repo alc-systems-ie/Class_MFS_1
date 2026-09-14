@@ -210,7 +210,7 @@ namespace alc
       , m_access_ready(false)
       , m_output_switch()
       , m_output_active(false)
-      , m_switch_fault_warned(false)
+      , m_switch_fault_pending(false)
       , m_settings()
       , m_delay_timer {}
       , m_delay_pm_lock_held(false)
@@ -345,6 +345,8 @@ namespace alc
       // derived below, so nothing ticks the engine or derives the output between
       // the armed restart and Active. Only a completed arming is acknowledged.
       if (m_arming.Service(k_uptime_get())) {
+        // A new Active session: its first switch fault is warned and disarmed.
+        m_switch_fault_pending = false;
         LOG_INF("Arm state: Active - fire pins enabled (uptime %lld ms).", k_uptime_get());
         playLedPattern(LedPattern::Armed);
       }
@@ -364,6 +366,21 @@ namespace alc
 
       // The ONE place the output state is derived. See updateOutputState().
       updateOutputState(EngineTick::Run);
+
+      // FAIL SAFE ON A SWITCH FAULT. A fire switch failure while Active has
+      // latched the switch faulty and raised the warning inside
+      // updateOutputState(); the device must not stay armed on a switch that can
+      // no longer be trusted. Acted on here, not there, for the same reason as the
+      // trigger latch below: the disarm path re-enters updateOutputState(). This
+      // is the ordinary disarm - pins isolated first, Inactive, test restarted -
+      // with no LED A acknowledgement.
+      if (m_switch_fault_pending) {
+        m_switch_fault_pending = false;
+        if (m_arming.State() == ArmState::Active) {
+          LOG_WRN("Fire switch fault while armed - disarmed (fail safe).");
+          (void)disarmDevice();
+        }
+      }
 
       // Firing is one of the only two ways out of the armed state. Acted on here,
       // not inside updateOutputState(), because the disarm path re-enters it. The
@@ -429,12 +446,18 @@ namespace alc
           LOG_INF("Detection cleared after %lld ms - LED B off.", ledNowMs - detectionStartMs);
         }
       }
+#else
+      // Production: LED B is dark unless the warning plays. Assigned on EVERY
+      // pass, as LED A is, or a pass that sampled a warning on-phase would leave
+      // ledB true, and the first pass after the warning ends would write that
+      // stale level back to the pin and leave LED B lit.
+      ledB = false;
 #endif
 
       // While the interim warning plays, the 10 ms warning timer owns LED B
       // exclusively - in EVERY build, overriding the bench detection level. ledB
       // is still computed so the transition log reports what is actually lit;
-      // the pin write itself is skipped below. Production has ledB false here.
+      // the pin write itself is skipped below.
       if (warningActive) { ledB = m_warning_sequencer.Level(ledNowMs); }
 
       // Log only on transitions. A periodic dump floods the 4 KB RTT buffer in
@@ -680,11 +703,12 @@ namespace alc
     int switchResult { m_output_switch.Set(m_output_active) };
 
     // A switch failure while Active - a failed write or read-back, a refused
-    // assert - leaves the switch latched faulty and the armed device unable to
-    // fire, which the engineer must learn. Warned once: the latch keeps failing
-    // every later Set(), and a warning restarted every tick would never end.
-    if (switchResult < 0 && m_arming.State() == ArmState::Active && !m_switch_fault_warned) {
-      m_switch_fault_warned = true;
+    // assert - leaves the switch latched faulty with its pins isolated, and the
+    // armed device unable to fire, which the engineer must learn. Warned once per
+    // Active session, then the main loop fails safe to disarmed - not here,
+    // because the disarm path re-enters this function.
+    if (switchResult < 0 && m_arming.State() == ArmState::Active && !m_switch_fault_pending) {
+      m_switch_fault_pending = true;
       signalWarning(m_output_active ? "fire switch failed to assert while armed" : "fire switch failed to clear while armed", switchResult);
     }
 

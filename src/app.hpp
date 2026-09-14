@@ -215,10 +215,12 @@ namespace alc
       // only via IsOutputActive().
       bool m_output_active;
 
-      // True once a fire switch failure while Active has raised the warning. Once
-      // per boot: the switch latches faulty on a failure and never arms again, so
-      // the first warning is the one per fault - see updateOutputState().
-      bool m_switch_fault_warned;
+      // Set by updateOutputState() when a fire switch failure while Active raises
+      // the warning; taken by the main loop, which fails safe to disarmed. Warned
+      // at most once per Active session, and cleared when a new session starts.
+      // A later refused arm (the latched switch fails Enable()) is warned by the
+      // arming sequence instead - see Run().
+      bool m_switch_fault_pending;
 
       // The engineer-settable parameters, NVS-backed.
       Settings m_settings;
