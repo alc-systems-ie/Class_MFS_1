@@ -158,3 +158,14 @@ on the new build.
 would carry every sensor's sensitivity, activations, cooldown and delay with no expiry.
 Options in the amendment §4; the owner chose A. Also flagged
 in `docs/tan-scheme.md` §11.
+
+**Command-types build flashed (10:37 UTC).** First Arm Send after re-provisioning was
+silent: `west flash --recover` erased `access/v1`, so the device expected slot 1 `n` 0–15
+for day 256 while the app's store was at `n 26` — every Send `NotForUs`. **Never reset
+the app counter to recover** (nonce reuse under the same day key). Workaround: bench app
+switched to engineer slot 2 (local, uncommitted `class_app/lib/main.dart`); slot 1
+recovers at the 04:00 UTC rollover. **Rule: after any `--recover` flash, change slot or
+wait for the rollover.** This is a second route into the sequence-window DECISION NEEDED
+above — a device-side erase, which app-side options A/B cannot help and C only partly.
+§5a.2 then passed: `Command slot 2 n 0: Arm, minute 642.`, `Applied:` with the stored
+(default) settings.
