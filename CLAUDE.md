@@ -110,9 +110,11 @@ firing while deactivated is dangerous.
   pending trigger delay — isolates the pins, disarms, cancels any pending trigger
   and raises the warning. Never keep firing capability through a fault.
   For the scanner: `ArmingSequence::ServiceScannerHealth()` (host-tested), called
-  by `App::Run()` every tick before the output is derived, fails safe the moment
-  `IsScanning()` is false while Arming or Active (`Scanner not running while
-  arming or armed - disarmed (fail safe)!`); the detection engine additionally
+  by `App::Run()` every tick before the output is derived, fails safe while Arming
+  or Active when `IsScanning()` is false **or the scanner has gone down at any
+  point since the last check** — `CommandScanner::TakeScanLost()` latches a loss,
+  so a retry that heals the scanner first cannot hide it (`Scanner not running
+  while arming or armed - disarmed (fail safe)!`); the detection engine additionally
   never fires an armed delay whose scanner was lost or is down at expiry
   (`DelayExpiredScanLostSuppressed`). This supersedes the 2026-09-13 "prioritise
   fire" ruling.

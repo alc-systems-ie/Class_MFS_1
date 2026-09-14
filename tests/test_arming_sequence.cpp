@@ -52,6 +52,14 @@ namespace
         record(armed ? Call::RestartArmed : Call::RestartDisarmed);
         // Section 3: the engine's armed session never runs while the state is Active.
         if (sequence != nullptr) { assert(sequence->State() != ArmState::Active); }
+        if (armed && loseScannerInsideRestartArmed) {
+          // The armed restart's cadence change left the scanner down - and,
+          // unless scannerRunningAfterLoss is false, a retry brought it back
+          // before the sequence looked.
+          loseScannerInsideRestartArmed = false;
+          scannerLostLatch              = true;
+          scannerRunning                = scannerRunningAfterLoss;
+        }
         if (armed && disarmInsideRestartArmed) {
           disarmInsideRestartArmed = false;
           nestedDisarm();
@@ -75,6 +83,14 @@ namespace
       {
         scannerQueries++;
         return scannerRunning;
+      }
+
+      bool TakeScannerLost() override
+      {
+        bool lost { scannerLostLatch };
+
+        scannerLostLatch = false;
+        return lost;
       }
 
       void SignalWarning(ArmingStep step, int result) override
@@ -111,6 +127,9 @@ namespace
       int restartArmedResult { 0 };
       int enableResult { 0 };
       bool scannerRunning { true };
+      bool scannerLostLatch { false };
+      bool loseScannerInsideRestartArmed { false };
+      bool scannerRunningAfterLoss { true };
       mutable int scannerQueries { 0 };
   };
 
@@ -752,6 +771,168 @@ namespace
     printf("arming sequence: scanner lost keeps a disable failure: OK\n");
   }
 
+  // Asserts the fail-safe order after a scanner loss: pins first in `from`, the
+  // disarmed restart once Inactive, then one warning for `step`.
+  void assertScannerFailSafe(const FakeActions& actions, size_t first, ArmState from, ArmingStep step)
+  {
+    assert(actions.log.size() == first + 3);
+    assert(actions.log[first].call == Call::DisablePins);
+    assert(actions.log[first].stateAtCall == from);
+    assert(actions.log[first + 1].call == Call::RestartDisarmed);
+    assert(actions.log[first + 1].stateAtCall == ArmState::Inactive);
+    assert(actions.log[first + 2].call == Call::Warning);
+    assert(actions.log[first + 2].step == step);
+    assert(actions.log[first + 2].result == M_SCANNER_FAILURE);
+  }
+
+  // 17. LATCHED LOSS (final review item 1): the scanner went down while Active -
+  // say inside the engine's tick as a trigger delay started or expired - and a
+  // retry restarted it before the health check. Still fails safe, warning once.
+  void testHealedScannerLossWhileActive()
+  {
+    Fixture fixture;
+    ArmingStep step { ArmingStep::DisablePins };
+    int result { 0 };
+
+    armFully(fixture, M_START_MS);
+    fixture.actions.scannerLostLatch = true;
+    assert(fixture.actions.scannerRunning);
+    assert(fixture.sequence.ServiceScannerHealth());
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assertScannerFailSafe(fixture.actions, 0, ArmState::Active, ArmingStep::ScannerLost);
+    assert(!fixture.actions.scannerLostLatch);
+    assert(fixture.sequence.TakeFailure(step, result));
+    assert(step == ArmingStep::ScannerLost && result == M_SCANNER_FAILURE);
+
+    // Once per event.
+    assert(!fixture.sequence.ServiceScannerHealth());
+    assert(fixture.actions.log.size() == 3);
+    assert(!fixture.sequence.TakeFailure(step, result));
+
+    printf("arming sequence: healed scanner loss while Active fails safe: OK\n");
+  }
+
+  // 18. The same while Arming: cancelled at once, and the old deadline passing
+  // afterwards never restarts armed, enables or goes Active.
+  void testHealedScannerLossWhileArming()
+  {
+    Fixture fixture;
+
+    fixture.actions.forbidActiveOnDisable = true;
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    fixture.actions.scannerLostLatch = true;
+    assert(fixture.sequence.ServiceScannerHealth());
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assertScannerFailSafe(fixture.actions, 0, ArmState::Arming, ArmingStep::ScannerLost);
+
+    assert(!fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+    assert(!fixture.sequence.ServiceScannerHealth());
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(fixture.actions.log.size() == 3);
+    assert(!logContains(fixture.actions, Call::RestartArmed));
+    assert(!logContains(fixture.actions, Call::EnablePins));
+
+    printf("arming sequence: healed scanner loss while Arming fails safe: OK\n");
+  }
+
+  // 19. Inactive: a latched loss is consumed and nothing happens - and it cannot
+  // fail safe a later arming.
+  void testScannerLossWhileInactiveConsumed()
+  {
+    Fixture fixture;
+    ArmingStep step { ArmingStep::DisablePins };
+    int result { 0 };
+
+    fixture.actions.scannerLostLatch = true;
+    assert(!fixture.sequence.ServiceScannerHealth());
+    assert(!fixture.actions.scannerLostLatch);
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(fixture.actions.log.empty());
+    assert(!fixture.sequence.TakeFailure(step, result));
+
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    assert(!fixture.sequence.ServiceScannerHealth());
+    assert(fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+    assert(!fixture.sequence.ServiceScannerHealth());
+    assert(fixture.sequence.State() == ArmState::Active);
+    assert(!logContains(fixture.actions, Call::Warning));
+
+    printf("arming sequence: scanner loss while Inactive consumed: OK\n");
+  }
+
+  // 20. A loss latched while Inactive but not yet consumed (it happened after the
+  // last health check) is discarded by BeginArming, which judges the scanner as
+  // it is now.
+  void testBeginArmingDiscardsStaleScannerLoss()
+  {
+    Fixture fixture;
+
+    fixture.actions.scannerLostLatch = true;
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    assert(!fixture.actions.scannerLostLatch);
+    assert(!fixture.sequence.ServiceScannerHealth());
+    assert(fixture.sequence.State() == ArmState::Arming);
+    assert(fixture.actions.log.empty());
+
+    printf("arming sequence: BeginArming discards a stale scanner loss: OK\n");
+  }
+
+  // 21. A loss latched since the last health check, healed by the exit delay's
+  // deadline: the arming fails safe before the armed restart.
+  void testHealedScannerLossAtDeadline()
+  {
+    Fixture fixture;
+    ArmingStep step { ArmingStep::DisablePins };
+    int result { 0 };
+
+    fixture.actions.forbidActiveOnDisable = true;
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    fixture.actions.scannerLostLatch = true;
+    assert(!fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(!logContains(fixture.actions, Call::RestartArmed));
+    assert(!logContains(fixture.actions, Call::EnablePins));
+    assertScannerFailSafe(fixture.actions, 0, ArmState::Arming, ArmingStep::ScannerCheck);
+    assert(fixture.sequence.TakeFailure(step, result));
+    assert(step == ArmingStep::ScannerCheck && result == M_SCANNER_FAILURE);
+
+    assert(!fixture.sequence.ServiceScannerHealth());
+    assert(fixture.actions.log.size() == 3);
+
+    printf("arming sequence: healed scanner loss at the deadline fails safe: OK\n");
+  }
+
+  // 22. The armed restart itself takes the scanner down (and it heals): the pins
+  // are never enabled and the state never Active, even for one tick.
+  void testScannerLostInsideArmedRestart()
+  {
+    constexpr bool M_SCANNER_BACK[] { true, false };
+
+    for (bool scannerBack : M_SCANNER_BACK) {
+      Fixture fixture;
+      ArmingStep step { ArmingStep::DisablePins };
+      int result { 0 };
+
+      fixture.actions.forbidActiveOnDisable         = true;
+      fixture.actions.loseScannerInsideRestartArmed = true;
+      fixture.actions.scannerRunningAfterLoss       = scannerBack;
+      assert(fixture.sequence.BeginArming(M_START_MS));
+      assert(!fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+      assert(fixture.sequence.State() == ArmState::Inactive);
+      assert(fixture.actions.log[0].call == Call::RestartArmed);
+      assert(!logContains(fixture.actions, Call::EnablePins));
+      assertScannerFailSafe(fixture.actions, 1, ArmState::Arming, ArmingStep::ScannerCheck);
+      assert(fixture.sequence.TakeFailure(step, result));
+      assert(step == ArmingStep::ScannerCheck && result == M_SCANNER_FAILURE);
+
+      for (const LogEntry& entry : fixture.actions.log) {
+        assert(entry.stateAtCall != ArmState::Active);
+      }
+    }
+
+    printf("arming sequence: scanner lost inside the armed restart never enables: OK\n");
+  }
+
 }
 
 void run_arming_sequence_tests()
@@ -776,5 +957,11 @@ void run_arming_sequence_tests()
   testScannerLostWhileArming();
   testScannerHealthIgnoredWhileInactive();
   testScannerLostKeepsDisableFailure();
+  testHealedScannerLossWhileActive();
+  testHealedScannerLossWhileArming();
+  testScannerLossWhileInactiveConsumed();
+  testBeginArmingDiscardsStaleScannerLoss();
+  testHealedScannerLossAtDeadline();
+  testScannerLostInsideArmedRestart();
   printf("arming sequence: OK\n");
 }

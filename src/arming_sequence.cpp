@@ -20,6 +20,11 @@ namespace alc
   {
     if (m_state != ArmState::Inactive) { return false; }
 
+    // A latched loss belongs to the Inactive period before this Arm, when there
+    // was nothing to fail safe. Discarded so it cannot disarm the new arming;
+    // whether the scanner is running NOW is what the check below decides.
+    (void)m_actions.TakeScannerLost();
+
     // NO SCANNER, NO ARMING - SAFETY CRITICAL. Commands arrive only by scanning,
     // so an armed device that cannot hear a Disarm could leave the armed state
     // only by triggering. Refused outright: still Inactive, no delay, no pin or
@@ -46,10 +51,12 @@ namespace alc
     int disableResult { 0 };
     uint32_t session { m_session };
 
-    // NO SCANNER, NO ARMING. The scanner may have stopped during the exit delay.
-    // Checked before the armed restart, so nothing is restarted or enabled.
-    // ScannerRunning() is a query and cannot re-enter, so no session check follows.
-    if (!m_actions.ScannerRunning()) {
+    // NO SCANNER, NO ARMING. The scanner may have stopped during the exit delay -
+    // and perhaps been restarted by a retry since the last health check, so the
+    // latch counts too. Checked before the armed restart, so nothing is restarted
+    // or enabled. Both calls are queries and cannot re-enter, so no session check
+    // follows.
+    if (scannerDownOrLost()) {
       failSafe();
       raiseFailure(ArmingStep::ScannerCheck, M_SCANNER_NOT_RUNNING);
       return false;
@@ -69,6 +76,15 @@ namespace alc
     if (result < 0) {
       failSafe();
       raiseFailure(ArmingStep::RestartDetection, result);
+      return false;
+    }
+
+    // The armed restart cancels any delay, which sets the scanner cadence and can
+    // itself take the scanner down. Checked again before the pins are enabled, so
+    // a device that has just gone deaf is never armed, even for one tick.
+    if (scannerDownOrLost()) {
+      failSafe();
+      raiseFailure(ArmingStep::ScannerCheck, M_SCANNER_NOT_RUNNING);
       return false;
     }
 
@@ -96,12 +112,19 @@ namespace alc
 
   bool ArmingSequence::ServiceScannerHealth()
   {
+    // Consumed in EVERY state, before the Inactive guard, so a loss while
+    // Inactive is spent here and cannot fail safe a later arming.
+    bool scannerDown { scannerDownOrLost() };
+
     if (m_state == ArmState::Inactive) { return false; }
-    if (m_actions.ScannerRunning()) { return false; }
+    if (!scannerDown) { return false; }
 
     // ALWAYS FAIL SAFE (owner rule 2026-09-14). Commands arrive only by scanning,
     // so a device Arming or Active that cannot hear a Disarm must not keep any
-    // path to firing. The ordinary disarm order - pins first - then the warning.
+    // path to firing. A loss that has already healed counts: a Disarm may have
+    // been sent while the scanner was down, and a pending trigger may already
+    // have been suppressed because of it. The ordinary disarm order - pins
+    // first - then the warning.
     failSafe();
     raiseFailure(ArmingStep::ScannerLost, M_SCANNER_NOT_RUNNING);
     return true;
@@ -139,6 +162,14 @@ namespace alc
     (void)m_actions.RestartDetection(false);
 
     if (disableResult < 0) { raiseFailure(ArmingStep::DisablePins, disableResult); }
+  }
+
+  bool ArmingSequence::scannerDownOrLost()
+  {
+    // Latch first, so it is consumed whatever the running check says.
+    bool lost { m_actions.TakeScannerLost() };
+
+    return lost || !m_actions.ScannerRunning();
   }
 
   bool ArmingSequence::superseded(uint32_t session) const

@@ -88,6 +88,18 @@ namespace alc
       bool IsScanning() const { return m_scanning; }
 
       /**
+       * @brief Whether the scanner has been left down since the last call. Clears the latch.
+       *
+       * Set whenever SetFastScan() or ServiceScan() returns with the scanner not
+       * running (the start and its fallback both failed) - not by the momentary
+       * stop inside a cadence change that restarts successfully. STICKY until
+       * read, so a loss that ServiceScan() heals before anyone checks
+       * IsScanning() is still reported. Read by App::TakeScannerLost() for the
+       * arming sequence's fail-safe.
+       */
+      bool TakeScanLost();
+
+      /**
        * @brief True only while running AND at the cadence last requested.
        *
        * IsScanning() alone is not enough: a scan that is running but stuck at
@@ -130,6 +142,9 @@ namespace alc
 
       // True only while a scan is known to be running - see IsScanning().
       bool m_scanning;
+
+      // Latched when an operation leaves the scanner down - see TakeScanLost().
+      bool m_scan_lost;
   };
 
 }

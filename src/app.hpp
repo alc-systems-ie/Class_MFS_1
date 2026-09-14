@@ -62,6 +62,9 @@ namespace alc
       /** @brief Whether updateOutputState() runs a detection engine tick first. */
       enum class EngineTick : uint8_t { Run, Skip };
 
+      /** @brief Where logArmingFailure() is called from - selects the ScannerCheck wording. */
+      enum class FailureSource : uint8_t { ArmCommand, Sequence };
+
       // Drives the four unused nRF21540 control pins low. The FEM is fitted on the
       // bespoke alc_drawer_master board but MFS_1 does not use it; a floating PDN
       // would leave it in an indeterminate state instead of power-down.
@@ -102,9 +105,10 @@ namespace alc
       bool disarmDevice();
 
       // Logs a failure ArmingSequence recorded, if any. The warning was already
-      // raised by the sequence through SignalWarning(). atArmCommand selects the
-      // refusal wording for a ScannerCheck failure raised by BeginArming().
-      void logArmingFailure(bool atArmCommand);
+      // raised by the sequence through SignalWarning(). FailureSource::ArmCommand
+      // selects the refusal wording for a ScannerCheck failure raised by
+      // BeginArming().
+      void logArmingFailure(FailureSource source);
 
       // The warning (arming sequence amendment section 4). Logs, and - until the
       // dedicated warning light is chosen - plays three long pulses on LED B in
@@ -122,6 +126,7 @@ namespace alc
       int EnableFirePins() override;
       // ScannerRunning() is declared once, below with DetectionHardware, and
       // overrides both interfaces.
+      bool TakeScannerLost() override;
       void SignalWarning(ArmingStep step, int result) override;
 
       // The engine's settings, built from m_settings on every call - never cached,
@@ -141,10 +146,12 @@ namespace alc
 
       // Confirms the scanner is at its requested cadence and retries at
       // M_SCAN_SERVICE_INTERVAL_MS if not. It does not act on scanner loss while
-      // arming or armed: Run() fails safe at once through
-      // ArmingSequence::ServiceScannerHealth(), and the detection engine tracks
-      // loss during an armed delay as a defensive guard. Called every main-loop
-      // tick.
+      // arming or armed: Run() fails safe through
+      // ArmingSequence::ServiceScannerHealth(), which also sees a loss this retry
+      // has already healed (CommandScanner::TakeScanLost()), and the detection
+      // engine suppresses an armed delay that lost its scanner. The retry can
+      // itself leave the scanner down, which fails safe the same way. Called
+      // every main-loop tick.
       void serviceScanHealth();
 
       // THE ONE PLACE the scanner cadence is applied. Computes DesiredFastScan()

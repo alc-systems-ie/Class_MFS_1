@@ -159,6 +159,7 @@ namespace alc
       , m_fast(false)
       , m_fast_requested(false)
       , m_scanning(false)
+      , m_scan_lost(false)
   {}
 
   int CommandScanner::Start()
@@ -198,6 +199,14 @@ namespace alc
     uuids   = static_cast<uint32_t>(atomic_set(&s_uuids_received, 0));
   }
 
+  bool CommandScanner::TakeScanLost()
+  {
+    bool lost { m_scan_lost };
+
+    m_scan_lost = false;
+    return lost;
+  }
+
   int CommandScanner::SetFastScan(bool fast)
   {
     int result { 0 };
@@ -229,7 +238,10 @@ namespace alc
       // ServiceScan() (see App::serviceScanHealth()) keeps retrying for it.
       fallbackResult = startScan(m_fast);
       m_scanning     = (fallbackResult == 0);
-      if (!m_scanning) { LOG_ERR("Scanner fallback restart also failed: %d - scanner is DOWN!", fallbackResult); }
+      if (!m_scanning) {
+        m_scan_lost = true;
+        LOG_ERR("Scanner fallback restart also failed: %d - scanner is DOWN!", fallbackResult);
+      }
       return result;
     }
 
@@ -266,7 +278,10 @@ namespace alc
     // scanner stopped outright on a single failed retry.
     fallbackResult = startScan(m_fast);
     m_scanning     = (fallbackResult == 0);
-    if (!m_scanning) { LOG_ERR("Scanner fallback restart also failed: %d - scanner is DOWN!", fallbackResult); }
+    if (!m_scanning) {
+      m_scan_lost = true;
+      LOG_ERR("Scanner fallback restart also failed: %d - scanner is DOWN!", fallbackResult);
+    }
     return result;
   }
 

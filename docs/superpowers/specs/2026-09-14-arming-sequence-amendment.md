@@ -155,7 +155,8 @@ independent of source 4.
 A device that cannot scan cannot hear a disarm, so it must not stay Arming or Active —
 idle, mid exit delay, or with a trigger delay pending. The rule lives in the host-tested
 `ArmingSequence::ServiceScannerHealth()`: a no-op while Inactive or while the scanner is
-running; otherwise it runs the ordinary fail-safe order (§2) — pins disabled first,
+running **and has not gone down since the last check**; otherwise it runs the ordinary
+fail-safe order (§2) — pins disabled first,
 Inactive (arming cancelled; any pending trigger delay cancelled by the disarmed
 restart), `RestartDetection(false)` — then raises the warning (source 5) and records
 `ScannerLost` for `TakeFailure()`. `App::Run()` calls it every main-loop tick, after
@@ -167,6 +168,22 @@ running at the fallback cadence still hears a disarm and is not a loss. The loop
 entered only after `CommandScanner::Start()` succeeds, so the check never sees a
 scanner that was never started. A disarm cancelled mid exit delay stays cancelled: the
 old deadline passing later does nothing.
+
+**The loss is latched** (final review 2026-09-14). `CommandScanner` sets a sticky flag
+whenever `SetFastScan()` or `ServiceScan()` returns with the scanner down, read and
+cleared through `ArmingActions::TakeScannerLost()`. Without it, a loss inside the
+detection engine's tick — a trigger delay's start requesting continuous scanning, or its
+expiry restoring duty-cycled scanning, with the start and its fallback both failing —
+could be healed by `serviceScanHealth()`'s retry at the top of the next tick before the
+health check ran: the trigger suppressed, the device still Active, no warning. Every
+check consumes the latch: `ServiceScannerHealth()` in every state (a loss while Inactive
+is spent and cannot fail safe a later arming), `BeginArming()` (discarded — only whether
+the scanner runs now matters), and `Service()` both at the deadline and again between
+the armed restart and the pin enable (the restart cancels any delay and so touches the
+cadence); those two fail with `ScannerCheck`, never reaching Active. So any scanner-down
+observation while Arming or Active leads to the fail-safe, whether or not the scanner is
+running again when checked. LED A plays Armed only after that tick's scanner check, and
+only if the state is still Active.
 
 As a defensive guard behind that fail-safe, the detection engine never fires an ARMED
 delay whose scanner was lost during the delay **or is down at expiry** (checked after

@@ -178,10 +178,12 @@ namespace alc
         // Owner rule 2026-09-14: always fail safe. An ARMED delay that ran
         // without a scanner - or whose scanner is down at expiry - may have
         // missed a disarm, so it must not fire: no detection, no hold. App
-        // disarms as soon as the scanner is down while arming or armed, so on
-        // target this is a defensive guard for a disarm that did not happen. A
-        // disarmed test delay never reaches here: it has no fire pins and does
-        // not track the scanner.
+        // disarms on the next tick through the arming sequence's latched scanner
+        // check, even if the scanner has been restarted by then. This CAN appear
+        // on target: a loss during this very tick (the restore above failing)
+        // is seen here first, and the disarm follows one tick later. A disarmed
+        // test delay never reaches here: it has no fire pins and does not track
+        // the scanner.
         report(DetectionEventType::DelayExpiredScanLostSuppressed, armed);
       } else {
         m_detection_met = true;

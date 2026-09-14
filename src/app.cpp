@@ -237,6 +237,8 @@ namespace alc
   {
     int result { 0 };
     bool previousTriggered { false };
+    bool armedThisTick { false };
+    ArmState stateBeforeHealthCheck { ArmState::Inactive };
     bool ledA { false };
     bool ledB { false };
 #if defined(CONFIG_MFS_DEBUG_LED)
@@ -349,17 +351,18 @@ namespace alc
       // The exit delay. At the deadline, in one synchronous call: restart
       // detection armed -> enable the fire pins -> Active. Before the output is
       // derived below, so nothing ticks the engine or derives the output between
-      // the armed restart and Active. Only a completed arming is acknowledged.
-      if (m_arming.Service(k_uptime_get())) {
+      // the armed restart and Active. Only a completed arming is acknowledged, and
+      // only once the scanner check below has passed - see armedThisTick.
+      armedThisTick = m_arming.Service(k_uptime_get());
+      if (armedThisTick) {
         // A new Active session: its first switch fault is warned and disarmed.
         m_switch_fault_pending = false;
         LOG_INF("Arm state: Active - fire pins enabled (uptime %lld ms).", k_uptime_get());
-        playLedPattern(LedPattern::Armed);
       }
 
       // A failed arming has already failed safe and raised the warning inside
       // Service(). No LED A acknowledgement.
-      logArmingFailure(false);
+      logArmingFailure(FailureSource::Sequence);
 
       // Every exit from Arming - Active, cancelled by a Disarm command above, or a
       // failed step inside Service() - restores duty-cycled scanning here, within
@@ -381,10 +384,22 @@ namespace alc
       // so a deaf armed device never ticks the engine armed and cannot fire on
       // this tick. The loop is only reached once Start() has succeeded, so "not
       // scanning" here is a genuine loss, never "not yet started".
+      //
+      // LATCHED. A loss anywhere since the last check counts even if the scanner
+      // is running again now - a loss inside the engine's tick (a delay start or
+      // expiry changing the cadence) that serviceScanHealth()'s retry healed at
+      // the top of this tick would otherwise leave an Active device with its
+      // trigger silently suppressed and no warning.
+      stateBeforeHealthCheck = m_arming.State();
       if (m_arming.ServiceScannerHealth()) {
-        logArmingFailure(false);
-        LOG_INF("Arm state: Inactive (uptime %lld ms).", k_uptime_get());
+        logArmingFailure(FailureSource::Sequence);
+        LOG_INF("Arm state: Inactive%s (uptime %lld ms).", (stateBeforeHealthCheck == ArmState::Arming) ? " - arming cancelled" : "", k_uptime_get());
       }
+
+      // The arming is acknowledged only now, after the cadence gate and the
+      // scanner check: either can undo it on the tick it completed, and LED A
+      // must never report Armed for a device the fail-safe has just disarmed.
+      if (armedThisTick && m_arming.State() == ArmState::Active) { playLedPattern(LedPattern::Armed); }
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
       if (++blinkTicks >= M_BLINK_PERIOD_TICKS) {
@@ -763,7 +778,7 @@ namespace alc
     // ================================================================
     bool cancelled { m_arming.Disarm() };
 
-    logArmingFailure(false);
+    logArmingFailure(FailureSource::Sequence);
 
     // Deliberately says nothing about the LEDs: the main loop logs their actual
     // applied values.
@@ -771,7 +786,7 @@ namespace alc
     return cancelled;
   }
 
-  void App::logArmingFailure(bool atArmCommand)
+  void App::logArmingFailure(FailureSource source)
   {
     ArmingStep step { ArmingStep::DisablePins };
     int result { 0 };
@@ -792,7 +807,7 @@ namespace alc
         break;
 
       case ArmingStep::ScannerCheck:
-        if (atArmCommand) {
+        if (source == FailureSource::ArmCommand) {
           LOG_ERR("Arming refused: scanner not running - the device could not hear a disarm!");
         } else {
           LOG_ERR("Arming failed at the scanner check (%d) - device Inactive, fire pins disabled, no acknowledgement!", result);
@@ -884,6 +899,12 @@ namespace alc
     return m_output_switch.Enable();
   }
 
+  bool App::TakeScannerLost()
+  {
+    // A query of the scanner's latch only - must not call back into m_arming.
+    return m_scanner.TakeScanLost();
+  }
+
   void App::SignalWarning(ArmingStep step, int result)
   {
     // Must not call back into m_arming.
@@ -920,8 +941,10 @@ namespace alc
     // Throttled - the Bluetooth stack's own stop/start churn is not free, and a
     // genuine outage does not need a 100 ms retry rate to recover promptly.
     // Scanner loss while arming or armed is not acted on here: Run() fails safe
-    // on it every tick through ArmingSequence::ServiceScannerHealth(), and the
-    // detection engine also checks ScannerRunning() itself during an armed delay.
+    // on it every tick through ArmingSequence::ServiceScannerHealth(), which reads
+    // the scanner's loss latch, so healing the scanner here never hides a loss.
+    // The detection engine also checks ScannerRunning() itself during an armed
+    // delay.
     if (uptimeMs - m_last_scan_service_ms < M_SCAN_SERVICE_INTERVAL_MS) { return; }
     m_last_scan_service_ms = uptimeMs;
 
@@ -1167,7 +1190,10 @@ namespace alc
         break;
 
       case DetectionEventType::DelayExpiredScanLostSuppressed:
-        // Owner rule 2026-09-14: always fail safe. The engine did not fire.
+        // Owner rule 2026-09-14: always fail safe. The engine did not fire. The
+        // loss that caused this is latched in the scanner, so the next
+        // ServiceScannerHealth() disarms with the warning even if the scanner is
+        // running again by then.
         LOG_ERR("Trigger suppressed: the scanner was not running during the delay (fail safe)!");
         break;
 
@@ -1452,7 +1478,7 @@ namespace alc
         // no continuous scan, no LED A, no exit delay.
         if (!m_arming.BeginArming(k_uptime_get())) {
           if (armStateBefore == ArmState::Inactive) {
-            logArmingFailure(true);
+            logArmingFailure(FailureSource::ArmCommand);
           } else {
             LOG_ERR("Arming not started - device was not Inactive!");
           }

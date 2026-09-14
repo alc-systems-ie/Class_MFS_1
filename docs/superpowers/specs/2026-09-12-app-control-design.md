@@ -567,7 +567,8 @@ proceed.
 **Owner rule, 2026-09-14: always fail safe — a trigger never fires if the scanner
 was lost during the delay.** This supersedes the 2026-09-13 ruling that prioritised
 the alarm over a missed disarm. A device that cannot scan cannot hear a disarm, so
-`App::Run()` fails safe the moment the scanner is not running while Arming or Active
+`App::Run()` fails safe when the scanner is not running, or has gone down since the
+last check (a latched loss), while Arming or Active
 (`ArmingSequence::ServiceScannerHealth()`) — pins isolated first, Inactive, the
 pending trigger cancelled, warning raised, logged
 `Scanner not running while arming or armed - disarmed (fail safe)!` (arming sequence
