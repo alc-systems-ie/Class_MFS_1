@@ -458,3 +458,4 @@ other days.
 | Report modes | Still blocked on the report payload (design spec §6.5.2). Rotating IDs derived from a slot-0 key are a candidate for the device identifier |
 | Serial prefix and device type | `MFS-` provisional |
 | Network Manager | Real implementation, HSM, attestation, slot assignment, reinstall policy (§3.1) |
+| **DECISION NEEDED: unheard Sends exhaust the window** | Each Send reserves a new `n` whether or not the device hears it; more than 16 unheard Sends to one device in one day lock that slot out until 04:00 UTC. Options (app throttle, app counting with a refusal at 16, wider window) in the bench log, `docs/superpowers/plans/2026-09-13-bench-checklist.md` §9 |
