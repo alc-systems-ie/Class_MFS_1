@@ -32,7 +32,7 @@ Hardware is the `alc_drawer_master` board **minus the FEM**: **nRF54L05 + nPM210
 | Scan | **100 ms passive every 6 s** (1.667% RX duty cycle) |
 | ADXL367 | Continuous measurement mode, 100 Hz ODR |
 | nRF21540 FEM | **Not fitted** — costs 3 dB TX (+7 dBm native vs +10 dBm) |
-| Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs |
+| Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version 0x03 with an explicit command type |
 | Day boundary | **04:00 UTC**, no multi-day validity window |
 | Timekeeping | **LFXO** 32.768 kHz (fitted), GRTC-sourced. **No external RTC** (BOM, reaffirmed 2026-09-13). Invalid on every boot until provisioner sync |
 | Battery | CR123A, ~2.4 year expected life at ~69 µA average |
@@ -137,11 +137,17 @@ next 04:00 UTC only — `docs/power-budget.md` §8.1):
   the device and the back office a day apart across every DST transition. The
   device has no timezone database and must not acquire one.
 - **Only slot 0 (the Network Manager) may change the operating mode.**
-- **Armed, the only command is disarm.** Every other command is ignored outright, and
-  a disarm applies nothing but the disarm. **Triggers are one-shot** and latch the
-  device Inactive, so disarm and trigger are the only two ways out of the armed
-  state. `DecideCommand()` (`src/arm_policy.hpp`) is the single place this is
+- **Arm, Disarm and Settings are separate command types**
+  (`docs/superpowers/specs/2026-09-14-command-types-amendment.md`). Arm and Disarm
+  carry no settings, so an engineer can arm or disarm without knowing the device's
+  tuning; settings are applied only by a Settings command while Inactive. **Armed,
+  the only state change is disarm** — Arm or Settings to an armed device changes
+  nothing and replays the Armed pattern on LED A. **Triggers are one-shot** and
+  latch the device Inactive, so disarm and trigger are the only two ways out of the
+  armed state. `DecideCommand()` (`src/arm_policy.hpp`) is the single place this is
   decided — never add a second path in `App`.
+- **The app never stores device settings** (owner decision 2026-09-14, amendment
+  §4) — a lost phone must not become a map of every sensor's tuning.
 - **Persist before acting**, and **failures emit nothing** — no advert, no LED. LED A
   acknowledges only *accepted* commands, never a failed authentication.
 - **The device never advertises to solicit contact.** It scans. Report modes are

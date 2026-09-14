@@ -589,8 +589,9 @@ it.
 | Result | LED A pattern | Length |
 |---|---|---|
 | **Armed** | rapid flash ~8 Hz (60 ms on / 65 ms off) | 3 s |
-| *(armed, command ignored)* | *nothing* | — |
+| *(armed, Arm or Settings received)* | rapid flash — replays Armed; nothing changes | 3 s |
 | **Disarmed** | slow flash 1 Hz (500 / 500) | 3 s |
+| *(Inactive, Disarm received)* | slow flash — the ordinary disarm | 3 s |
 | **Disarmed, pending delay cancelled** | double blink each second (100 on / 100 off / 100 on / 700 off) | 3 s |
 | **Arm refused** (ADXL367 would not configure) | three long pulses (700 on / 300 off) | 3 s |
 | **Settings applied while Inactive** | one 200 ms blink | 0.2 s |
@@ -604,7 +605,9 @@ Settings Applied.
 - **"Arm refused" stops a hardware fault looking like a jammed command.** It is not a
   breach of silence on failure: that rule covers failed authentication, and a refused
   arm comes from a valid key holder.
-- **No flash means the command did not land.** Send again.
+- **No flash means the command did not land.** Every accepted command plays a
+  pattern — including a replay that changes nothing — so a dark LED A still means
+  authentication or freshness failed. Send again.
 
 A 10 ms `k_timer` renders the pattern while one is active, because the 100 ms main
 loop cannot draw a 60 ms phase. The patterns total a few seconds per command, so they

@@ -49,20 +49,20 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 
 ## 5. Delay and interlock (Task 15) — STOP if 5.3 fails
 
-1. [ ] Tune activations 1, delay 30 s; arm (rapid flash); trigger. Expect `TRIGGER PENDING: firing in 30 s` and `Scan cadence now CONTINUOUS`.
+1. [ ] Disarm if not already; Settings page, activations 1, delay 30 s, **Send** (single blink); Arm page, Send Armed (rapid flash); trigger. Expect `TRIGGER PENDING: firing in 30 s` and `Scan cadence now CONTINUOUS`.
 2. [ ] Wait the full 30 s: `Output ASSERTED`, LED B and the fire output for **about 5 s**, then `Output cleared`, `Trigger complete - latched Inactive.`, and LED A lights.
-3. [ ] **Repeat, and disarm at about 15 s** (Armed off, **Send**): **double blink**, `Disarmed with a trigger PENDING`, the output **never** asserts, and the scan returns to duty-cycled. **This is the most important check on the list.**
+3. [ ] **Repeat, and at about 15 s, Arm page Send Disarmed**: **double blink**, `Disarmed with a trigger PENDING`, the output **never** asserts, and the scan returns to duty-cycled. **This is the most important check on the list.**
 4. [ ] Repeat and **reset mid-delay**: comes up Inactive, clock invalid, no trigger.
-5. [ ] Delay 0: firing is immediate.
+5. [ ] Settings page, delay 0, **Send** (single blink); Arm page, Send Armed; firing is immediate.
 
 ## 6. Armed path, one-shot, LED A (Task 16) — STOP if 6.2–6.4 fail
 
-1. [ ] Armed off, Tune: one blink. Report+Trig and Report are disabled in the app's mode selector as of the final fix wave (Task 18 item 3) - confirm they cannot be selected and the note under the selector is visible. To exercise the firmware's refusal directly, send a hand-crafted slot-0 command with the mode bits set to `10` (Report): expect **one blink** (SettingsApplied, not ModeChanged - the mode is refused) and `Mode 2 refused - reporting is not implemented yet; device stays Trigger only.`. Power-cycle and confirm the boot `Settings:` line still reports mode 0.
-2. [ ] Armed on (activations 1, delay 0), **Send**: rapid flash. **While still armed**, change the sensitivity and **Send** again: **no flash, nothing changes**, `Armed: command slot 1 n ... ignored`. The Network Manager button is disabled while the Armed toggle is on.
+1. [ ] Disarm if not already; Settings page, **Send**: one blink. Report+Trig and Report are disabled in the app's mode selector as of the final fix wave (Task 18 item 3) - confirm they cannot be selected and the note under the selector is visible. To exercise the firmware's refusal directly, send a hand-crafted slot-0 command with the mode bits set to `10` (Report): expect **one blink** (SettingsApplied, not ModeChanged - the mode is refused) and `Mode 2 refused - reporting is not implemented yet; device stays Trigger only.`. Power-cycle and confirm the boot `Settings:` line still reports mode 0.
+2. [ ] Arm page, Send Armed (activations 1, delay 0 already stored): rapid flash. **While still armed**, send a hand-crafted Settings command (the app offers no path to Settings while armed): **rapid flash replay, nothing changes**, `Armed: Settings from slot 1 n ... changes nothing - replaying Armed.`. Send Armed again: **rapid flash replay**, `Armed: Arm from slot 1 n ... changes nothing - replaying Armed.`. The Network Manager button is disabled while the Armed toggle is on.
 3. [ ] Trigger: output for about 5 s, then `Trigger complete - latched Inactive.`. Trigger again: **the output never asserts**.
-4. [ ] Arm with delay 60 s, trigger, and within the minute set Armed off **with activations changed to 7**, **Send**: **double blink**, no fire, and `Applied:` still shows the **old** activation count. Armed off, **Send** again: one blink, and now 7.
-5. [ ] **Tune-then-arm (the fixed hazard):** Tune with activations 1 and delay 60 s, handle the device, then arm within 60 s. The output must **not** assert a minute later.
-6. [ ] Build with `CONFIG_MFS_DEBUG_LED=n` in prj.conf, flash, provision, and arm: the rapid flash still plays, LED A is **dark** afterwards, and it stays dark after a one-blink Tune. Restore `CONFIG_MFS_DEBUG_LED=y`.
+4. [ ] Arm with delay 60 s, trigger, and within the minute, Arm page Send Disarmed: **double blink**, `Disarmed with a trigger PENDING`, no fire. Settings page, change activations to 7, **Send**: one blink, and `Applied:` now shows 7.
+5. [ ] **Tune-then-arm (the fixed hazard):** Settings page, activations 1 and delay 60 s, **Send** (single blink); handle the device, then Arm page Send Armed within 60 s. The output must **not** assert a minute later.
+6. [ ] Build with `CONFIG_MFS_DEBUG_LED=n` in prj.conf, flash, provision, and Arm page Send Armed: the rapid flash still plays, LED A is **dark** afterwards. Disarm (slow flash), then Settings page **Send** (one blink) and confirm LED A stays dark afterwards. Restore `CONFIG_MFS_DEBUG_LED=y`.
 7. [ ] Arm Refused (optional, needs the ADXL367 disconnected): three long pulses, device Inactive.
 
 ## 7. iPhone advertising interval (Task 13, spec §9 item 2)
@@ -76,6 +76,20 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 - A corrupt `access/v1` record makes the firmware refuse commands on every boot (`Stored access state is invalid`). The only recovery is a wired erase of the settings partition, followed by re-provisioning.
 - If the scanner is lost during a pending delay, the trigger **still fires** (owner decision 2026-09-13) and logs `Trigger firing although the scanner was not running during the delay`.
 - A nearby advertiser flooding random 128-bit UUIDs is an RF-jamming-class attack on the 8-entry candidate queue, not just noise: none of the garbage counts towards the lockout (§6.4 of `docs/tan-scheme.md`), but if it arrives faster than `serviceCandidates()` can drain it, genuine candidates get dropped. Run a flood test (an advertiser cycling random 128-bit UUIDs at a high rate) and check for `Candidate queue full - N adverts dropped!` in the log; confirm a genuine command still lands once the flood stops.
+
+## 5a. Command types (plan 2026-09-14) — do this first on the new build
+
+1. [ ] Flash with `--recover`, provision the clock.
+2. [ ] Inactive, Arm page Send Armed → rapid flash; RTT `Command slot 1 n X: Arm` and `Applied:` shows the **stored** settings (not app defaults).
+3. [ ] Armed, Send Armed again → rapid flash replay; RTT `Armed: Arm from slot 1 n X changes nothing - replaying Armed.`; still armed (tap: fires).
+4. [ ] Armed, Send Disarmed → slow flash; the app prompt appears with the fault-finding text; press Disarmed — open settings.
+5. [ ] Settings page: sliders at defaults; Send → single blink; LED B simulates at those settings.
+6. [ ] Restore defaults resets the sliders; nothing is sent until Send.
+7. [ ] Back → Arm page shows Armed. Send → rapid flash; RTT `Applied:` shows the settings from step 5.
+8. [ ] Inactive, Send Disarmed → slow flash replay, LED B stops if tuning.
+9. [ ] Prompt "Not seen" stays on the Arm page, and Settings is unreachable without a confirmed disarm.
+10. [ ] Turn Bluetooth off on the Mac, Send → an on-screen advertising error, no countdown, no prompt.
+11. [ ] Old-app regression: none needed (nothing deployed); note that a `0x02` command is silent.
 
 ## 9. Bench log
 
