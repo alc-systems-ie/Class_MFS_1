@@ -29,6 +29,10 @@ def parse(path: pathlib.Path) -> dict:
     for key, length in LENGTHS.items():
         if not re.fullmatch(rf"[0-9A-Fa-f]{{{length}}}", values[key]):
             sys.exit(f"{path}: {key} must be exactly {length} hex digits")
+    # CLASS serial: MODEL-MMYY-NNNNN - 4-character model, month and year made,
+    # number in the batch as 5 hex digits (e.g. MFS1-0926-00001).
+    if not re.fullmatch(r"[A-Z0-9]{4}-(0[1-9]|1[0-2])[0-9]{2}-[0-9A-F]{5}", values["CONFIG_ALC_DEVICE_SERIAL"]):
+        sys.exit(f"{path}: CONFIG_ALC_DEVICE_SERIAL must be MODEL-MMYY-NNNNN, e.g. MFS1-0926-00001")
     if values["CONFIG_MFS_DEVICE_SECRET"].upper() == values["CONFIG_MFS_PROVISION_KEY"].upper():
         sys.exit(f"{path}: the device secret and provisioning key must differ")
     return values

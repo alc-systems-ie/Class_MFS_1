@@ -298,6 +298,16 @@ rather than injected from a dongle as `docs/power-budget.md` §8.7.5 originally
 planned — every rule lives in pure logic, so the host tests reach paths a
 well-behaved advertiser never would.
 
+## Device serial numbers
+
+**CLASS serial: `MODEL-MMYY-NNNNN`** (owner decision 2026-09-15) — a 4-character model
+(`MFS1`), the month and year made (`MMYY`), and the number in that batch as **5 hex
+digits**. The bench unit is `MFS1-0926-00001`. It is one character longer in the model and
+one digit longer in the index than the ALC `HAH-MMYY-xxxx` format. Set in `credentials.conf`
+as `CONFIG_ALC_DEVICE_SERIAL`; `tools/gen_bench_credentials.py` rejects a serial that does
+not match. The serial is the human label only — the cryptographic identity is
+`CONFIG_MFS_DEVICE_ID` (a random 32-bit value bound into every day key).
+
 ## Workspace context
 
 This is a Zephyr/nRF Connect SDK **application inside an existing west workspace**, not a standalone repo:

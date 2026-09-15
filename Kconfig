@@ -185,10 +185,13 @@ config MFS_DEBUG_LED
 
 config ALC_DEVICE_SERIAL
 	string "Device serial number"
-	default "MFS-0000-0000"
+	default "MFS1-0000-00000"
 	help
-	  Unique serial identifier (e.g. MFS-0826-0043). The prefix is
-	  provisional pending assignment of the CLASS device type.
+	  CLASS serial, MODEL-MMYY-NNNNN: a 4-character model (MFS1), the month
+	  and year made (MMYY), and the number in that batch as 5 hex digits.
+	  E.g. MFS1-0926-00001 is the first MFS_1 made in September 2026. One
+	  more digit than the ALC HAH-MMYY-xxxx format. tools/gen_bench_credentials.py
+	  rejects a serial that does not match.
 
 config MFS_DEVICE_ID
 	string "Device ID (8-char hex string)"
