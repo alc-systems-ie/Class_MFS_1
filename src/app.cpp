@@ -44,6 +44,14 @@ namespace alc
     // The detection engine's configure retry spacing, for log messages.
     constexpr uint32_t M_ENGINE_RETRY_MS { static_cast<uint32_t>(DetectionEngine::M_COOLDOWN_RETRY_MS) };
 
+    // access::ConfirmId()'s event byte for a FIRE command's receipt - confirm on
+    // receipt, at the top of the countdown, not at detonation.
+    constexpr uint8_t M_CONFIRM_EVENT_FIRE_RECEIVED { 0x01 };
+
+    // How long the confirmation burst advertises - a few seconds, well within
+    // FireSequence::M_FIRE_COUNTDOWN_MS, so it never overlaps the assertion window.
+    constexpr int64_t M_CONFIRM_BURST_MS { 3000 };
+
 #if defined(CONFIG_MFS_BATTERY_TEST)
     // Liveness blink for the battery test, at the scan period.
     //
@@ -224,6 +232,7 @@ namespace alc
       , m_scan_outage_logged(false)
       , m_logging_cooldown(false)
       , m_fire()
+      , m_advertiser()
       , m_engine(*this)
       , m_arming(*this)
       , m_led_sequencer()
@@ -367,6 +376,10 @@ namespace alc
       // itself fails safe (disarm) through the existing m_switch_fault_pending
       // path, so no second disarm path is added here.
       m_fire.Service(k_uptime_get(), m_output_switch.IsFaulted());
+
+      // Stops the FIRE confirmation burst once its window has elapsed. No-op
+      // otherwise - see applyCommand()'s ArmAction::Fire handling for the start.
+      m_advertiser.Service(k_uptime_get());
 
       // A failed arming has already failed safe and raised the warning inside
       // Service(). No LED A acknowledgement.
@@ -1547,15 +1560,28 @@ namespace alc
         // its 10 s unstoppable countdown and, at expiry, asserts for one detection
         // hold period before self-terminating. The pins are already live for a
         // live fire (the device is Active); a rehearsal never touches them. NO LED
-        // A pattern here - the confirmation advert is Task 8, so pattern stays None.
+        // A pattern here - the confirmation advert below is the acknowledgement.
         bool live { m_arming.State() == ArmState::Active };
+        uint8_t confirmUuid[protocol::M_UUID_BYTES];
 
         m_fire.Start(live, k_uptime_get(), DetectionEngine::M_DELAYED_TRIGGER_HOLD_MS);
         LOG_WRN("FIRE received from slot %u n %u - %s, %u s countdown.", evaluation.slot, evaluation.n, live ? "LIVE" : "rehearsal",
                 static_cast<unsigned>(FireSequence::M_FIRE_COUNTDOWN_MS / MSEC_PER_SEC));
+
+        // Confirm on receipt, at the top of the countdown - not at detonation -
+        // and for both live and rehearsal fires, so a bench rehearsal exercises
+        // the whole path. confirmId is derived from the same day key the command
+        // authenticated with (AccessControl::DayKey()), so only a holder of that
+        // day's key material could have produced this burst.
+        result = access::ConfirmId(m_access.DayKey(evaluation.slot), evaluation.n, M_CONFIRM_EVENT_FIRE_RECEIVED, confirmUuid);
+        if (result < 0) {
+          LOG_ERR("Could not derive the FIRE confirmation ID: %d!", result);
+        } else {
+          m_advertiser.Burst(confirmUuid, k_uptime_get(), M_CONFIRM_BURST_MS);
+        }
+
         // Return, not break: FIRE applied no settings, so the shared "Applied:"
-        // settings log below would be misleading. The confirmation advert (Task 8)
-        // is the acknowledgement; there is no LED A pattern.
+        // settings log below would be misleading. There is no LED A pattern.
         return;
       }
 

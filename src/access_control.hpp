@@ -87,6 +87,16 @@ namespace alc
       uint8_t ConsecutiveFailures() const { return m_failures; }
 
       /**
+       * @brief The accepting slot's current day key - access::M_DAY_KEY_BYTES.
+       *
+       * Only valid for a slot an Accepted Evaluate() just named: the tables are
+       * rebuilt on day rollover, so a key read for any other purpose could be
+       * stale. Added for the FIRE confirmation burst (task 8), which needs the
+       * same key material the command authenticated with to derive confirmId.
+       */
+      const uint8_t* DayKey(uint8_t slot) const { return m_day_keys[slot]; }
+
+      /**
        * @brief Evaluate one 128-bit service UUID's bytes.
        *
        * On Accepted the slot's sequence number has ALREADY been persisted past n,

@@ -10,6 +10,7 @@
 #include "adxl367.hpp"
 #include "arm_policy.hpp"
 #include "arming_sequence.hpp"
+#include "command_advertiser.hpp"
 #include "command_scanner.hpp"
 #include "detection_engine.hpp"
 #include "device_clock.hpp"
@@ -301,6 +302,11 @@ namespace alc
       // output in updateOutputState() and its rehearsal latch lights LED B. It
       // self-terminates through the engine one-shot - no second disarm path.
       FireSequence m_fire;
+
+      // The confirmation burst - a non-connectable advertising window opened on
+      // FIRE receipt (both live and rehearsal), carrying confirmId as its
+      // service UUID. Serviced every main-loop tick; see applyCommand().
+      CommandAdvertiser m_advertiser;
 
       // Activation counting, cooldown, the delay, the detection period and the
       // stuck-AWAKE watchdog - in both arm states. Declared after everything its
