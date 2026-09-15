@@ -45,8 +45,11 @@ namespace alc
     constexpr uint32_t M_ENGINE_RETRY_MS { static_cast<uint32_t>(DetectionEngine::M_COOLDOWN_RETRY_MS) };
 
     // access::ConfirmId()'s event byte for a FIRE command's receipt - confirm on
-    // receipt, at the top of the countdown, not at detonation.
-    constexpr uint8_t M_CONFIRM_EVENT_FIRE_RECEIVED { 0x01 };
+    // receipt, at the top of the countdown, not at detonation. Live and rehearsal
+    // are DIFFERENT events so the phone can tell them apart: a live fire destroys
+    // the device (the app marks it "Fired", dead), a rehearsal does not.
+    constexpr uint8_t M_CONFIRM_EVENT_FIRE_LIVE { 0x01 };
+    constexpr uint8_t M_CONFIRM_EVENT_FIRE_REHEARSAL { 0x02 };
 
     // How long the confirmation burst advertises: the WHOLE exit countdown. The
     // phone has one radio, so it must advertise the FIRE long enough for this
@@ -1446,7 +1449,12 @@ namespace alc
     // type, or an Arm or Settings during the exit delay. Neither changes
     // anything - no LED, no trim, no settings.
     if (decision.action == ArmAction::Ignore) {
-      if (command.type == protocol::CommandType::Reserved) {
+      if (command.isFire) {
+        // A FIRE keeps type Reserved, so it must be told apart from a junk
+        // reserved payload here: this is a FIRE that arrived during the exit
+        // delay, when only a disarm acts.
+        LOG_INF("Arming: FIRE from slot %u n %u ignored - only a disarm is accepted while arming.", evaluation.slot, evaluation.n);
+      } else if (command.type == protocol::CommandType::Reserved) {
         LOG_WRN("Command slot %u n %u has a reserved type - ignored.", evaluation.slot, evaluation.n);
       } else {
         LOG_INF("Arming: %s from slot %u n %u ignored - only a disarm is accepted while arming.", protocol::CommandTypeName(command.type),
@@ -1577,10 +1585,13 @@ namespace alc
 
         // Confirm on receipt, at the top of the countdown - not at detonation -
         // and for both live and rehearsal fires, so a bench rehearsal exercises
-        // the whole path. confirmId is derived from the same day key the command
+        // the whole path. The event byte distinguishes them so the phone knows
+        // whether the device is about to be destroyed (live) or is only testing
+        // (rehearsal). confirmId is derived from the same day key the command
         // authenticated with (AccessControl::DayKey()), so only a holder of that
         // day's key material could have produced this burst.
-        result = access::ConfirmId(m_access.DayKey(evaluation.slot), evaluation.n, M_CONFIRM_EVENT_FIRE_RECEIVED, confirmUuid);
+        result = access::ConfirmId(m_access.DayKey(evaluation.slot), evaluation.n, live ? M_CONFIRM_EVENT_FIRE_LIVE : M_CONFIRM_EVENT_FIRE_REHEARSAL,
+                                   confirmUuid);
         if (result < 0) {
           LOG_ERR("Could not derive the FIRE confirmation ID: %d!", result);
         } else {
