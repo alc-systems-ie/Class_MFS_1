@@ -76,5 +76,27 @@ void run_arm_policy_tests()
   decision = DecideCommand(ArmState::Inactive, true, command);
   assert(decision.action == ArmAction::Tune && decision.applySettings && decision.applyMode);
 
+  // FIRE: Active fires; Inactive rehearses; Arming is ignored; an accepted
+  // FIRE trims the clock like any other accepted command.
+  protocol::Command fireCommand;
+  fireCommand.isFire = true;
+
+  // fire_active_fires
+  decision = DecideCommand(ArmState::Active, false, fireCommand);
+  assert(decision.action == ArmAction::Fire);
+  assert(!decision.applySettings);
+
+  // fire_inactive_rehearses
+  decision = DecideCommand(ArmState::Inactive, false, fireCommand);
+  assert(decision.action == ArmAction::Fire);
+
+  // fire_arming_ignored
+  decision = DecideCommand(ArmState::Arming, false, fireCommand);
+  assert(decision.action == ArmAction::Ignore);
+
+  // fire_trims_clock_like_any_accepted_command
+  decision = DecideCommand(ArmState::Active, false, fireCommand);
+  assert(decision.trimClock);
+
   printf("arm policy: OK\n");
 }

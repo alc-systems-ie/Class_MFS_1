@@ -15,6 +15,7 @@ namespace alc
     Arm,         ///< Inactive -> Arming (then Active after the exit delay) with the STORED settings.
     Tune,        ///< Inactive stays Inactive; the command's settings applied and the test restarted.
     ReplayArmed, ///< Armed, and the command does not disarm. State unchanged; LED A replays Armed.
+    Fire,        ///< Active: fires (live). Inactive: rehearsal (LED B only). Never while Arming.
   };
 
   struct ArmDecision
@@ -42,6 +43,9 @@ namespace alc
    * | Inactive  | Arm      | Arming, STORED settings       | no       | no   | yes  |
    * | Inactive  | Disarm   | Stay Inactive, restart test   | no       | no   | yes  |
    * | Inactive  | Settings | Tune                          | yes      | slot 0 only | yes |
+   * | Active    | FIRE     | Fire (live, one-shot)         | no       | no   | yes  |
+   * | Inactive  | FIRE     | Fire (rehearsal, LED B only)  | no       | no   | yes  |
+   * | Arming    | FIRE     | Ignore - nothing, no confirmation | no   | no   | no   |
    *
    * **An armed device has only two ways out of the armed state: a disarm
    * command, or firing** (App latches Inactive when the output period ends).
@@ -65,7 +69,20 @@ namespace alc
   {
     ArmDecision decision {};
 
-    if (command.type == protocol::CommandType::Reserved) { return decision; }
+    // FIRE is a distinguished Reserved payload (type stays Reserved; only isFire
+    // marks it), so the Reserved guard must not reject it before the branch below.
+    if (command.type == protocol::CommandType::Reserved && !command.isFire) { return decision; }
+
+    if (command.isFire) {
+      // Arming: only Disarm acts during the exit delay. No confirmation.
+      if (state == ArmState::Arming) { return decision; }
+
+      // Active fires live; Inactive rehearses on LED B only. App decides which
+      // from the arm state; the policy just returns Fire for both.
+      decision.action    = ArmAction::Fire;
+      decision.trimClock = true;
+      return decision;
+    }
 
     if (command.type == protocol::CommandType::Disarm) {
       // Armed or not. From Inactive it is the ordinary deactivation, so a Disarm
