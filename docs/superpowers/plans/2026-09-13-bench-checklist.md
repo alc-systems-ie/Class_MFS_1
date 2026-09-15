@@ -28,7 +28,7 @@ RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run 
 ## 2. Boot and access state (Task 9)
 
 - [x] First boot: `No access state stored - first boot, no day floor.`
-- [ ] `Passive scan started: 100 ms window every 5970 ms.` (re-verify at 5970 ms —
+- [x] `Passive scan started: 100 ms window every 5970 ms.` (verified on hardware 2026-09-15 —
   this line was last observed on hardware at the earlier 5906 ms default)
 - [x] Temporarily enable `CONFIG_THREAD_ANALYZER=y` (and `CONFIG_THREAD_ANALYZER_AUTO=y` or a manual call point), flash, provision, send a command and trigger the device, then record the reported high-water marks for the main thread and the Bluetooth RX thread. Revert the Kconfig afterwards.
 
@@ -100,13 +100,13 @@ Original recipe (superseded by the observer tool above; kept for reference):
 
 ## 5a. Command types (plan 2026-09-14) — do this first on the new build
 
-1. [ ] Flash with `--recover`, provision the clock.
-2. [ ] Inactive, Arm page Send Armed → rapid flash; RTT `Command slot 1 n X: Arm, minute M.` and `Applied:` shows the **stored** settings (not app defaults).
-3. [ ] Armed, Send Armed again → rapid flash replay; RTT `Armed: Arm from slot 1 n X changes nothing - replaying Armed.`; still armed (tap: fires).
-4. [ ] Armed, Send Disarmed → slow flash; the app prompt appears with the fault-finding text; press Disarmed — open settings.
-5. [ ] Settings page: sliders at defaults; Send → single blink; LED B simulates at those settings.
-6. [ ] Restore defaults resets the sliders; nothing is sent until Send.
-7. [ ] Back → Arm page shows Armed. Send → rapid flash; RTT `Applied:` shows the settings from step 5.
+1. [x] Flash with `--recover`, provision the clock.
+2. [x] Inactive, Arm page Send Armed → rapid flash; RTT `Command slot 1 n X: Arm, minute M.` and `Applied:` shows the **stored** settings (not app defaults).
+3. [x] Armed, Send Armed again → rapid flash replay; RTT `Armed: Arm from slot 1 n X changes nothing - replaying Armed.`; still armed (tap: fires).
+4. [x] Armed, Send Disarmed → slow flash; the app prompt appears with the fault-finding text; press Disarmed — open settings.
+5. [x] Settings page: sliders at defaults; Send → single blink; LED B simulates at those settings.
+6. [x] Restore defaults resets the sliders; nothing is sent until Send.
+7. [x] Back → Arm page shows Armed. Send → rapid flash; RTT `Applied:` shows the settings from step 5.
 8. [ ] Inactive, Send Disarmed → slow flash replay, LED B stops if tuning.
 9. [ ] Prompt "Not seen" stays on the Arm page, and Settings is unreachable without a confirmed disarm.
 10. [ ] Turn Bluetooth off on the Mac: Send is disabled and the Arm page shows "Bluetooth is off." (the advertising-error path — "Not sent: …", no countdown, no dialog — is covered by host tests in `class_app/test/advertiser_test.dart`, not exercised here).
@@ -118,7 +118,7 @@ RTT expectations below are the engine's log texts as implemented — see
 `App::OnDetectionEvent` and the Detection met/cleared and Output lines in
 `App::Run()` (`src/app.cpp`).
 
-1. [ ] Flash **without** `--recover` (keeps `access/v1` and the stored settings, so
+1. [x] Flash **without** `--recover` (keeps `access/v1` and the stored settings, so
    the app's slot stays in sync with the device's sequence window - a `--recover`
    flash erases them, forcing a slot change or a wait for the 04:00 rollover per
    the bench log below), provision the clock. With no command sent, tap the device
@@ -159,7 +159,7 @@ RTT expectations below are the engine's log texts as implemented — see
    - (e) [ ] Arm while LED B is lit (a live test detection, or held by a pending
      test delay): no fire; the next count starts at `Activation 1 of 3.`, not a
      continuation of the test in progress.
-6. [ ] Armed trigger fires once (`Output ASSERTED`, fire GPIOs and LED B for
+6. [x] Armed trigger fires once (`Output ASSERTED`, fire GPIOs and LED B for
    about 5 s), then `Output cleared` and `Trigger complete - latched Inactive.
    Re-arming needs an engineer command.`. The test resumes on its own with no
    further command: the next completed tap after that logs `Activation 1 of N.`
@@ -187,7 +187,7 @@ RC decay is microseconds, far too fast for a meter to see. Infer the pin
 configuration from the RTT lines quoted below. Use the meter only to confirm that a
 fire line **is low / is not high**.
 
-1. [ ] **Boot.** RTT shows `Fire output initialised: both pins read low at boot
+1. [x] **Boot.** RTT shows `Fire output initialised: both pins read low at boot
    and are isolated (no driver).` That line is the evidence the pins are
    disconnected; the meter only confirms both fire lines read low.
    On a failed check, expect `Fire output failed its boot check (%d) - pins
@@ -203,7 +203,7 @@ fire line **is low / is not high**.
      switch faulty. That is **expected on a bare DK**, not a firmware fault - fit
      10 kΩ pull-downs to GND on both pins to exercise items 2-7, which all need a
      switch that passed its boot check.
-2. [ ] **Arm.** Send Armed. RTT: `Arming: fire pins isolated, arming in 10 s.`
+2. [x] **Arm.** Send Armed. RTT: `Arming: fire pins isolated, arming in 10 s.`
    Immediately after: **nothing on LED A or LED B for 10 s**. Tap the device
    during the window and confirm LED B stays dark (suppressed while Arming).
    The meter shows both fire lines low throughout. After 10 s, RTT shows `Fire
@@ -212,7 +212,7 @@ fire line **is low / is not high**.
    The `Fire pins enabled` line - not the meter, which still reads 0 V - is what
    confirms `Enable()` attached a driver. If it ends `(NO READ-BACK AVAILABLE -
    unverified)`, record that: the gates are then driven without read-back.
-3. [ ] **Disarm during the 10 s.** From the same phone: Send Armed, then, while
+3. [x] **Disarm during the 10 s.** From the same phone: Send Armed, then, while
    the Arm is still advertising, set the switch to Disarmed and Send. The app
    lets a Disarm replace an Arm that is still advertising (a new sequence
    number, never a reused one). RTT: `Arming cancelled by slot N n M.` then
@@ -227,7 +227,7 @@ fire line **is low / is not high**.
      Active - fire pins enabled (uptime ... ms).` followed at once by `Arm state:
      Inactive (uptime ... ms).` That is correct behaviour, not a failed cancel.
      Judge it from those RTT lines, not LED A.
-4. [ ] **Arm or Settings during the 10 s.** The arming phone cannot do this step:
+4. [x] **Arm or Settings during the 10 s.** The arming phone cannot do this step:
    the app keeps Arm waiting for its advertising window, and the Settings page is
    unreachable without a confirmed disarm. Use **a second phone on another slot**:
    phone 1 Sends Armed, then phone 2 sends an Arm (or a Settings command) within
@@ -238,7 +238,7 @@ fire line **is low / is not high**.
    ignored - only a disarm is accepted while arming.`). No LED, no clock trim, no
    settings applied, and the original arming still completes at its original 10 s
    deadline.
-5. [ ] **Disarm while Active.** With the device armed (RTT `Fire pins enabled`
+5. [x] **Disarm while Active.** With the device armed (RTT `Fire pins enabled`
    seen), Send Disarmed. RTT: `Arm state: Inactive (uptime ... ms).` and no `Fire
    pin disable failed` line; LED A slow flash. The absence of a disable failure is
    what shows both pins were driven low and disconnected - the meter only confirms
@@ -246,7 +246,7 @@ fire line **is low / is not high**.
    will not assert again: fire pin disable failed (%d)!`, `Fire pin disable failed
    (%d) - fire pins may NOT be isolated!` and `WARNING (light TBC): fire pins could
    not be isolated (%d)!`, and LED B plays three long pulses.
-6. [ ] **Armed trigger.** Trigger the device while armed: the fire lines
+6. [x] **Armed trigger.** Trigger the device while armed: the fire lines
    assert (meter and/or the existing fire-output check), then RTT `Trigger
    complete - latched Inactive. Re-arming needs an engineer command.` and
    `Arm state: Inactive (uptime ... ms).` Meter: both fire lines low
@@ -268,7 +268,7 @@ fire line **is low / is not high**.
 
 ## 5d. Scan reliability and Send/Stop (plan 2026-09-14)
 
-1. [ ] After flashing, confirm the boot log shows `Passive scan started: 100 ms
+1. [x] After flashing, confirm the boot log shows `Passive scan started: 100 ms
    window every 5970 ms.`
 2. [ ] Mac: 10 Sends to the device. Count how many are heard at the first or
    second scan (RTT `Command slot ... n ...` or LED A's pattern). Expect nearly
@@ -276,12 +276,12 @@ fire line **is low / is not high**.
    a steady 187.5 ms advertising interval, and about 1.4 % with 0-10 ms advDelay
    jitter (`--jitter-ms 10 --jitter-centred`, amendment §2), so an occasional
    whole-command miss in 10 Sends is within the model; several is not.
-3. [ ] Arm, then within the 10 s exit delay: press **Stop**, set Disarmed, **Send**.
+3. [x] Arm, then within the 10 s exit delay: press **Stop**, set Disarmed, **Send**.
    Expect `Continuous scan: arming exit delay.` and `Scan cadence now
    CONTINUOUS.` logged when the Arm was accepted, the cancel heard within about
    a second of the Disarm advertising, and `Scan cadence now duty-cycled.` once
    arming is cancelled.
-4. [ ] Let an arming complete instead of cancelling it: once Active, confirm the
+4. [x] Let an arming complete instead of cancelling it: once Active, confirm the
    cadence has returned to duty-cycled (`Scan cadence now duty-cycled.`) -
    continuous scan covers the exit delay only, not the armed state itself.
 5. [ ] Press **Stop** during an in-flight Send: the app's advert stops at once
@@ -317,7 +317,7 @@ fire line **is low / is not high**.
    down; the fail-safe path at the exit-delay deadline). Mark this item
    host-tested-only rather than attempting to induce it on the bench; do not
    invent a way to stop the scanner from the app or RTT to force this path.
-2. [ ] **App foreground guard.** Arm page, **Send** an Arm; while it is
+2. [x] **App foreground guard.** Arm page, **Send** an Arm; while it is
    advertising, switch away from the class app (Home button / Cmd-Tab to
    another app, not just another window). Expect the advert to stop at once -
    confirm with the observer tool (`tools/uuid_observer`) that the UUID stops
@@ -437,3 +437,34 @@ instead of 32 × 187.5 ms landing on the same phase every time), and the
 scanner now runs continuously for the whole Arming exit delay (§3, §5d above),
 not only for an armed trigger pending. Full derivation:
 `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`.
+
+### 2026-09-15 — merged main (scan period 5970 ms, fail safe, Send/Stop, foreground-only)
+
+Flashed `105aa0d` **without** `--recover` (bench build: `CONFIG_MFS_SCAN_DIAG=y`,
+`CONFIG_MFS_DEBUG_LED=y`). Boot: `Fire output initialised: both pins read low at boot and
+are isolated (no driver).`, `Access state restored: day floor 257.` (04:00 UTC rollover since
+the previous session — day keys and every slot's `n` restart at 0; app counters are per day
+too, no action needed), `Passive scan started: 100 ms window every 5970 ms.`, accelerometer
+configured at boot with no retry lines. Clock provisioned 06:19 UTC.
+
+- **Mac (slot 1 today — launched without `--dart-define`; keep one slot per phone per day).**
+  Arm n 0 → `Continuous scan: arming exit delay.`, `Scan cadence now CONTINUOUS.`, 17–30
+  adverts/s while arming. Arm n 1 during the exit delay ignored (`only a disarm is accepted
+  while arming`). n 2 never on air (stopped before start — number spent, no "Not sent", as
+  designed); arming completed at +10.2 s and `Scan cadence now duty-cycled.` 3 ms later.
+  Disarm n 3 disarmed the Active device, pins isolated first. Second cycle: Arm n 4, Disarm
+  n 5 heard 6.1 s later — `Arm state: Inactive - arming cancelled`, cadence back to duty-cycled.
+- **iPhone (release build, slot 3).** ~28 command adverts/s during continuous scanning; every
+  command heard at the first opportunity. Arm n 2 → Disarm n 3 cancelled arming at +5.6 s.
+  Arm n 4 → Active at +10.1 s → Disarm n 5 heard 6 s later. **Foreground-only:** Arm n 7 then
+  the app was switched away — its adverts stopped ~3 s after they started (the Arm had already
+  been heard, so the device armed; Disarm n 8 disarmed it). **Full armed trigger:** Settings n 9
+  (3 activations, 8 s cooldown, 4 s delay) → Arm n 10 → Active → `Activation 1 of 3`, cooldown,
+  `Activation 2 of 3`, cooldown, `Activation 3 of 3` → `Continuous scan: armed trigger pending.`
+  → `TRIGGER PENDING: firing in 4 s` → `Output ASSERTED` → `Trigger complete - latched
+  Inactive.` → `Fire pins isolated.` → Inactive. No false read-back latch on the real gates.
+- **RTT Viewer** reported "Connection lost" twice; the board kept logging. Viewer-side only.
+- **Ticked:** §2 boot line; §5a 1–7; §5b 1, 6; §5c 1–6; §5d 1, 3, 4; §5e 2.
+- **Still open:** §5d 2 (10 Mac Sends, first-scan count at 5970 ms), §5d 5–7 (Stop observed on
+  the observer; replay; production Android interval), §5d 8 production gate, §5b 7–8 (disarmed
+  idle current; cold-cell boot), §5 delay/interlock and §6 items on the new flow.
