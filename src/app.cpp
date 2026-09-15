@@ -1553,7 +1553,10 @@ namespace alc
         m_fire.Start(live, k_uptime_get(), DetectionEngine::M_DELAYED_TRIGGER_HOLD_MS);
         LOG_WRN("FIRE received from slot %u n %u - %s, %u s countdown.", evaluation.slot, evaluation.n, live ? "LIVE" : "rehearsal",
                 static_cast<unsigned>(FireSequence::M_FIRE_COUNTDOWN_MS / MSEC_PER_SEC));
-        break;
+        // Return, not break: FIRE applied no settings, so the shared "Applied:"
+        // settings log below would be misleading. The confirmation advert (Task 8)
+        // is the acknowledgement; there is no LED A pattern.
+        return;
       }
 
       default:
