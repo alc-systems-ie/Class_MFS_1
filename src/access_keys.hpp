@@ -29,6 +29,7 @@ namespace alc::access
   constexpr uint8_t M_LABEL_ENC_KEY { 0x03 };
   constexpr uint8_t M_LABEL_ROTATING_ID { 0x04 };
   constexpr uint8_t M_LABEL_TIME_SYNC { 0x05 };
+  constexpr uint8_t M_LABEL_CONFIRM { 0x06 };
 
   constexpr uint8_t M_TIME_SYNC_TAG_BYTES { 12 };
 
@@ -40,6 +41,9 @@ namespace alc::access
 
   /** @brief rotatingId(n) = first 4 bytes of HMAC-SHA256(dayKey, n BE32 | 0x04). */
   int DeriveRotatingId(const uint8_t* dayKey, uint32_t n, uint8_t* rotatingId);
+
+  /** @brief confirmId(n, event) = first 16 bytes of HMAC-SHA256(dayKey, n BE32 | event | 0x06). */
+  int ConfirmId(const uint8_t* dayKey, uint32_t n, uint8_t event, uint8_t* confirmId);
 
   /** @brief nonce = id BE32 | day BE16 | slot | n BE32 (11 bytes). */
   void BuildNonce(uint32_t deviceId, uint16_t day, uint8_t slot, uint32_t n, uint8_t* nonce);

@@ -69,6 +69,22 @@ namespace alc::access
     return 0;
   }
 
+  int ConfirmId(const uint8_t* dayKey, uint32_t n, uint8_t event, uint8_t* confirmId)
+  {
+    constexpr uint8_t M_MESSAGE_BYTES { 6 };
+    uint8_t message[M_MESSAGE_BYTES] {};
+    uint8_t mac[crypto::M_HMAC_SHA256_BYTES] {};
+    int result { 0 };
+
+    putBe32(&message[0], n);
+    message[4] = event;
+    message[5] = M_LABEL_CONFIRM;
+    result     = crypto::HmacSha256(dayKey, M_DAY_KEY_BYTES, message, sizeof(message), mac);
+    if (result < 0) { return result; }
+    memcpy(confirmId, mac, protocol::M_UUID_BYTES);
+    return 0;
+  }
+
   void BuildNonce(uint32_t deviceId, uint16_t day, uint8_t slot, uint32_t n, uint8_t* nonce)
   {
     putBe32(&nonce[0], deviceId);
