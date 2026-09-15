@@ -48,9 +48,13 @@ namespace alc
     // receipt, at the top of the countdown, not at detonation.
     constexpr uint8_t M_CONFIRM_EVENT_FIRE_RECEIVED { 0x01 };
 
-    // How long the confirmation burst advertises - a few seconds, well within
-    // FireSequence::M_FIRE_COUNTDOWN_MS, so it never overlaps the assertion window.
-    constexpr int64_t M_CONFIRM_BURST_MS { 3000 };
+    // How long the confirmation burst advertises: the WHOLE exit countdown. The
+    // phone has one radio, so it must advertise the FIRE long enough for this
+    // duty-cycled device to catch it (~one scan period), THEN stop and scan for
+    // this burst - by which time a short burst would be long over. Bursting for
+    // the full countdown keeps the confirmId on air until the phone is listening.
+    // It stops at the countdown deadline, as the fire asserts.
+    constexpr int64_t M_CONFIRM_BURST_MS { FireSequence::M_FIRE_COUNTDOWN_MS };
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
     // Liveness blink for the battery test, at the scan period.
