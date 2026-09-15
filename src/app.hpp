@@ -13,6 +13,7 @@
 #include "command_scanner.hpp"
 #include "detection_engine.hpp"
 #include "device_clock.hpp"
+#include "fire_sequence.hpp"
 #include "led_sequencer.hpp"
 #include "npm2100.hpp"
 #include "output_switch.hpp"
@@ -294,6 +295,12 @@ namespace alc
       // (after a refused arm, a failed restart or a failed watchdog re-arm),
       // which the engine also runs as a "cooldown", is not logged as one.
       bool m_logging_cooldown;
+
+      // The FIRE command's 10 s unstoppable countdown and bounded assertion
+      // window. Serviced every main-loop tick; its live latch is ORed into the
+      // output in updateOutputState() and its rehearsal latch lights LED B. It
+      // self-terminates through the engine one-shot - no second disarm path.
+      FireSequence m_fire;
 
       // Activation counting, cooldown, the delay, the detection period and the
       // stuck-AWAKE watchdog - in both arm states. Declared after everything its

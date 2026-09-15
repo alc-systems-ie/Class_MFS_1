@@ -223,6 +223,7 @@ namespace alc
       , m_last_scan_diag_ms(0)
       , m_scan_outage_logged(false)
       , m_logging_cooldown(false)
+      , m_fire()
       , m_engine(*this)
       , m_arming(*this)
       , m_led_sequencer()
@@ -360,6 +361,13 @@ namespace alc
         LOG_INF("Arm state: Active - fire pins enabled (uptime %lld ms).", k_uptime_get());
       }
 
+      // Advance the FIRE countdown and its assertion window every tick, before
+      // the output is derived below. IsFaulted() is the fire-switch fault input:
+      // a fault while CountingDown aborts the fire outright. The switch fault
+      // itself fails safe (disarm) through the existing m_switch_fault_pending
+      // path, so no second disarm path is added here.
+      m_fire.Service(k_uptime_get(), m_output_switch.IsFaulted());
+
       // A failed arming has already failed safe and raised the warning inside
       // Service(). No LED A acknowledgement.
       logArmingFailure(FailureSource::Sequence);
@@ -390,10 +398,18 @@ namespace alc
       // expiry changing the cadence) that serviceScanHealth()'s retry healed at
       // the top of this tick would otherwise leave an Active device with its
       // trigger silently suppressed and no warning.
-      stateBeforeHealthCheck = m_arming.State();
-      if (m_arming.ServiceScannerHealth()) {
-        logArmingFailure(FailureSource::Sequence);
-        LOG_INF("Arm state: Inactive%s (uptime %lld ms).", (stateBeforeHealthCheck == ArmState::Arming) ? " - arming cancelled" : "", k_uptime_get());
+      // SCANNER-LOSS EXEMPTION DURING A FIRE EVENT. A FIRE command has already
+      // landed and authenticated; scanner loss must not abort it. While the fire
+      // countdown or its assertion window runs, the scanner-health fail-safe is
+      // suspended entirely - not run and not acted on. Everywhere else it is
+      // unchanged.
+      if (m_fire.State() != FireState::CountingDown && m_fire.State() != FireState::Firing) {
+        stateBeforeHealthCheck = m_arming.State();
+        if (m_arming.ServiceScannerHealth()) {
+          logArmingFailure(FailureSource::Sequence);
+          LOG_INF("Arm state: Inactive%s (uptime %lld ms).", (stateBeforeHealthCheck == ArmState::Arming) ? " - arming cancelled" : "",
+                  k_uptime_get());
+        }
       }
 
       // The arming is acknowledged only now, after the cadence gate and the
@@ -475,7 +491,9 @@ namespace alc
       // underneath is discarded when arming completes or is cancelled. It is a
       // bench indicator, not an output consumer - OutputSwitch is the example
       // future consumers copy (design spec section 6.2).
-      bool detectionLed { m_engine.DetectionMet() && (m_arming.State() != ArmState::Arming) };
+      // A disarmed (rehearsal) FIRE pulses LED B for its assertion window, like a
+      // test detection. RehearsalFired() is true only during the Firing window.
+      bool detectionLed { (m_engine.DetectionMet() && (m_arming.State() != ArmState::Arming)) || m_fire.RehearsalFired() };
 
       ledB = detectionLed;
 
@@ -738,8 +756,13 @@ namespace alc
     if (tick == EngineTick::Run) { m_engine.Tick(detectionSettings(), m_arming.State() == ArmState::Active, awake, k_uptime_get()); }
 
     // LAYER ONE of the delay interlock is the last term: while a delay is
-    // pending - armed trigger or test - detection cannot reach the output.
-    m_output_active = (m_arming.State() == ArmState::Active) && m_engine.DetectionMet() && delayPermitsFiring();
+    // pending - armed trigger or test - detection cannot reach the output. The
+    // arm state stays definitive: a live FIRE latch only reaches the output while
+    // Active, and it bypasses the detection delay because the countdown IS the
+    // fire's own delay. When FireLatched() falls at the window end the output
+    // falls, the engine one-shot completes, and the main loop's TakeTriggerComplete()
+    // block latches Inactive - FIRE self-terminates exactly like a motion trigger.
+    m_output_active = (m_arming.State() == ArmState::Active) && ((m_engine.DetectionMet() && delayPermitsFiring()) || m_fire.FireLatched());
 
     // The fire output is driven HERE, in the same breath as the condition is
     // derived, rather than from the main loop. A consumer that lives at the
@@ -1423,6 +1446,16 @@ namespace alc
       return;
     }
 
+    // A FIRE countdown (or its assertion window) is uninterruptible by a Disarm
+    // command. DecideCommand() still returns Disarm - it does not know about the
+    // countdown - so the refusal lives here, before any trim or state change: no
+    // trim, no disarm, nothing. The only thing that stops a fire is a fire-switch
+    // fault (handled by FireSequence::Service()).
+    if (decision.action == ArmAction::Disarm && !m_fire.AcceptsDisarm()) {
+      LOG_WRN("Disarm ignored during fire countdown.");
+      return;
+    }
+
     if (decision.trimClock && m_clock.ApplyMinuteHint(command.minuteOfDay, uptimeSecs) == DeviceClock::TrimResult::Trimmed) {
       LOG_INF("Clock trimmed from slot %u: now minute %u.", evaluation.slot, m_clock.MinuteOfDay(uptimeSecs));
     }
@@ -1508,6 +1541,20 @@ namespace alc
         if (result < 0) { LOG_ERR("Could not start the engine for the test - retrying every %u ms!", M_ENGINE_RETRY_MS); }
         pattern = (m_settings.OperatingMode() != previousMode) ? LedPattern::ModeChanged : LedPattern::SettingsApplied;
         break;
+
+      case ArmAction::Fire: {
+        // Active fires live; Inactive rehearses (LED B only). FireSequence starts
+        // its 10 s unstoppable countdown and, at expiry, asserts for one detection
+        // hold period before self-terminating. The pins are already live for a
+        // live fire (the device is Active); a rehearsal never touches them. NO LED
+        // A pattern here - the confirmation advert is Task 8, so pattern stays None.
+        bool live { m_arming.State() == ArmState::Active };
+
+        m_fire.Start(live, k_uptime_get(), DetectionEngine::M_DELAYED_TRIGGER_HOLD_MS);
+        LOG_WRN("FIRE received from slot %u n %u - %s, %u s countdown.", evaluation.slot, evaluation.n, live ? "LIVE" : "rehearsal",
+                static_cast<unsigned>(FireSequence::M_FIRE_COUNTDOWN_MS / MSEC_PER_SEC));
+        break;
+      }
 
       default:
         return;

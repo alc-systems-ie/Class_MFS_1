@@ -23,4 +23,5 @@ target_sources(app PRIVATE
   src/led_sequencer.cpp
   src/detection_engine.cpp
   src/arming_sequence.cpp
+  src/fire_sequence.cpp
 )
