@@ -36,9 +36,10 @@ config MFS_SCAN_PERIOD_MS
 	  into a failing phase the way 9401 (5876 ms) could have. At 5970 ms it
 	  reports zero misses against the measured macOS interval (187.5 ms) and
 	  every Apple interval up to 318.75 ms. A PASS holds for a steady
-	  interval; real advDelay jitter can add a small miss rate - about 1.4 %
-	  at 187.5 ms with --jitter-ms 10 --jitter-centred (scan reliability
-	  amendment section 2). Intervals from about 5 x the 100 ms window
+	  interval; a steady-interval PASS can miss a few percent under real
+	  advDelay jitter (5970 ms: 1.3 % measured Mac 187.5 ms; up to ~6 %
+	  against Apple's nominal intervals; scan reliability amendment
+	  section 2). Intervals from about 5 x the 100 ms window
 	  upward (roughly 500 ms and beyond) cannot be fully covered by any
 	  period at N = 5 - the app's foreground-only sending, which keeps the
 	  counterpart advertising fast, is what protects those cases, not this

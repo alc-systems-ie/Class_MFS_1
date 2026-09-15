@@ -65,6 +65,18 @@ spacing - the 6000 ms scan stayed locked to one phase of it across whole
 commands, which a mean 5 ms longer could not do - so --jitter-centred is the
 model supported for it; the uncentred model shows the sensitivity.
 
+WHICH MODEL TO USE, in one line: pass --jitter-centred when I came from a
+measurement (a stopwatch or observer-tool log of actual advert timestamps, so
+I is already a mean spacing) - leave it off, the default, when I is a NOMINAL
+advInterval value taken from a spec or vendor document (Apple's documented
+152.5 / 211.25 / 318.75 ms, or any other advertising interval quoted in units
+rather than measured), because advDelay adds ON TOP of a nominal interval, it
+does not centre on it. Applying --jitter-centred to a nominal interval (or
+omitting it for a measured one) silently runs the wrong model and can
+understate or overstate the true miss rate by several percent - see
+docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md section 2 for
+a worked example of the two models disagreeing on the same interval list.
+
 Each trial: the burst starts at t = 0 with the first advert; each later advert
 follows the previous one by a fresh draw of the gap above; the first scan opens at s = U(0, P) and scans k = 0..N-1 open at s + kP, each
 catching the command if any advert lies in [s + kP, s + kP + W]. The miss
@@ -312,7 +324,9 @@ def build_parser():
     parser.add_argument("--jitter-ms", type=float, default=0.0,
                         help="Also run the Monte Carlo jitter model, advert intervals I + U(0, J) ms (advDelay: 10).")
     parser.add_argument("--jitter-centred", action="store_true",
-                        help="Jitter model: draw I - J/2 + U(0, J), so the mean spacing is I (I is a measured mean).")
+                        help="Jitter model: draw I - J/2 + U(0, J), mean spacing I. Use for a MEASURED mean "
+                             "interval; leave off (default) for a NOMINAL advInterval value, where advDelay "
+                             "adds on top of I instead of centring on it.")
     parser.add_argument("--trials", type=int, default=DEFAULT_TRIALS,
                         help=f"Jitter model: trials per interval (default {DEFAULT_TRIALS}).")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED,

@@ -174,8 +174,9 @@ Constraints from that analysis that are easy to violate by accident:
   the middle of the wider 9537–9565 island, which the script reports as a clean
   pass (zero misses) against the Mac's 187.5 ms and every Apple interval up to
   318.75 ms, including the 211.25 ms Apple recommends. **A PASS holds for a
-  steady interval; real advDelay jitter can add a small miss rate** (~1.4 % at
-  187.5 ms with `--jitter-ms 10 --jitter-centred`; amendment §2). The script
+  steady interval; a steady-interval PASS can miss a few percent under real
+  advDelay jitter** (5970 ms: 1.3 % measured Mac 187.5 ms; up to ~6 % against
+  Apple's nominal intervals; amendment §2). The script
   derives the scan count N = floor((30 000 − W) / P): **N = 5 needs P ≤ 5980 ms,
   and raising the period past 5980 ms drops N to 4.** Intervals from about
   5 × the 100 ms window upward cannot be fully covered by any period at this

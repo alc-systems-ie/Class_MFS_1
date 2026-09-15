@@ -71,27 +71,39 @@ treats I as a *measured* mean spacing. The Mac's 187.5 ms is a measured spacing 
 6000 ms scan stayed phase-locked to it across whole commands, which a mean 5 ms longer
 could not do — so the centred model is the one supported for the measured interval.
 
-Jitter results, J = 10 ms, 20 000 trials, seed 1 (± is one standard error):
+**Jitter results must use the model that matches each interval's source, not one model
+for all of them.** The Mac's 187.5 ms is a *measured* mean spacing (§1: the 6000 ms scan
+stayed phase-locked to it across whole commands, which a mean 5 ms longer could not do),
+so it takes the centred model (`--jitter-centred`, mean exactly I). Apple's nominal
+152.5/211.25/318.75 ms are *nominal* advInterval values, for which the real spacing is
+I + advDelay — the uncentred model (mean I + J/2), no `--jitter-centred`. An earlier
+version of this table applied the centred model to every interval, including the nominal
+ones; that understates their miss rate, since it treats advDelay as centred on the
+interval rather than added on top of it. Corrected, matched-model results, J = 10 ms,
+20 000 trials, seed 1 (`tools/scan_phase_check.py`; reproduce with `--trials 20000`):
 
-| Period | Model | 152.5 | 187.5 | 211.25 | 318.75 |
+| Period | 187.5 (Mac, measured, centred) | 152.5 (nominal) | 211.25 (nominal) | 318.75 (nominal) | Worst |
 |---|---|---|---|---|---|
-| **5970.000 ms (9552)** | steady | PASS | PASS | PASS | PASS |
-| | centred (mean I) | 1.13 ± 0.07 % | **1.36 ± 0.08 %** | 0.00 % | 0.59 ± 0.05 % |
-| | uncentred (mean I + 5 ms) | 4.94 % | **28.3 %** | 0.02 % | 6.52 % |
-| 5875.625 ms (9401) | steady | PASS | PASS | PASS | PASS |
-| | centred (mean I) | 0.00 % | 0.00 % | 0.40 % | **4.05 %** |
-| | uncentred (mean I + 5 ms) | 0.00 % | 0.05 % | 1.07 % | **10.2 %** |
+| **5970.000 ms (9552)** | 1.28 % | 4.94 % | 0.02 % | 6.46 % | **6.46 %** |
+| 5862.500 ms (9380) | 0.00 % | 0.01 % | 11.38 % | 26.16 % | **26.16 %** |
+| 5875.625 ms (9401) | 0.00 % | 0.00 % | 1.04 % | 10.18 % | **10.18 %** |
 
-A sweep of 9300–9600 units against the intervals ≤ 320 ms, ranked by worst centred-jitter
-miss, puts **9380 units (5862.500 ms) first at 0.29 %** (all at 318.75 ms; 9378–9383 are
-all ≤ 0.34 %, and all pass steady); 9552 ranks 29th of 301 at 1.36 %, and is the best of
-its own island (9551 at 1.27 % is within sampling error; the island's edges reach 5–6 %).
-5875.625 ms ranks 83rd at 4.05 %. **No period is robust to the interpretation:** 9380
-misses 26 % in the uncentred model, and the period minimising the worst of the steady,
-centred and uncentred results (9406 units, 5878.750 ms) still misses 6.9 %. A few ms of
-uncertainty in the counterpart's *mean* interval matters more than the period choice —
-another reason the app's foreground, fast advertising (§6), not the period, is the
-guarantee. The period is unchanged; this is recorded for the owner.
+(Steady-model verdict for all three periods against all four intervals is PASS; only the
+jitter miss rates differ.)
+
+**Under the matched models, 5970 ms (9552 units) has the best worst case of the three** —
+6.46 %, against 9380's 26.16 % and 9401's 10.18 %. The sweep ranking previously quoted
+here (9380 units "first at 0.29 %") used the centred model uniformly, including for the
+nominal intervals, and does not hold once each interval is matched to its correct model —
+it is withdrawn. **No period is clean against every interval once jitter is counted**:
+every row above has a non-zero worst case, and which interval dominates (and so which
+period ranks best) depends on the model. A few ms of uncertainty in the counterpart's
+*mean* interval matters more than the period choice — another reason the app's
+foreground, fast advertising (§6), not the period, is the guarantee. **The scan period
+must still be re-checked against the production Android phone's own MEASURED mean
+interval (centred model) once it is captured on the bench** (bench checklist §5d) — a
+nominal spec figure is not a substitute for that measurement. The period is unchanged
+here; this is recorded for the owner.
 
 Steady-model results at W = 100 ms, N = 5, 2000 phase steps, for the default interval set
 (measured and plausible counterpart intervals). N = 5 is the derived value (below) for
@@ -196,8 +208,10 @@ No firmware change; documented so an unexpected acknowledgement is explicable.
 
 ## 6. Owner decisions 2026-09-14
 
-Following review of §2 and the "OPEN" item it raised, the owner made three decisions
-that together close the gap a period alone cannot:
+Following review of §2 and the "OPEN" item it raised, the owner made three decisions.
+Only the second of these — foreground-only, fast-advertising sending — closes the gap a
+period alone cannot; the other two protect different failure modes (see the closing
+paragraph below):
 
 - **No scanner, no arming.** An Arm is refused when the scanner is not running, both
   when the Arm is accepted (no Arming state entered) and, fail-safe, at the end of the

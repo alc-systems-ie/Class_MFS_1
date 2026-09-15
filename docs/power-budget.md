@@ -65,9 +65,16 @@ below, 13 above) — "less battery is always good", and the wider margin costs
 less power besides, since 5970 ms is closer to the unconstrained 6000 ms
 optimum than 5876 ms was. The script reports a clean pass at 5970 ms against
 every measured or plausible interval up to 318.75 ms for a steady advertiser;
-real advDelay jitter can add a small miss rate (~1.4 % worst) — see the
-amendment §2 for the full results. The figures below are recomputed for 5970 ms with
-the same formulas as before.
+real advDelay jitter can add a small miss rate, and which jitter model applies
+depends on the interval: the Mac's 187.5 ms is a *measured* mean spacing, so it
+takes the centred model (`--jitter-centred`, mean exactly I), while Apple's
+nominal 152.5/211.25/318.75 ms advertising-interval figures take the uncentred
+model (mean I + advDelay/2), since advDelay adds on top of a nominal interval
+rather than centring on it. Matched to the right model per interval, 5970 ms
+misses 1.3 % against the Mac's measured 187.5 ms and up to 6.5 % worst case
+against Apple's nominal intervals (318.75 ms) — see the amendment §2 for the
+full results. The figures below are recomputed for 5970 ms with the same
+formulas as before.
 
 System ON idle, 100 ms passive scan every 5970 ms. Duty cycle 100/5970 = 1.675%
 (was 100/5876 = 1.702%, 100/6000 = 1.667% originally).
