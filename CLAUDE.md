@@ -118,6 +118,11 @@ firing while deactivated is dangerous.
   never fires an armed delay whose scanner was lost or is down at expiry
   (`DelayExpiredScanLostSuppressed`). This supersedes the 2026-09-13 "prioritise
   fire" ruling.
+  **FIRE's 10 s countdown is the one deliberate exception** (owner decision
+  2026-09-15): once accepted while Active, it is unstoppable by a Disarm (refused
+  and logged) and by a scanner loss during it. Only a fire-path hardware fault
+  aborts it, isolating the pins and disarming as any other fault would
+  (`docs/superpowers/specs/2026-09-15-fire-command-amendment.md` §4).
 
 Related: **arming is edge-triggered** (§1.0.1). AWAKE is a level, not a latch, so a
 naive `armed && triggered` fires the instant the device is armed on motion that
@@ -237,6 +242,10 @@ next 04:00 UTC only — `docs/power-budget.md` §8.1):
   acknowledges only *accepted* commands, never a failed authentication.
 - **The device never advertises to solicit contact.** It scans. Report modes are
   documented exceptions (design spec §4.3). Advertising forfeits covertness.
+  **FIRE's confirmId burst is a further, bounded exception**: an authenticated,
+  random-looking UUID sent once on receipt of a FIRE (armed or rehearsal), never
+  on detonation, indistinguishable from noise to anyone without the day key
+  (`docs/superpowers/specs/2026-09-15-fire-command-amendment.md` §3).
 - **A corrupt `access/v1` record refuses commands every boot** (`access_store.cpp`
   logs "Stored access state is invalid"). There is no in-field recovery — the fix
   is a wired erase of the settings partition followed by re-provisioning, never an

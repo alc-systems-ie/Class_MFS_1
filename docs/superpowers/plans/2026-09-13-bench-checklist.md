@@ -328,6 +328,39 @@ fire line **is low / is not high**.
    the `inactive` lifecycle state, which the app is required to treat as still
    sending (amendment §6).
 
+## 5f. FIRE command (plan 2026-09-15, spec `docs/superpowers/specs/2026-09-15-fire-command-amendment.md`)
+
+1. [ ] **Armed FIRE fires after 10 s.** Arm the device; send FIRE from a slot.
+   Expect the confirmId burst (§5f.6), then the fire pins assert at the 10 s
+   mark and the device latches Inactive, exactly as a motion trigger does.
+2. [ ] **Disarm during the 10 s is refused.** Send FIRE while Active, then
+   Disarm within the countdown. RTT: `Disarm ignored during fire countdown.`
+   The device still fires at the original 10 s deadline - this is the one
+   command the always-fail-safe rule does not apply to (spec §4).
+3. [ ] **Scanner unplugged during the 10 s - still fires.** Send FIRE, then
+   remove the antenna or otherwise stop the scanner during the countdown (see
+   §8's note on scanner-loss being host-tested only if there is no safe bench
+   trigger). The countdown must not abort or fail-safe on the scanner loss;
+   the fire pins assert at 10 s regardless.
+4. [ ] **Fire-switch fault injected during the 10 s - aborts, disarms, warns.**
+   Send FIRE while Active, then induce a fire-path hardware fault during the
+   countdown (per §5c.7's method, if one can be induced safely). Expect the
+   countdown to abort, pins isolated, the device disarmed, and `signalWarning()`
+   plays (three long pulses on LED B) - no confirmation of firing is sent.
+5. [ ] **Disarmed FIRE - LED B only, pins never move.** With the device
+   Inactive, send FIRE. The same 10 s countdown and confirmId burst run, but
+   the "detonation" shows on LED B only. Scope or meter the fire lines
+   throughout: they must never move.
+6. [ ] **ConfirmId burst seen by the app/observer.** For both the armed and
+   disarmed cases above, confirm the app (or `tools/uuid_observer`) sees the
+   authenticated `confirmId(n, 0x01)` burst in the first few seconds of the
+   countdown - a short burst of adverts, not a continuous one, and not before
+   FIRE is accepted.
+7. [ ] **Arming FIRE ignored.** Send Arm, then within the 10 s exit delay
+   (arming, not yet Active), send FIRE from another slot. Expect it logged and
+   ignored - no confirmation, no countdown, no LED - and the original arming
+   still completes at its own 10 s deadline.
+
 ## 9. Bench log
 
 ### 2026-09-14 — first bench session (J-Link 853003346, nRF54L05, device 0xFBACBE88)
