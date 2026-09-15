@@ -22,14 +22,19 @@ namespace alc
   /**
    * @brief A 10 s unstoppable countdown to a live fire or a rehearsal, then a bounded assertion window.
    *
-   * `live` (set by Start()) decides only which latch the Firing state sets:
+   * `live` (set by Start()) decides which latch the Firing state sets -
    * FireLatched() for a live fire, consumed by App::updateOutputState() to
    * drive the fire pins; RehearsalFired() for a rehearsal, which lights LED B
-   * only. NO SCANNER INPUT AT ALL - the scanner-loss exemption for a fire
-   * countdown is proven by this class simply never calling out to one. The
-   * only thing that stops the countdown once started is a fire-switch fault,
-   * which aborts it outright before it ever fires - App is expected to fail
-   * safe (isolate pins, disarm, warn) on Aborted().
+   * only - and also gates LiveInProgress()/AcceptsDisarm(): amendment §4's
+   * uninterruptible-by-Disarm carve-out applies to a LIVE fire only, so a
+   * rehearsal countdown or its assertion window remains interruptible.
+   * NO SCANNER INPUT AT ALL - the scanner-loss exemption for a fire countdown
+   * is proven by this class simply never calling out to one; App additionally
+   * scopes that exemption to LiveInProgress() so an overlapping rehearsal does
+   * not defer an Arming device's scanner fail-safe. The only thing that stops
+   * the countdown once started is a fire-switch fault, which aborts it
+   * outright before it ever fires - App is expected to fail safe (isolate
+   * pins, disarm, warn) on Aborted().
    *
    * The countdown expiring does not latch forever: it enters Firing, asserts
    * for the `assertMs` passed to Start(), then drops to Completed. This
@@ -81,8 +86,18 @@ namespace alc
       /** @brief True once a fire-switch fault aborted the countdown before it fired. */
       bool Aborted() const { return m_aborted; }
 
-      /** @brief False while CountingDown or Firing - the whole fire event is uninterruptible by a Disarm command. */
-      bool AcceptsDisarm() const { return m_state != FireState::CountingDown && m_state != FireState::Firing; }
+      /** @brief True only while a LIVE fire is CountingDown or Firing - false for a rehearsal in either state, and false when Idle/Completed. */
+      bool LiveInProgress() const { return m_live && (m_state == FireState::CountingDown || m_state == FireState::Firing); }
+
+      /**
+       * @brief False only while a LIVE fire is CountingDown or Firing.
+       *
+       * Uninterruptible by a Disarm command applies to a LIVE fire event only
+       * (amendment §4: "once FIRE is accepted while Active"). A rehearsal
+       * countdown or its assertion window is interruptible - AcceptsDisarm()
+       * is true throughout.
+       */
+      bool AcceptsDisarm() const { return !LiveInProgress(); }
 
     private:
       FireState m_state;

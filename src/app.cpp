@@ -411,12 +411,14 @@ namespace alc
       // expiry changing the cadence) that serviceScanHealth()'s retry healed at
       // the top of this tick would otherwise leave an Active device with its
       // trigger silently suppressed and no warning.
-      // SCANNER-LOSS EXEMPTION DURING A FIRE EVENT. A FIRE command has already
-      // landed and authenticated; scanner loss must not abort it. While the fire
-      // countdown or its assertion window runs, the scanner-health fail-safe is
-      // suspended entirely - not run and not acted on. Everywhere else it is
-      // unchanged.
-      if (m_fire.State() != FireState::CountingDown && m_fire.State() != FireState::Firing) {
+      // SCANNER-LOSS EXEMPTION DURING A LIVE FIRE EVENT. A FIRE command has
+      // already landed and authenticated; scanner loss must not abort it. While
+      // a LIVE fire countdown or its assertion window runs, the scanner-health
+      // fail-safe is suspended entirely - not run and not acted on. A rehearsal
+      // does NOT defer this check (amendment §4 scopes the carve-out to a fire
+      // accepted while Active) - an overlapping Arm still fails safe on its own
+      // scanner loss. Everywhere else it is unchanged.
+      if (!m_fire.LiveInProgress()) {
         stateBeforeHealthCheck = m_arming.State();
         if (m_arming.ServiceScannerHealth()) {
           logArmingFailure(FailureSource::Sequence);
@@ -1459,11 +1461,12 @@ namespace alc
       return;
     }
 
-    // A FIRE countdown (or its assertion window) is uninterruptible by a Disarm
-    // command. DecideCommand() still returns Disarm - it does not know about the
+    // A LIVE FIRE countdown (or its assertion window) is uninterruptible by a
+    // Disarm command - a rehearsal is not (FireSequence::AcceptsDisarm()).
+    // DecideCommand() still returns Disarm - it does not know about the
     // countdown - so the refusal lives here, before any trim or state change: no
-    // trim, no disarm, nothing. The only thing that stops a fire is a fire-switch
-    // fault (handled by FireSequence::Service()).
+    // trim, no disarm, nothing. The only thing that stops a live fire is a
+    // fire-switch fault (handled by FireSequence::Service()).
     if (decision.action == ArmAction::Disarm && !m_fire.AcceptsDisarm()) {
       LOG_WRN("Disarm ignored during fire countdown.");
       return;

@@ -52,9 +52,9 @@ namespace
     printf("fire sequence: live fires after 10 s then drops after the assertion window: OK\n");
   }
 
-  // 2. AcceptsDisarm() is false for the whole countdown and the whole
-  // assertion window - the fire event is unstoppable by a Disarm command -
-  // and true again once Completed.
+  // 2. LIVE fire: AcceptsDisarm() is false for the whole countdown and the
+  // whole assertion window - the fire event is unstoppable by a Disarm
+  // command - and true again once Completed.
   void testDisarmRefusedUntilCompleted()
   {
     FireSequence sequence;
@@ -217,7 +217,9 @@ namespace
     sequence.Start(false, M_COUNTDOWN_MS + M_ASSERT_MS, M_ASSERT_MS);
     assert(sequence.State() == FireState::CountingDown);
     assert(!sequence.RehearsalFired());
-    assert(!sequence.AcceptsDisarm());
+    // A rehearsal is interruptible throughout (amendment §4 scopes the
+    // uninterruptible carve-out to a live fire only).
+    assert(sequence.AcceptsDisarm());
 
     sequence.Service(M_COUNTDOWN_MS + M_ASSERT_MS + M_COUNTDOWN_MS, false);
     assert(sequence.RehearsalFired());
@@ -245,7 +247,94 @@ namespace
     printf("fire sequence: Start after abort clears Aborted: OK\n");
   }
 
-  // 11. int64_t: a large nowMs, past the old uint32_t wrap point (~49.7 days,
+  // 12. A rehearsal is interruptible throughout: AcceptsDisarm() is true
+  // during both a rehearsal countdown and rehearsal Firing (final review L2).
+  void testAcceptsDisarmTrueDuringRehearsal()
+  {
+    FireSequence sequence;
+
+    sequence.Start(/*live=*/false, M_START_MS, M_ASSERT_MS);
+    assert(sequence.State() == FireState::CountingDown);
+    assert(sequence.AcceptsDisarm());
+
+    sequence.Service(M_MID_COUNTDOWN_MS, false);
+    assert(sequence.AcceptsDisarm());
+
+    sequence.Service(M_COUNTDOWN_MS, false);
+    assert(sequence.State() == FireState::Firing);
+    assert(sequence.RehearsalFired());
+    assert(sequence.AcceptsDisarm());
+
+    sequence.Service(M_COUNTDOWN_MS + M_ASSERT_MS, false);
+    assert(sequence.State() == FireState::Completed);
+    assert(sequence.AcceptsDisarm());
+
+    printf("fire sequence: AcceptsDisarm true throughout a rehearsal countdown and firing: OK\n");
+  }
+
+  // 13. A live fire is uninterruptible: AcceptsDisarm() is false during a
+  // live countdown and live Firing, and true once Idle or Completed
+  // (final review §4 - restated alongside the rehearsal case above).
+  void testAcceptsDisarmFalseDuringLiveFireOnly()
+  {
+    FireSequence sequence;
+
+    assert(sequence.AcceptsDisarm());
+
+    sequence.Start(/*live=*/true, M_START_MS, M_ASSERT_MS);
+    assert(sequence.State() == FireState::CountingDown);
+    assert(!sequence.AcceptsDisarm());
+
+    sequence.Service(M_COUNTDOWN_MS, false);
+    assert(sequence.State() == FireState::Firing);
+    assert(sequence.FireLatched());
+    assert(!sequence.AcceptsDisarm());
+
+    sequence.Service(M_COUNTDOWN_MS + M_ASSERT_MS, false);
+    assert(sequence.State() == FireState::Completed);
+    assert(sequence.AcceptsDisarm());
+
+    printf("fire sequence: AcceptsDisarm false only during a live countdown and live firing: OK\n");
+  }
+
+  // 14. LiveInProgress() is true only for a live CountingDown/Firing - false
+  // for every rehearsal state, and false when Idle/Completed.
+  void testLiveInProgress()
+  {
+    FireSequence live;
+    FireSequence rehearsal;
+
+    assert(!live.LiveInProgress());
+    assert(!rehearsal.LiveInProgress());
+
+    live.Start(/*live=*/true, M_START_MS, M_ASSERT_MS);
+    rehearsal.Start(/*live=*/false, M_START_MS, M_ASSERT_MS);
+    assert(live.LiveInProgress());
+    assert(!rehearsal.LiveInProgress());
+
+    live.Service(M_MID_COUNTDOWN_MS, false);
+    rehearsal.Service(M_MID_COUNTDOWN_MS, false);
+    assert(live.LiveInProgress());
+    assert(!rehearsal.LiveInProgress());
+
+    live.Service(M_COUNTDOWN_MS, false);
+    rehearsal.Service(M_COUNTDOWN_MS, false);
+    assert(live.State() == FireState::Firing);
+    assert(rehearsal.State() == FireState::Firing);
+    assert(live.LiveInProgress());
+    assert(!rehearsal.LiveInProgress());
+
+    live.Service(M_COUNTDOWN_MS + M_ASSERT_MS, false);
+    rehearsal.Service(M_COUNTDOWN_MS + M_ASSERT_MS, false);
+    assert(live.State() == FireState::Completed);
+    assert(rehearsal.State() == FireState::Completed);
+    assert(!live.LiveInProgress());
+    assert(!rehearsal.LiveInProgress());
+
+    printf("fire sequence: LiveInProgress true only for a live countdown/firing: OK\n");
+  }
+
+  // 15. int64_t: a large nowMs, past the old uint32_t wrap point (~49.7 days,
   // ~4.29e9 ms), still counts down and asserts correctly.
   void testLargeNowMsPastUint32Wrap()
   {
@@ -282,6 +371,9 @@ void run_fire_sequence_tests()
   testIdleBeforeStart();
   testStartAfterCompletedClearsLatches();
   testStartAfterAbortClearsAborted();
+  testAcceptsDisarmTrueDuringRehearsal();
+  testAcceptsDisarmFalseDuringLiveFireOnly();
+  testLiveInProgress();
   testLargeNowMsPastUint32Wrap();
   printf("fire sequence: OK\n");
 }

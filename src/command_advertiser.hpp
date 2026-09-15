@@ -16,10 +16,14 @@ namespace alc
    *
    * Advertises exactly one 128-bit service UUID — the confirmId
    * (`AccessKeys::ConfirmId()`, access_keys.hpp) — as a Complete List of
-   * 128-bit Service UUIDs (AD type 0x07), the same AD type and on-air byte
-   * order `CommandScanner` scans for (see its `M_AD_UUID128_ALL`), so the
-   * app's own scan (Task 12) matches it with a plain memcmp — no byte
-   * reversal either side of the radio.
+   * 128-bit Service UUIDs (AD type 0x07): the 16 confirmId bytes go on air in
+   * array order, unreversed (`BT_DATA(BT_DATA_UUID128_ALL, uuid, 16)`,
+   * command_advertiser.cpp), the same AD type and array order `CommandScanner`
+   * scans for (see its `M_AD_UUID128_ALL`). The app's own scan (Task 12) is a
+   * different path — its BLE plugin (`flutter_reactive_ble`) hands back a
+   * canonical, reversed-from-air UUID, so the app reverses the bytes back
+   * before comparing; it does not memcmp the raw air bytes the way
+   * `CommandScanner` does.
    *
    * Bluetooth is already enabled by `CommandScanner::Start()` at boot; this
    * class MUST NOT call `bt_enable()` — it only calls `bt_le_adv_start()` /
