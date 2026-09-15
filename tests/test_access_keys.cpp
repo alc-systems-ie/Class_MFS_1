@@ -14,6 +14,7 @@ void run_access_key_tests()
   // Every vector was produced by tools/gen_access_vectors.py using Python's
   // `cryptography` package - an implementation that is neither this one nor the
   // app's. Matching it is the only evidence the two sides agree.
+  bool fireVectorSeen { false };
   for (const vectors::CommandVector& vector : vectors::M_COMMANDS) {
     uint8_t dayKey[M_DAY_KEY_BYTES] {};
     uint8_t encKey[crypto::M_AES128_KEY_BYTES] {};
@@ -36,6 +37,15 @@ void run_access_key_tests()
     assert(OpenCommand(dayKey, vectors::M_DEVICE_ID, vector.day, vector.slot, vector.n, vector.onAir, plaintext) == 0);
     assert(memcmp(plaintext, vector.plaintext, sizeof(plaintext)) == 0);
 
+    // fire_slot1_n1: the opened plaintext decodes to a FIRE command with the
+    // expected minute. confirmId itself is Task 4 - ConfirmId() does not exist
+    // yet, so it is not checked here.
+    protocol::Command decoded;
+    if (protocol::DecodeCommand(plaintext, decoded) && decoded.isFire) {
+      assert(decoded.minuteOfDay == 542);
+      fireVectorSeen = true;
+    }
+
     // A single flipped bit anywhere authenticated must fail - ID, ciphertext or tag.
     const uint8_t positions[] { protocol::M_OFFSET_ROTATING_ID, protocol::M_OFFSET_CIPHERTEXT, protocol::M_OFFSET_TAG };
     for (uint8_t position : positions) {
@@ -53,6 +63,7 @@ void run_access_key_tests()
     assert(OpenCommand(dayKey, vectors::M_DEVICE_ID, static_cast<uint16_t>(vector.day + 1), vector.slot, vector.n, vector.onAir, plaintext) ==
            -EBADMSG);
   }
+  assert(fireVectorSeen); // fire_slot1_n1 must be present in M_COMMANDS and decode as FIRE.
 
   // Distinct slots on the same day must have unrelated day keys.
   {
