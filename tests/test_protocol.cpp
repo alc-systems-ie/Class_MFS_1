@@ -142,3 +142,54 @@ void run_command_codec_tests()
 
   printf("command codec: OK\n");
 }
+
+void run_fire_command_tests()
+{
+  using namespace alc::protocol;
+  Command decoded;
+
+  // FIRE: type 00, byte1 == 0x00, OMG in bytes 0,2,3, minute valid.
+  {
+    const uint8_t plaintext[8] { 0x4F, 0x00, 0x4D, 0x47, 0x1E, 0x02, 0x00, 0x00 }; // minute 0x021E = 542
+    assert(DecodeCommand(plaintext, decoded));
+    assert(decoded.isFire);
+    assert(decoded.type == CommandType::Reserved); // FIRE is a distinguished Reserved
+    assert(decoded.minuteOfDay == 542);
+  }
+
+  // Near-misses: still rejected, never FIRE.
+  {
+    const uint8_t noMagic[8] { 0, 0, 0, 0, 0x1E, 0x02, 0, 0 }; // bare type 00
+    assert(!DecodeCommand(noMagic, decoded));
+
+    const uint8_t byte1Set[8] { 0x4F, 0x01, 0x4D, 0x47, 0x1E, 0x02, 0, 0 }; // byte1 != 0
+    assert(!DecodeCommand(byte1Set, decoded));
+
+    const uint8_t wrongMagic[8] { 0x4F, 0x00, 0x4D, 0x48, 0x1E, 0x02, 0, 0 };
+    assert(!DecodeCommand(wrongMagic, decoded));
+
+    const uint8_t badMinute[8] { 0x4F, 0x00, 0x4D, 0x47, 0xA0, 0x05, 0, 0 }; // 1440
+    assert(!DecodeCommand(badMinute, decoded));
+  }
+
+  // Bytes 6-7 are ignored, never validated, even for FIRE.
+  {
+    const uint8_t ext[8] { 0x4F, 0x00, 0x4D, 0x47, 0x1E, 0x02, 0xAB, 0xCD };
+    assert(DecodeCommand(ext, decoded));
+    assert(decoded.isFire);
+  }
+
+  // Round trip: EncodeCommand emits the FIRE layout, DecodeCommand recognises it.
+  {
+    uint8_t plaintext[8] {};
+    Command command;
+    command.isFire      = true;
+    command.minuteOfDay = 542;
+    EncodeCommand(command, plaintext);
+    assert(DecodeCommand(plaintext, decoded));
+    assert(decoded.isFire);
+    assert(decoded.minuteOfDay == 542);
+  }
+
+  printf("fire command: OK\n");
+}

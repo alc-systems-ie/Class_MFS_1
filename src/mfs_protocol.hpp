@@ -26,7 +26,10 @@ namespace alc::protocol
   // built for another protocol version fails authentication rather than parsing.
   // 0x03 since 2026-09-14: the command type field. A 0x02 payload fails
   // authentication instead of having its reserved bits read as a type.
-  constexpr uint8_t M_PROTOCOL_VERSION { 0x03 };
+  // 0x04 since 2026-09-15: FIRE recognition (docs/superpowers/specs/2026-09-15-
+  // fire-command-amendment.md section 2). A 0x03 payload fails authentication
+  // rather than being reinterpreted as FIRE.
+  constexpr uint8_t M_PROTOCOL_VERSION { 0x04 };
 
   // Plaintext layout, after decryption.
   constexpr uint8_t M_PT_ARM_DELAY { 0 };        // bit 0 reserved (was arm), bits 1-7 delay code
@@ -36,6 +39,14 @@ namespace alc::protocol
   constexpr uint8_t M_PT_MINUTE { 4 }; // uint16 LE, bits 0-10 UTC minute of day
   // Plaintext bytes 6-7 are per-variant extension space. MFS_1 MUST IGNORE THEM
   // and must never require them to be zero.
+
+  // FIRE magic ("OMG") - distinguishes a FIRE command from a bare reserved
+  // (type 00) payload. Lives in bytes 0, 2, 3 with byte 1 held at 0x00 (a
+  // genuine type-00, no activations or mode smuggled in). See the FIRE command
+  // amendment section 2.1 for why this is not literal "FIRE" in bytes 0-3.
+  constexpr uint8_t M_FIRE_MAGIC_0 { 0x4F }; // 'O'
+  constexpr uint8_t M_FIRE_MAGIC_2 { 0x4D }; // 'M'
+  constexpr uint8_t M_FIRE_MAGIC_3 { 0x47 }; // 'G'
 
   constexpr uint8_t M_DELAY_SHIFT { 1 };
   constexpr uint8_t M_DELAY_MASK { 0x7F };
@@ -92,6 +103,9 @@ namespace alc::protocol
       uint8_t cooldownByte { 0 };
       uint8_t sensitivityByte { 0 };
       uint16_t minuteOfDay { 0 };
+      // True for a distinguished type-00 FIRE payload (the "OMG" magic).
+      // type stays CommandType::Reserved; only this flag marks it as FIRE.
+      bool isFire { false };
   };
 
   /**
@@ -99,11 +113,14 @@ namespace alc::protocol
    *
    * @param plaintext Exactly M_PLAINTEXT_BYTES bytes.
    * @param out       Populated only on success.
-   * @return False for a reserved command type, a reserved mode or a minute outside 0-1439.
+   * @return False for a reserved command type without the FIRE magic, a reserved mode or a
+   *         minute outside 0-1439. A type-00 payload carrying the FIRE magic and a valid
+   *         minute decodes successfully with out.isFire set.
    */
   bool DecodeCommand(const uint8_t* plaintext, Command& out);
 
-  /** @brief Encode a command into M_PLAINTEXT_BYTES bytes. Extension bytes are zero. */
+  /** @brief Encode a command into M_PLAINTEXT_BYTES bytes. Extension bytes are zero.
+   *  When command.isFire is set, emits the FIRE ("OMG") layout instead of the ordinary one. */
   void EncodeCommand(const Command& command, uint8_t* plaintext);
 
   /** @brief Sensitivity byte to ADXL367 THRESH_ACT, in 0.25 mg LSB. */
