@@ -8,6 +8,7 @@ target_sources(app PRIVATE
   src/app.cpp
   src/adxl367.cpp
   src/command_scanner.cpp
+  src/command_advertiser.cpp
   src/npm2100.cpp
   src/output_switch.cpp
   src/npm2100_zephyr.cpp
