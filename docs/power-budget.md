@@ -155,6 +155,31 @@ Still worth measuring: **2.0 V**, which sits just above the ~1.9 V pass-through
 boundary. Below that the boost engages and consumption should turn upward — that
 is the end-of-life knee, and it bounds the last of the capacity.
 
+### MEASURED 2026-09-16 — 23 µA (UNRECONCILED — do not yet trust as the life figure)
+
+PPK II reading of **23 µA average** on the merged post-FIRE build (`main`, LEDs
+off, scan-diag off). **If** that is the true average, life is:
+
+**1450 mAh ÷ 0.023 mA = 63,000 h ≈ 7.2 years** (bracket ~6.9–7.9 yr across
+1400–1600 mAh usable), and at this draw the cell's own limits start to matter as
+much as the load — self-discharge (~1 %/yr ≈ 15 mAh/yr, vs the load's ~200 mAh/yr)
+and the ~10-year shelf life trim it, so **plan for ~6 years, not 7**. That would be
+~3× the 2.4-year planning figure (69 µA × 2.4 yr ≈ 23 µA × 7.2 yr).
+
+**But 23 µA does not reconcile with this device's own scan-dominated model, so it
+is NOT adopted as the life figure yet.** The scan is ~91 % of the budget and was
+measured at **68–75 µA** (2026-08-18); the scan alone — 100 ms RX every 5970 ms at
+~4 mA — is ~67 µA. A 23 µA average implies RX ≈ 1.25 mA, implausibly low for BLE
+receive. The likely cause is an **averaging window too short to span enough 6 s
+scan cycles**, sampling mostly the idle gaps between the 100 ms RX bursts (the
+opposite of the 2026-08-18 short-window artifact that read *high*, 88 µA).
+
+**To adopt this figure, re-measure over ≥ 60 s spanning ≥ 10 full scan cycles**,
+with the device in the deployed state (scanning), debugger detached, board settled
+10 min. If it still reads ~23 µA, the scan is not running at the expected duty —
+investigate that (a device that is not scanning cannot hear a command) before
+believing the longer life.
+
 Bracket on the soft numbers:
 
 | Case | Assumptions | Average | Life |
