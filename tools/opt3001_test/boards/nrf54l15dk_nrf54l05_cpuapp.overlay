@@ -1,0 +1,73 @@
+/*
+ * CLASS MFS_1 hardware, first full revision — OPT3001 bring-up.
+ *
+ *   I2C 1 (i2c21) - nPM2100 at 0x74:            SCL P1.04, SDA P1.05
+ *   I2C 2 (i2c22) - ADXL367 0x1D, OPT3001 0x44:  SCL P1.08, SDA P1.07
+ *   OPT3001_INT P1.12 (not used here)
+ *
+ * i2c21 stops the nPM2100 boot monitor and powers up LSOUT at 1.8 V, as the main
+ * application does, in case the sensors are supplied from it.
+ */
+
+&pinctrl {
+    i2c21_default: i2c21_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 5)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 4)>;
+            bias-pull-up;
+        };
+    };
+
+    i2c21_sleep: i2c21_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 5)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 4)>;
+            low-power-enable;
+        };
+    };
+
+    i2c22_default: i2c22_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 7)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 8)>;
+            bias-pull-up;
+        };
+    };
+
+    i2c22_sleep: i2c22_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 7)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 8)>;
+            low-power-enable;
+        };
+    };
+};
+
+&i2c21 {
+    status = "okay";
+    pinctrl-0 = <&i2c21_default>;
+    pinctrl-1 = <&i2c21_sleep>;
+    pinctrl-names = "default", "sleep";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+};
+
+&i2c22 {
+    status = "okay";
+    pinctrl-0 = <&i2c22_default>;
+    pinctrl-1 = <&i2c22_sleep>;
+    pinctrl-names = "default", "sleep";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+};
+
+/* Not fitted / pins reused on this board. P2.05 (spi00 CS) is FIRE_1. */
+&mx25r64 {
+    status = "disabled";
+};
+
+&spi00 {
+    status = "disabled";
+};
+
+&uart20 {
+    status = "disabled";
+};
