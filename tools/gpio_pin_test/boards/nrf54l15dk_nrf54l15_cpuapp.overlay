@@ -1,0 +1,58 @@
+/*
+ * Bench pin test for the nRF54L15 DK.
+ *
+ * Two independent channels. Each button toggles one raw GPIO and one indicator
+ * LED together, so the LED is lit exactly when the pin is asserted high:
+ *
+ *   Button 0 (P1.13)  ->  P2.07  +  LED1 (P1.10)
+ *   Button 1 (P1.09)  ->  P2.09  +  LED3 (P1.14)
+ *
+ * P2.07 and P2.09 stand in for the MFS_1 fire1 / fire2 outputs on this DK.
+ *
+ * WHY NOT P2.05 (the pin MFS_1 actually uses as fire1):
+ *
+ *   P2.00-P2.05 do not reach the P2 connector directly. They pass through two
+ *   TMUX1574 analog muxes (U3 and U8) whose common SEL net has a 100k pull-up
+ *   to VDD:SW_PU, so by default every one of them is routed to the onboard
+ *   MX25R64 QSPI flash (the "_B" side), not to the header (the "_A" side).
+ *   Disabling &spi00 in software stops the SPI driver owning the pin but does
+ *   nothing to the mux, so P2.05 is driven by the SoC and simply never arrives
+ *   at the connector. Measured on the bench: LED lit, header pad dead.
+ *   Reaching it needs board rework (cut SB11, short SB22).
+ *
+ *   P2.06-P2.10 bypass the muxes entirely and go straight to the connector,
+ *   which is why P2.07 is a drop-in replacement and P2.05 is not.
+ *
+ * BOTH TEST PINS ARE ALSO WIRED TO DK LEDs:
+ *
+ *   P2.07 is LED2 and P2.09 is LED0. They are disabled as LED nodes below so
+ *   nothing else can claim them, but the copper remains — so asserting a test
+ *   pin lights its DK LED whether firmware asks for it or not. That is a
+ *   feature here: LED2/LED0 report the pin itself, while the software-driven
+ *   LED1/LED3 report what the firmware believes. If those two ever disagree,
+ *   the fault is between the SoC pad and the LED, not in the application.
+ *
+ * Note P2.07 is also the debugger's SWO line (SB24, closed by default) and
+ * TRACEDATA[0]. Neither is in use here - RTT runs over SWD and needs no SWO -
+ * but do not enable SWO output while this test is running.
+ */
+
+/ {
+    /* The two pins under test. Access from C++ via:
+     *   GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), channel_a_gpios)
+     */
+    zephyr_user: zephyr,user {
+        channel-a-gpios = <&gpio2 7 GPIO_ACTIVE_HIGH>;
+        channel-b-gpios = <&gpio2 9 GPIO_ACTIVE_HIGH>;
+    };
+};
+
+/* P2.07 is driven directly as channel A, so it must not also exist as an LED. */
+&led2 {
+    status = "disabled";
+};
+
+/* P2.09 is driven directly as channel B, so it must not also exist as an LED. */
+&led0 {
+    status = "disabled";
+};

@@ -1,0 +1,72 @@
+/*
+ * CLASS MFS_1 hardware, first full revision — LED and fire-pin walk test.
+ *
+ * Board pin map (this revision):
+ *
+ *   LED1 P2.02   LED2 P2.03   LED3 P2.04
+ *   FIRE_1 P2.05   FIRE_2 P2.09   (LEDs fitted on this bench unit)
+ *   ANTI_TAMP P1.02
+ *   ADXL_INT_1 P1.03   ADXL_INT_2 P1.13   OPT3001_INT P1.12
+ *   I2C 1 (nPM2100):            SCL P1.04, SDA P1.05
+ *   I2C 2 (ADXL367 + OPT3001):  SCL P1.08, SDA P1.07
+ *
+ *   nPM2100: GPIO_0 P1.06, GPIO_1 P2.02 (?), RESET P2.00
+ *
+ * The five outputs are walked. I2C 1 is used once at boot to stop the nPM2100
+ * boot monitor, which otherwise power-cycles the SoC a few seconds after boot.
+ */
+
+&pinctrl {
+    i2c21_default: i2c21_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 5)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 4)>;
+            bias-pull-up;
+        };
+    };
+
+    i2c21_sleep: i2c21_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 5)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 4)>;
+            low-power-enable;
+        };
+    };
+};
+
+&i2c21 {
+    status = "okay";
+    pinctrl-0 = <&i2c21_default>;
+    pinctrl-1 = <&i2c21_sleep>;
+    pinctrl-names = "default", "sleep";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+
+    npm2100: pmic@74 {
+        reg = <0x74>;
+    };
+};
+
+/* The DK files claim P2.01-P2.05 for the MX25R64 external flash on spi00
+ * (P2.05 is its chip select = FIRE_1). That part is not fitted here. */
+&mx25r64 {
+    status = "disabled";
+};
+
+&spi00 {
+    status = "disabled";
+};
+
+/* The DK console UART20 uses P1.04 / P1.05 = the nPM2100 I2C bus here. */
+&uart20 {
+    status = "disabled";
+};
+
+/ {
+    zephyr,user {
+        led-gpios = <&gpio2 2 GPIO_ACTIVE_HIGH>,
+                    <&gpio2 3 GPIO_ACTIVE_HIGH>,
+                    <&gpio2 4 GPIO_ACTIVE_HIGH>;
+        fire-gpios = <&gpio2 5 GPIO_ACTIVE_HIGH>,
+                     <&gpio2 9 GPIO_ACTIVE_HIGH>;
+    };
+};
