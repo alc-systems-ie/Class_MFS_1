@@ -12,8 +12,9 @@ design toward so that later work does not require rework.
 2. **Set date/time on every boot** from a trusted provisioner — the clock is
    invalid on every boot and is never resumed from NVS (`docs/tan-scheme.md` §7).
    Monotonic floor and bounded-forward-jump rules apply.
-3. **ADXL367 wakes the SoC, not the PMIC** — INT1 → SoC GPIO. **INT2 must be
-   left undriven; see §2.** Referenced activity, loop mode, 5 s inactivity time.
+3. **ADXL367 wakes the SoC, not the PMIC** — INT1 → SoC GPIO (P1.03 on the CLASS
+   MFS board). **INT2 is left unmapped; see §2** — on the CLASS MFS board it no
+   longer reaches the PMIC. Referenced activity, loop mode, 5 s inactivity time.
 4. **Track arm state:** Active or Inactive. **Cold start defaults to Inactive.**
 5. **Engineer's action is an authenticated command, not a toggle** — a single
    16-byte encrypted service UUID that asserts arm state and settings together
@@ -137,7 +138,8 @@ start is Inactive, but Inactive now means testing — see the amendment banner
 above) and on every restart thereafter, so it no longer sits unconfigured from
 boot until the first activation. The INT2/SHPHLD polarity bit (§2) must not depend
 on how soon someone happens to arm the device, and reconfiguring on every restart
-guarantees it does not.
+guarantees it does not. (On the CLASS MFS board INT2 no longer reaches SHPHLD, so
+this is now defence in depth rather than a live hazard.)
 
 `enableAccelerometer()` **refuses to arm** if the part will not configure or its
 AWAKE state cannot be read. A device that reported itself armed with a dead sensor
@@ -166,6 +168,17 @@ No alarm transmission, no nightly status, no fuel gauge reporting, no FEM, no
 Coded PHY fallback. The BLE **connection** is also deferred — see §4.
 
 ## 2. Hardware hazard — ADXL367 INT2 and PMIC SHPHLD
+
+> **Resolved in hardware on the CLASS MFS board (2026-11-10).** INT2 is routed to
+> the SoC (P1.13), not to the nPM2100 SHPHLD pin, so neither hazard below can
+> occur on that board. The firmware mitigations stay in place as defence in depth
+> (INT2 unmapped and idling high; the PMIC power-off button disabled) and cost
+> nothing. This section is kept because it applies to the Drawer Master board and
+> to any future revision that routes INT2 back to SHPHLD.
+>
+> **Still unconfirmed:** which rail powers the ADXL367 on the new board. The
+> firmware still brings up LSOUT at 1.8 V for it; check the schematic before
+> relying on that or removing it.
 
 `alc_drawer_master` routes ADXL367 INT2 → nPM2100 SHPHLD as its Hibernate wake
 path. **MFS_1 does not use that path** (the SoC stays in System ON idle and takes

@@ -231,9 +231,10 @@ namespace alc
     if (result == 0) { result = writeRegister(M_REG_INTMAP1_LOWER, M_INT_ACTIVE_LOW | M_INT_AWAKE_MASK); }
     if (result == 0) { result = writeRegister(M_REG_INTMAP1_UPPER, M_INT_NONE); }
 
-    // INT2 goes to the PMIC SHPHLD pin. Map nothing to it, and set the active-low
-    // polarity bit so the pin idles HIGH rather than LOW — an idle-low INT2 would
-    // hold SHPHLD asserted, which is the ship-mode press. See the class comment.
+    // INT2 is unused. Map nothing to it, and set the active-low polarity bit so
+    // the pin idles HIGH rather than LOW. On a board that wires INT2 to the PMIC
+    // SHPHLD pin (Drawer Master), an idle-low INT2 would hold SHPHLD asserted,
+    // which is the ship-mode press. See the class comment.
     if (result == 0) { result = writeRegister(M_REG_INTMAP2_LOWER, M_INT_ACTIVE_LOW | M_INT_NONE); }
     if (result == 0) { result = writeRegister(M_REG_INTMAP2_UPPER, M_INT_NONE); }
     if (result < 0) {
@@ -300,7 +301,7 @@ namespace alc
 
     LOG_INF("ADXL367 loop mode armed: thresh %u, act %u samples, inact %u s (%u samples).", threshold, activitySamples, inactivitySecs,
             inactivitySamples);
-    LOG_INF("INT1 tracks AWAKE (active-low). INT2 unmapped, idling high - SHPHLD safe.");
+    LOG_INF("INT1 tracks AWAKE (active-low). INT2 unmapped, idling high.");
     return 0;
   }
 
@@ -323,7 +324,8 @@ namespace alc
     // Park BOTH interrupt pins before stopping the engine, and do it here rather
     // than relying on the reset defaults.
     //
-    // INT2 is wired to the nPM2100 SHPHLD pin. What makes that pin safe is the
+    // On boards that wire INT2 to the nPM2100 SHPHLD pin (Drawer Master; not the
+    // CLASS MFS board, where it goes to P1.13), what makes that pin safe is the
     // active-low POLARITY bit, which forces it to idle HIGH; the INTMAP2 reset
     // value of 0x00 does not set it. ConfigureLoopMode() writes it, but a part
     // whose configure keeps failing - it is stood down after every failed

@@ -71,9 +71,10 @@ namespace alc
     constexpr uint32_t M_BLINK_ON_TICKS { CONFIG_MFS_BLINK_MS / M_POLL_INTERVAL_MS };
 #endif
 
-    // ADXL367 supply rail. The part must stay on LSOUT at 1.8 V: its INT2 pin is
-    // wired to the PMIC SHPHLD pin, which has a 1.9 V absolute maximum, so an ADXL
-    // running from the ~3.0 V boost output would damage the PMIC.
+    // ADXL367 supply rail, LSOUT at 1.8 V. Required on the Drawer Master board,
+    // where INT2 is wired to the PMIC SHPHLD pin (1.9 V absolute maximum). The
+    // CLASS MFS board routes INT2 to the SoC instead; which rail feeds the ADXL
+    // there is still to be confirmed against the schematic.
     constexpr uint16_t M_LSOUT_MILLIVOLTS { 1800 };
 
     // LSOUT is actively discharged to AVSS1 when LDOSW is disabled; this is the time
@@ -619,11 +620,10 @@ namespace alc
     }
     LOG_INF("nPM2100 boot monitor stopped.");
 
-    // Disable the SHPHLD power-off path. ADXL367 INT2 is hard-wired to SHPHLD on
-    // this board; a sustained assertion followed by release is the ship-mode
-    // gesture and would power the device off. The ADXL is configured never to
-    // assert INT2 (see Adxl367::ConfigureLoopMode) — this is the second line of
-    // defence. See docs/v1-scope.md section 2.
+    // Disable the SHPHLD power-off path. On the Drawer Master board ADXL367 INT2 is
+    // wired to SHPHLD, where a sustained assertion followed by release is the
+    // ship-mode gesture. The CLASS MFS board routes INT2 to the SoC, so this is
+    // defence in depth there and costs nothing. See docs/v1-scope.md section 2.
     result = m_pmic.DisablePowerOffButton(true);
     if (result < 0) {
       LOG_ERR("Failed to disable the PMIC power-off button: %d!", result);

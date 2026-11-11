@@ -23,8 +23,11 @@ Sensor 1. Firmware is a simplified `../alc_drawer_master` with the HMAC
 challenge/response authentication replaced by **day keys** issued per engineer,
 per device, per day (`docs/tan-scheme.md`, rewritten 2026-09-13).
 
-Hardware is the `alc_drawer_master` board **minus the FEM**: **nRF54L05 + nPM2100
-+ ADXL367**, board target `nrf54l15dk/nrf54l05/cpuapp`.
+Hardware is the **CLASS MFS board** (first full revision, brought up 2026-11-10):
+**nRF54L05 + nPM2100 + ADXL367 + OPT3001**, no FEM, board target
+`nrf54l15dk/nrf54l05/cpuapp`. It began as the `alc_drawer_master` board minus the
+FEM; its pin map (below) is now its own. Earlier bench work (everything before
+2026-11-10) ran on a Drawer Master board or a bare DK with the old map.
 
 | Decision | Value |
 |----------|-------|
@@ -42,20 +45,48 @@ choice: **`docs/power-budget.md`**. Read it before changing the duty cycle, the
 sleep mode, or the FEM configuration — each of those was decided against a
 specific numeric constraint recorded there.
 
+### Pin map (`boards/nrf54l15dk_nrf54l05_cpuapp.overlay`)
+
+| Signal | Pin | Firmware use |
+|--------|-----|--------------|
+| nPM2100 I2C (`i2c21`) | SCL P1.04, SDA P1.05 | PMIC at 0x74 — **nothing else on this bus** |
+| Sensor I2C (`i2c22`) | SCL P1.08, SDA P1.07 | ADXL367 at 0x1D; OPT3001 (unused in v1) |
+| ADXL367 INT1 | P1.03, active low, pull-up | AWAKE → wakes the SoC. An NFC pin, like ANTI_TAMP |
+| ADXL367 INT2 | P1.13 | **SoC GPIO, not SHPHLD** — unmapped and unused |
+| OPT3001 INT | P1.12 | Unused |
+| ANTI_TAMP | P1.02, button pulled high, **active low** | Unused in v1 (proven by `tools/tamper_test`). An NFC pin: needs `&uicr { nfct-pins-as-gpios; }` |
+| FIRE_1 / FIRE_2 | P2.05 / P2.09 | Fire output — FIRE_1, then FIRE_2 **10 ms later**; cleared together |
+| LED A (`led0`) | LED3, P2.04 | Command acknowledgements |
+| LED B (`led1`) | LED2, P2.03 | Detection indicator and interim warning |
+| LED1 | P2.02 | **Undriven** — see open item below |
+| nPM2100 GPIO0 | P1.06 | Unused |
+| nPM2100 RESET | P2.00, active low | Unused |
+
+**OPEN — P2.02.** The board pin list gives P2.02 as both LED1 and nPM2100
+GPIO_1. The firmware leaves it undriven until the schematic settles it.
+
+**OPEN — LEDs on the first board.** Only LED3 lit on the bench although every LED
+pin reached 3 V; the LED parts are suspected (owner, 2026-11-10). On the bench unit
+the fire pins drive LEDs, not MOSFETs.
+
+The fire stagger lives in `OutputSwitch::assertStaggered()` and blocks the caller
+for 10 ms (`M_FIRE_STAGGER_MS`); a failed FIRE_1 write never reaches FIRE_2.
+
 **v1 is deliberately minimal** (`docs/v1-scope.md`): cold start, provisioner time
 sync, ADXL367 waking the SoC via INT1, an Active/Inactive arm state defaulting to
 Inactive, engineer commands, and the LEDs. **No BLE connection at all in v1** — a
 command is one 16-byte encrypted service UUID, so there is no GATT, no central role
 and no transmission. Everything else from Drawer Master is deferred.
 
-**Hardware hazard — ADXL367 INT2 must never be driven** (`docs/v1-scope.md` §2).
-Drawer Master routes INT2 → nPM2100 SHPHLD for its Hibernate wake; MFS_1 does not
-use that path, and leaving it driven is dangerous twice over: a 5 s assertion then
-release **is** the nPM2100 ship-mode gesture and powers the device off, and SHPHLD
-has a **1.9 V absolute maximum** so an ADXL on a 3 V rail would damage the PMIC.
-Unmap INT2 in the ADXL config, set `shiphold-longpress = "disable"`, and keep the
-ADXL on the 1.8 V LSOUT rail. Also force LDOSW to Ultra-Low Power — in `Auto` it
-would sit in High Power forever now that the device never hibernates.
+**ADXL367 INT2 → SHPHLD hazard — removed in hardware** (`docs/v1-scope.md` §2).
+Drawer Master routed INT2 → nPM2100 SHPHLD, where a 5 s assertion then release is
+the ship-mode gesture (device off) and a 3 V level exceeds SHPHLD's **1.9 V
+absolute maximum**. **On the CLASS MFS board INT2 goes to the SoC (P1.13), not the
+PMIC**, so neither hazard exists. The old mitigations are kept as harmless defence
+in depth: INT2 unmapped and idling high, and `DisablePowerOffButton(true)`. Do
+**not** reintroduce an INT2 → SHPHLD route on any future board revision without
+restoring §2's rules. Still force LDOSW to Ultra-Low Power — in `Auto` it would sit
+in High Power forever now that the device never hibernates.
 
 **ARCHITECTURAL INVARIANT — the arm boolean is definitive** (`docs/v1-scope.md`
 §1.0). The device tracks `m_arming.State()` (`ArmingSequence`,
@@ -431,9 +462,9 @@ cost hours because that was skipped:
   Deferred logging hides the hang point. Also: `west build -- -DCONFIG_X` does not
   reliably reach the app under sysbuild; set Kconfig in `prj.conf`.
 
-Also relevant and already handled here: lesson 2 (latched ADXL INT2 reads as
-`PowerOffButton` on SHPHLD — we leave INT2 unmapped *and* call
-`DisablePowerOffButton(true)`), and lesson 3, which independently identifies
+Also relevant: lesson 2 (latched ADXL INT2 reads as `PowerOffButton` on SHPHLD)
+no longer applies to the CLASS MFS board, where INT2 does not reach the PMIC; we
+still leave INT2 unmapped *and* call `DisablePowerOffButton(true)`. Lesson 3, which independently identifies
 **ADXL autosleep/AWAKE mode** as the correct approach over raw latched activity —
 which is the design in `docs/v1-scope.md` §3.1.
 
@@ -449,7 +480,7 @@ When adding structure, mirror the layout of the nearest sibling rather than inve
 **`.clang-format` is authoritative for layout — run it on every file you touch:**
 
 ```sh
-/Users/andy/nrfenv/bin/clang-format -i src/<file>
+/Users/andi/nrfenv/bin/clang-format -i src/<file>
 ```
 
 Imported from `../alc_drawer_master/.clang-format` with two deliberate

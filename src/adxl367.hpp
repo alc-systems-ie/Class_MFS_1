@@ -16,11 +16,12 @@ namespace alc
    * therefore asserts on motion and de-asserts after the configured stillness
    * period. That signal is the LED B timeout — see docs/v1-scope.md section 1.
    *
-   * @warning INT2 is hard-wired to the nPM2100 SHPHLD pin on this board and is
-   *          deliberately configured to **never assert**. A sustained INT2
-   *          assertion followed by release is the nPM2100 ship-mode gesture and
-   *          would power the device off, and SHPHLD has a 1.9 V absolute maximum.
-   *          See docs/v1-scope.md section 2.
+   * @warning INT2 is deliberately configured to **never assert**. On the Drawer
+   *          Master board it is wired to the nPM2100 SHPHLD pin, where a sustained
+   *          assertion followed by release is the ship-mode gesture and SHPHLD has
+   *          a 1.9 V absolute maximum. The CLASS MFS board routes INT2 to the SoC
+   *          (P1.13) instead, so this is defence in depth there. See
+   *          docs/v1-scope.md section 2.
    */
   class Adxl367
   {
@@ -67,7 +68,7 @@ namespace alc
        *
        * INTMAP1/INTMAP2 are set to active-low with nothing mapped, so both pins
        * idle HIGH, before POWER_CTL drops to standby. That polarity is what keeps
-       * INT2 off the nPM2100 SHPHLD pin, and it is established here rather than
+       * INT2 off the nPM2100 SHPHLD pin on boards that wire it there, and it is established here rather than
        * left to the reset default — see the implementation note and the class
        * warning above.
        */
