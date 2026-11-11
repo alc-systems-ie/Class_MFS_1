@@ -322,7 +322,7 @@ not match. The serial is the human label only — the cryptographic identity is
 This is a Zephyr/nRF Connect SDK **application inside an existing west workspace**, not a standalone repo:
 
 ```
-/Users/andy/nordic/ncs/v3.2.4/     <- west topdir (.west/config, manifest = ncs-serial-modem/west.yml)
+/Users/andi/nordic/ncs/v3.2.4/     <- west topdir (.west/config, manifest = ncs-serial-modem/west.yml)
 ├── zephyr/  nrf/  nrfxlib/  modules/  bootloader/   <- SDK trees (NCS v3.2.4)
 ├── class_mfs_1/                   <- THIS repo (its own git repo, tracked separately)
 ├── class_app/                     <- Flutter provisioner/engineer app, its own git repo

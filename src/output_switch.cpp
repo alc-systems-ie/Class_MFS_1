@@ -1,4 +1,5 @@
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
 #include "output_switch.hpp"
@@ -29,6 +30,11 @@ namespace alc
     // than as a bare 1 or 0 on the most dangerous line in the device.
     constexpr int M_GATE_ON { 1 };
     constexpr int M_GATE_OFF { 0 };
+
+    // Firing order (CLASS MFS hardware, first full revision, 2026-11-10): FIRE_1
+    // is asserted first and FIRE_2 this long after. Clearing is not staggered -
+    // both gates are always cleared together.
+    constexpr int32_t M_FIRE_STAGGER_MS { 10 };
 
     // Checks one pin at boot: plain input with no pull, read raw, then
     // disconnected. The disconnect is attempted whatever the configure or read
@@ -275,7 +281,7 @@ namespace alc
       return -EPERM;
     }
 
-    result = driveBoth(true);
+    result = assertStaggered();
     if (result < 0) {
       enterFaultState("fire pin write failed while asserting", result);
       return result;
@@ -340,6 +346,32 @@ namespace alc
 
     if (result1 < 0) { return result1; }
     return result2;
+  }
+
+  int OutputSwitch::assertStaggered()
+  {
+    // Already firing: Set(true) is called on every main-loop tick while the
+    // output is active, and the stagger belongs to the rising edge only.
+    if (m_asserted) { return driveBoth(true); }
+
+    int result { gpio_pin_set_dt(&s_fire1, M_GATE_ON) };
+    if (result < 0) {
+      driveBoth(false);
+      return result;
+    }
+
+    // The main thread sleeps here; nothing else drives these pins, and a disarm
+    // or fault is handled on the next tick, which clears both gates together.
+    k_msleep(M_FIRE_STAGGER_MS);
+
+    result = gpio_pin_set_dt(&s_fire2, M_GATE_ON);
+    if (result < 0) {
+      driveBoth(false);
+      return result;
+    }
+
+    LOG_INF("Fire output asserted: FIRE_1, then FIRE_2 %d ms later.", M_FIRE_STAGGER_MS);
+    return 0;
   }
 
   int OutputSwitch::verifyBoth(bool assert)

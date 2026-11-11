@@ -110,14 +110,6 @@ namespace alc
     // returns 1 when the pin is electrically LOW, i.e. when AWAKE is asserted.
     const struct gpio_dt_spec s_adxl_int1 = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), adxl_int1_gpios);
 
-    // nRF21540 control pins. Fitted on the bespoke board, unused by MFS_1.
-    const struct gpio_dt_spec s_fem_pdn   = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), fem_pdn_gpios);
-    const struct gpio_dt_spec s_fem_tx_en = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), fem_tx_en_gpios);
-    const struct gpio_dt_spec s_fem_rx_en = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), fem_rx_en_gpios);
-    const struct gpio_dt_spec s_fem_mode  = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), fem_mode_gpios);
-
-    const struct gpio_dt_spec* const s_fem_pins[] { &s_fem_pdn, &s_fem_tx_en, &s_fem_rx_en, &s_fem_mode };
-
     // BENCH credentials, parsed from Kconfig (credentials.conf) at boot. Production
     // moves both keys into the KMU - see docs/tan-scheme.md section 8.
     uint32_t s_device_id { 0 };
@@ -221,7 +213,7 @@ namespace alc
   App::App()
       : m_i2c_bus(DEVICE_DT_GET(DT_NODELABEL(i2c21)))
       , m_pmic(npm2100_zephyr::MakeZephyrTransport(DEVICE_DT_GET(DT_NODELABEL(i2c21))))
-      , m_accelerometer(DEVICE_DT_GET(DT_NODELABEL(i2c21)))
+      , m_accelerometer(DEVICE_DT_GET(DT_NODELABEL(i2c22)))
       , m_scanner()
       , m_clock()
       , m_access(0, s_device_secret, &access_store::Persist, nullptr)
@@ -275,7 +267,7 @@ namespace alc
     k_timer_init(&m_warning_timer, &App::warningTimerHandler, nullptr);
     k_timer_user_data_set(&m_warning_timer, this);
 
-    // THE FIRE OUTPUT IS CHECKED FIRST, before the I2C bus, the FEM or the LEDs.
+    // THE FIRE OUTPUT IS CHECKED FIRST, before the I2C bus or the LEDs.
     // It is not driven: the external 10k pull-downs hold both gates off from
     // reset, and Init() only reads each pin as a plain input - it must read low
     // - and leaves both disconnected. The pins get a driver only as the last
@@ -295,14 +287,8 @@ namespace alc
     m_output_switch.SetInterlock(&App::interlockThunk, this);
 
     if (!device_is_ready(m_i2c_bus)) {
-      LOG_ERR("i2c21 not ready!");
+      LOG_ERR("i2c21 (nPM2100) not ready!");
       return -ENODEV;
-    }
-
-    result = parkFrontEndModule();
-    if (result < 0) {
-      LOG_ERR("Failed to park the front-end module: %d!", result);
-      return result;
     }
 
     result = initLeds();
@@ -564,24 +550,6 @@ namespace alc
       k_msleep(M_POLL_INTERVAL_MS);
     }
 
-    return 0;
-  }
-
-  int App::parkFrontEndModule()
-  {
-    int result { 0 };
-
-    for (const struct gpio_dt_spec* pin : s_fem_pins) {
-      if (!gpio_is_ready_dt(pin)) {
-        LOG_ERR("Front-end module GPIO not ready!");
-        return -ENODEV;
-      }
-
-      result = gpio_pin_configure_dt(pin, GPIO_OUTPUT_INACTIVE);
-      if (result < 0) { return result; }
-    }
-
-    LOG_INF("Front-end module parked in power-down.");
     return 0;
   }
 
@@ -957,9 +925,7 @@ namespace alc
   }
 
   DetectionSettings App::detectionSettings() const
-  {
-    return DetectionSettings { m_settings.Activations(), m_settings.CooldownSeconds(), m_settings.DelaySeconds(), m_settings.ThresholdLsb() };
-  }
+  { return DetectionSettings { m_settings.Activations(), m_settings.CooldownSeconds(), m_settings.DelaySeconds(), m_settings.ThresholdLsb() }; }
 
   int App::restartEngine(bool armed)
   {
@@ -970,14 +936,10 @@ namespace alc
   }
 
   bool App::delayPermitsFiring() const
-  {
-    return m_engine.DelayPermitsFiring();
-  }
+  { return m_engine.DelayPermitsFiring(); }
 
   bool App::interlockThunk(void* context)
-  {
-    return static_cast<const App*>(context)->delayPermitsFiring();
-  }
+  { return static_cast<const App*>(context)->delayPermitsFiring(); }
 
   void App::serviceScanHealth()
   {
@@ -1056,19 +1018,13 @@ namespace alc
   }
 
   int App::StopCooldownTimer()
-  {
-    return m_pmic.TimerStop();
-  }
+  { return m_pmic.TimerStop(); }
 
   int App::CooldownTimerExpired(bool& expired)
-  {
-    return m_pmic.TimerIsExpired(expired);
-  }
+  { return m_pmic.TimerIsExpired(expired); }
 
   int App::ClearCooldownTimerEvent()
-  {
-    return m_pmic.TimerClearExpiredEvent();
-  }
+  { return m_pmic.TimerClearExpiredEvent(); }
 
   void App::StartDelayTimer(uint32_t durationMs)
   {
@@ -1078,9 +1034,7 @@ namespace alc
   }
 
   void App::StopDelayTimer()
-  {
-    k_timer_stop(&m_delay_timer);
-  }
+  { k_timer_stop(&m_delay_timer); }
 
   bool App::DelayTimerRunning() const
   {
@@ -1656,13 +1610,9 @@ namespace alc
   }
 
   int App::applyLedA(bool ledA)
-  {
-    return gpio_pin_set_dt(&s_led_a, ledA ? 1 : 0);
-  }
+  { return gpio_pin_set_dt(&s_led_a, ledA ? 1 : 0); }
 
   int App::applyLedB(bool ledB)
-  {
-    return gpio_pin_set_dt(&s_led_b, ledB ? 1 : 0);
-  }
+  { return gpio_pin_set_dt(&s_led_b, ledB ? 1 : 0); }
 
 }

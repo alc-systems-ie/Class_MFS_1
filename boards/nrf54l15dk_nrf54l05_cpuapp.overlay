@@ -1,25 +1,22 @@
 /*
- * Project CLASS MFS_1 pin map.
+ * Project CLASS MFS_1 pin map — CLASS MFS hardware, first full revision
+ * (2026-11-10). nRF54L05 + nPM2100 + ADXL367 + OPT3001. No nRF21540 FEM.
  *
- * Brought up on the bespoke alc_drawer_master board (nRF54L05 + nPM2100 +
- * nRF21540 + ADXL367). MFS_1 does not use the FEM, so the nRF21540 SPI bus and
- * MPSL FEM node are absent here — but the part is physically fitted, so its four
- * control pins are exposed under zephyr,user and driven low at boot by
- * App::parkFrontEndModule(). A floating PDN would leave the FEM in an
- * indeterminate state.
+ * I²C 1 (i2c21) - nPM2100:      SCL P1.04, SDA P1.05, addr 0x74.
+ * I²C 2 (i2c22) - ADXL367:      SCL P1.08, SDA P1.07, addr 0x1D.
+ *                 OPT3001:      same bus (not used by v1 firmware).
+ * LEDs (replace DK's):          LED A = LED3 P2.04 (led0), LED B = LED2 P2.03 (led1).
+ *                               LED1 P2.02 is fitted but unused by the app.
+ * Fire outputs:                 FIRE_1 P2.05, FIRE_2 P2.09 (see zephyr,user).
+ * ADXL367 INT1:                 P1.03 — wakes the SoC.
+ * ADXL367 INT2:                 P1.13 — routed to the SoC, NOT to the nPM2100
+ *                               SHPHLD pin as on alc_drawer_master. Unused.
+ * OPT3001 INT:                  P1.12 (unused).
+ * ANTI_TAMP button:             P1.02, pulled high, active low (unused by v1).
+ * nPM2100 host signals:         GPIO0 P1.06, RESET P2.00 (unused by firmware).
  *
- * I²C (i2c21) - nPM2100:        SCL P1.04, SDA P1.05, addr 0x74.
- *                ADXL367:                             addr 0x1D.
- * LEDs (replace DK's):          LED A P1.02 (led0), LED B P1.03 (led1).
- * PMIC host signals:            GPIO0 P1.06, RESET P1.07, GPIO1 P2.01.
- * ADXL367 INT1:                 P2.02 — wakes the SoC.
- * nRF21540 (unused, parked):    PDN P0.04, TX_EN P1.09, RX_EN P1.10, MODE P1.11.
- *
- * ADXL367 INT2 IS DELIBERATELY ABSENT. It is hard-wired to the nPM2100 SHPHLD
- * pin on this board. MFS_1 must configure the ADXL367 so INT2 is never asserted:
- * a 5 s assertion followed by release is the nPM2100 ship-mode gesture and would
- * power the device off, and SHPHLD has a 1.9 V absolute maximum. See
- * docs/v1-scope.md section 2.
+ * !!! OPEN: the board pin list gives P2.02 as both LED1 and nPM2100 GPIO_1.
+ * !!! The firmware leaves P2.02 undriven until that is confirmed.
  *
  * GPIO active levels for PMIC_RESET and the interrupt inputs are inherited
  * assumptions from alc_drawer_master; confirm against the PMIC / ADXL pin
@@ -27,7 +24,7 @@
  */
 
 &pinctrl {
-    /* ─── i2c21 → nPM2100 + ADXL367 ─── */
+    /* ─── i2c21 → nPM2100 ─── */
     i2c21_default: i2c21_default {
         group1 {
             psels = <NRF_PSEL(TWIM_SDA, 1, 5)>,
@@ -43,6 +40,36 @@
             low-power-enable;
         };
     };
+
+    /* ─── i2c22 → ADXL367 + OPT3001 ─── */
+    i2c22_default: i2c22_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 7)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 8)>;
+            bias-pull-up;
+        };
+    };
+
+    i2c22_sleep: i2c22_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 7)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 8)>;
+            low-power-enable;
+        };
+    };
+};
+
+&i2c22 {
+    status = "okay";
+    pinctrl-0 = <&i2c22_default>;
+    pinctrl-1 = <&i2c22_sleep>;
+    pinctrl-names = "default", "sleep";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+};
+
+/* The DK console UART20 sits on P1.04 / P1.05 — the nPM2100 I2C bus here. */
+&uart20 {
+    status = "disabled";
 };
 
 &i2c21 {
@@ -79,14 +106,15 @@
      */
     zephyr_user: zephyr,user {
         pmic-gpio0-gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
-        pmic-reset-gpios = <&gpio1 7 GPIO_ACTIVE_LOW>;
-        pmic-gpio1-gpios = <&gpio2 1 GPIO_ACTIVE_HIGH>;
-        adxl-int1-gpios  = <&gpio2 2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+        pmic-reset-gpios = <&gpio2 0 GPIO_ACTIVE_LOW>;
+        adxl-int1-gpios  = <&gpio1 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 
         /* ─── FIRE OUTPUT — THE DEVICE'S ACTUAL OUTPUT ───
          *
-         * Fire1 and Fire2 assert TOGETHER as one logical channel. They are not a
-         * set/reset pair and must never be driven independently. In the product
+         * Fire1 and Fire2 form ONE logical channel. They are not a set/reset
+         * pair and must never be driven independently. On assert, FIRE_1 goes
+         * first and FIRE_2 follows 10 ms later (the firing order this hardware
+         * revision requires); they always clear together. In the product
          * this output switches a voltage, so only alc::OutputSwitch may touch
          * these pins — it owns them privately and exposes Enable(), Set() and
          * Disable() alone. Nothing else may take a handle to them.
@@ -111,25 +139,18 @@
          *         SELECT AND TOGGLE IT ON EVERY TRANSACTION.
          *
          *   P2.09 is the DK's led0 ("Green LED 0"). It is free only because
-         *         &led0 is remapped to P1.02 below to match the bespoke board.
+         *         &led0 is remapped to P2.04 below to match the bespoke board.
          *
          * Do not re-enable spi00 or remove the led0 override without moving
          * these pins first.
          */
         fire1-gpios = <&gpio2 5 GPIO_ACTIVE_HIGH>;
         fire2-gpios = <&gpio2 9 GPIO_ACTIVE_HIGH>;
-
-        /* nRF21540 control pins — fitted but unused. Parked low at boot so the
-         * FEM sits in power-down (~0.4 uA) rather than floating. */
-        fem-pdn-gpios    = <&gpio0  4 GPIO_ACTIVE_HIGH>;
-        fem-tx-en-gpios  = <&gpio1  9 GPIO_ACTIVE_HIGH>;
-        fem-rx-en-gpios  = <&gpio1 10 GPIO_ACTIVE_HIGH>;
-        fem-mode-gpios   = <&gpio1 11 GPIO_ACTIVE_HIGH>;
     };
 };
 
 /* Release P1.02 / P1.03 from the NFC peripheral so they can be used as
- * GPIOs (LEDs on this board). Without this UICR property, the NFCT block
+ * GPIOs (ANTI_TAMP and ADXL INT1 on this board). Without this UICR property, the NFCT block
  * owns those pads and any GPIO writes have no effect on the physical pin.
  * Setting this property bakes the bit into the UICR hex at build time. */
 &uicr {
@@ -140,11 +161,11 @@
  * The DK's nRF54L05 variant only defines led0 and led1 (no led2/led3).
  * led0 = LED A (Inactive indicator), led1 = LED B (Active + triggered). */
 &led0 {
-    gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;
+    gpios = <&gpio2 4 GPIO_ACTIVE_HIGH>;
 };
 
 &led1 {
-    gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
+    gpios = <&gpio2 3 GPIO_ACTIVE_HIGH>;
 };
 
 /* HFXO trim, inherited from alc_drawer_master. CL = 8 pF (Kyocera CX2016DB,

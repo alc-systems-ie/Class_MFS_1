@@ -67,11 +67,6 @@ namespace alc
       /** @brief Where logArmingFailure() is called from - selects the ScannerCheck wording. */
       enum class FailureSource : uint8_t { ArmCommand, Sequence };
 
-      // Drives the four unused nRF21540 control pins low. The FEM is fitted on the
-      // bespoke alc_drawer_master board but MFS_1 does not use it; a floating PDN
-      // would leave it in an indeterminate state instead of power-down.
-      int parkFrontEndModule();
-
       int initLeds();
 
       // Probes the PMIC, reports the reset reason, disables the SHPHLD power-off

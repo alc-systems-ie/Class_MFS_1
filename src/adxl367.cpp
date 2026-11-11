@@ -126,14 +126,10 @@ namespace alc
 {
 
   int Adxl367::readRegister(uint8_t regAddr, uint8_t& value)
-  {
-    return i2c_reg_read_byte(m_i2c, m_address, regAddr, &value);
-  }
+  { return i2c_reg_read_byte(m_i2c, m_address, regAddr, &value); }
 
   int Adxl367::writeRegister(uint8_t regAddr, uint8_t value)
-  {
-    return i2c_reg_write_byte(m_i2c, m_address, regAddr, value);
-  }
+  { return i2c_reg_write_byte(m_i2c, m_address, regAddr, value); }
 
   int Adxl367::Init()
   {
@@ -167,7 +163,7 @@ namespace alc
       k_msleep(M_PROBE_RETRY_MS);
     }
 
-    LOG_ERR("ADXL367 not found on i2c21 after %u attempts!", M_PROBE_ATTEMPTS);
+    LOG_ERR("ADXL367 not found on its I2C bus after %u attempts!", M_PROBE_ATTEMPTS);
     return -ENODEV;
   }
 

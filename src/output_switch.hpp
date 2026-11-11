@@ -4,7 +4,7 @@ namespace alc
 {
 
   /**
-   * @brief The device's fire output — two GPIOs asserted together as one channel.
+   * @brief The device's fire output — two GPIOs, one channel: FIRE_1 then FIRE_2 (+10 ms) on assert, cleared together.
    *
    * **Hardware topology, which drives every decision below.** Fire1 and Fire2 are
    * the gates of **two MOSFETs in series**, one either side of the switch. Current
@@ -175,6 +175,12 @@ namespace alc
       // having still attempted the second pin - a half-driven output must never
       // be left behind because the first write failed.
       int driveBoth(bool assert);
+
+      // Asserts in the firing order the hardware requires: FIRE_1, then FIRE_2
+      // M_FIRE_STAGGER_MS later. Already asserted, it re-drives both at once with no
+      // second stagger. A failed FIRE_1 write never goes on to FIRE_2 - both are
+      // driven low and the error returned.
+      int assertStaggered();
 
       // Confirms both pins read back at the level just driven. Returns 0 when
       // read-back is unsupported, so an unverifiable build still operates. A
