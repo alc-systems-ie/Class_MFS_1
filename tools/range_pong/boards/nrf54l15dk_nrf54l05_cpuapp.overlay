@@ -1,0 +1,112 @@
+/*
+ * CLASS MFS_1 hardware, first full revision - range test pong.
+ *
+ *   I2C 1 (i2c21) - nPM2100 at 0x74: SCL P1.04, SDA P1.05 (boot monitor stop only)
+ *   LED2 P2.03 - flashes on each new ping
+ *   nRF21540 FEM, as alc_drawer_master: SPI (spi30) SCK P0.03, MOSI P0.02,
+ *   MISO P0.01, CS P0.00; PDN P0.04, TX_EN P1.09, RX_EN P1.10, MODE P1.11.
+ *   MPSL drives it - PA on transmit, LNA on receive.
+ *
+ * FIRE_1 P2.05 and FIRE_2 P2.09 are not referenced anywhere in this image and
+ * stay at reset, held off by their external 10 k pull-downs.
+ */
+
+&pinctrl {
+    i2c21_default: i2c21_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 5)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 4)>;
+            bias-pull-up;
+        };
+    };
+
+    i2c21_sleep: i2c21_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 5)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 4)>;
+            low-power-enable;
+        };
+    };
+
+    /* spi30, not spi22: P0 is in the 30-series domain on nRF54L. */
+    spi30_default: spi30_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK,  0, 3)>,
+                    <NRF_PSEL(SPIM_MOSI, 0, 2)>,
+                    <NRF_PSEL(SPIM_MISO, 0, 1)>;
+        };
+    };
+
+    spi30_sleep: spi30_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK,  0, 3)>,
+                    <NRF_PSEL(SPIM_MOSI, 0, 2)>,
+                    <NRF_PSEL(SPIM_MISO, 0, 1)>;
+            low-power-enable;
+        };
+    };
+};
+
+&spi30 {
+    status = "okay";
+    pinctrl-0 = <&spi30_default>;
+    pinctrl-1 = <&spi30_sleep>;
+    pinctrl-names = "default", "sleep";
+    cs-gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
+
+    nrf_radio_fem_spi: nrf21540_fem_spi@0 {
+        compatible = "nordic,nrf21540-fem-spi";
+        status = "okay";
+        reg = <0>;
+        spi-max-frequency = <8000000>;
+    };
+};
+
+&i2c21 {
+    status = "okay";
+    pinctrl-0 = <&i2c21_default>;
+    pinctrl-1 = <&i2c21_sleep>;
+    pinctrl-names = "default", "sleep";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+};
+
+/* Not fitted / pins reused on this board. P2.05 (spi00 CS) is FIRE_1. */
+&mx25r64 {
+    status = "disabled";
+};
+
+&spi00 {
+    status = "disabled";
+};
+
+&uart20 {
+    status = "disabled";
+};
+
+/ {
+    nrf_radio_fem: nrf21540_fem {
+        compatible  = "nordic,nrf21540-fem";
+        tx-en-gpios = <&gpio1  9 GPIO_ACTIVE_HIGH>;
+        rx-en-gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
+        pdn-gpios   = <&gpio0  4 GPIO_ACTIVE_HIGH>;
+        mode-gpios  = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+        spi-if      = <&nrf_radio_fem_spi>;
+        /* Required by the built-in power model. */
+        supply-voltage-mv = <3000>;
+    };
+
+    zephyr,user {
+        led2-gpios = <&gpio2 3 GPIO_ACTIVE_HIGH>;
+    };
+};
+
+/* Crystal load capacitance as in the main application's overlay: the radio
+ * frequency depends on the HFXO trim. */
+&hfxo {
+    load-capacitance-femtofarad = <14000>;
+};
+
+&lfxo {
+    load-capacitors = "internal";
+    load-capacitance-femtofarad = <9000>;
+};
