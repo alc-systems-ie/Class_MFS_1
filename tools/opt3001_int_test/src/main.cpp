@@ -29,10 +29,10 @@ namespace alc
     constexpr uint16_t M_EXPECTED_MANUFACTURER_ID { 0x5449 }; // "TI".
     constexpr uint16_t M_EXPECTED_DEVICE_ID { 0x3001 };
 
-    // RN = 1100 (automatic full-scale), CT = 1 (800 ms), M = 11 (continuous), L = 0
+    // RN = 1100 (automatic full-scale), CT = 0 (100 ms - for latency; no current cost in continuous mode, SBOS681C), M = 11 (continuous), L = 0
     // (transparent hysteresis: INT asserts above the high limit and releases below
     // the low limit), POL = 0 (INT active low), FC = 00 (one fault).
-    constexpr uint16_t M_CONFIG_CONTINUOUS_HYSTERESIS { 0xCE00 };
+    constexpr uint16_t M_CONFIG_CONTINUOUS_HYSTERESIS { 0xC600 };
     constexpr uint16_t M_CONFIG_FLAG_HIGH_MASK { 0x0040 }; // FH.
 
     // Limits in result format, E = 0 so the register is centilux: 7.00 lux and 6.00 lux.
@@ -279,10 +279,10 @@ namespace alc
         LOG_ERR("OPT3001 config write failed: %d!", result);
         return result;
       }
-      LOG_INF("OPT3001 configured: continuous, auto range, INT above %u lux, released below %u lux.", M_HIGH_LIMIT_CENTILUX / M_CENTILUX_PER_LUX,
-              M_LOW_LIMIT_CENTILUX / M_CENTILUX_PER_LUX);
+      LOG_INF("OPT3001 configured: continuous, auto range, 100 ms conversions, INT above %u lux, released below %u lux.",
+              M_HIGH_LIMIT_CENTILUX / M_CENTILUX_PER_LUX, M_LOW_LIMIT_CENTILUX / M_CENTILUX_PER_LUX);
 
-      // Pick up the level as it stands: the first conversion completes 800 ms after configuring.
+      // Pick up the level as it stands: the first conversion completes ~110 ms after configuring.
       k_sem_give(&s_opt_int_event);
 
       LOG_INF("DISARMED. Press ANTI_TAMP to arm: %lld s delay, then light above 7 lux fires. Press again to disarm.",
