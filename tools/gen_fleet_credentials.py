@@ -18,6 +18,7 @@ Run from the class_mfs_1 root, e.g. for ten devices made November 2026:
     python3 tools/gen_fleet_credentials.py --model MFS1 --mmyy 1126 --count 10
 """
 import argparse
+import os
 import pathlib
 import re
 import secrets
@@ -120,6 +121,10 @@ def main() -> None:
     if args.count < 1 or args.first < 1 or args.first + args.count - 1 > 0xFFFFF:
         sys.exit("--first/--count out of range")
 
+    # Owner-only: these files hold device secrets. The umask covers the
+    # workbook, which openpyxl creates itself.
+    os.umask(0o077)
+
     here = pathlib.Path(__file__).resolve().parent.parent
     out_dir = here / "secrets"
     batch = f"{args.model}-{args.mmyy}"
@@ -130,7 +135,8 @@ def main() -> None:
     if existing:
         sys.exit("Refusing to overwrite - a flashed device would be locked out:\n  " + "\n  ".join(str(p) for p in existing))
 
-    out_dir.mkdir(exist_ok=True)
+    out_dir.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(out_dir, 0o700)
     used_ids = set()
     rows = []
     for serial in serials:
@@ -144,7 +150,10 @@ def main() -> None:
             provision = secrets.token_hex(M_KEY_BYTES).upper()
         row = {"serial": serial, "id": f"{device_id:08X}", "secret": secret, "provision": provision}
         rows.append(row)
-        (out_dir / f"{serial}.conf").write_text(conf_text(serial, row["id"], secret, provision))
+        # O_EXCL makes the no-overwrite rule atomic, not just checked above.
+        descriptor = os.open(out_dir / f"{serial}.conf", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(conf_text(serial, row["id"], secret, provision))
 
     write_workbook(workbook_path, batch, rows)
     print(f"Wrote {len(rows)} credential files and {workbook_path.relative_to(here)}.")
