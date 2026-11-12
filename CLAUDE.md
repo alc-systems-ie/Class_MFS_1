@@ -69,6 +69,20 @@ GPIO_1. The firmware leaves it undriven until the schematic settles it.
 pin reached 3 V; the LED parts are suspected (owner, 2026-11-10). On the bench unit
 the fire pins drive LEDs, not MOSFETs.
 
+**Fire gate drive (bench, 2026-11-12).** The fire gates are two STL8DN6LF3
+MOSFETs in series on the low side, driven straight from the nRF GPIOs, so the
+gate drive is VOUT. At the boost's ~3.0 V VSET default they are only partly on
+(datasheet Fig. 3/4: threshold up to 2.5 V, R<sub>DS(on)</sub> specified only at
+5 V and 10 V) and the e-match fired late or not at all; at 3.3 V with high-drive
+pins it fires. So arming raises the boost to 3.3 V as its own step
+(`ArmingStep::FireSupply`, `App::RaiseFireSupply()`), every disarm returns it
+to VSET (`App::LowerFireSupply()`, including the boot disarm, since nPM2100
+registers survive an SoC reset), and `OutputSwitch::Enable()` configures the
+pins `NRF_GPIO_DRIVE_H0H1`. A battery that cannot hold 3.2 V refuses arming.
+**OPEN — hardware:** 3.3 V is still thin margin for these FETs (worse cold);
+choose FETs with R<sub>DS(on)</sub> specified at 2.5 V gate drive on the next
+revision.
+
 The fire stagger lives in `OutputSwitch::assertStaggered()` and blocks the caller
 for 10 ms (`M_FIRE_STAGGER_MS`); a failed FIRE_1 write never reaches FIRE_2.
 
@@ -164,9 +178,10 @@ level to inherit**. The order is load-bearing and now also carries the fire-pin
 isolation (`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`):
 **arm** is accepted → **Arming**; nothing for 10 s (`M_EXIT_DELAY_MS`, LED A dark,
 LED B suppressed); then, synchronously, restart detection armed (configure, confirm
-AWAKE clear) → enable the fire pins **last** → boolean Active only on every step's
+AWAKE clear) → **raise the fire supply** (nPM2100 boost to 3.3 V, VOUT verified
+≥ 3.2 V) → enable the fire pins **last** → boolean Active only on every step's
 success, LED A plays Armed. **Disarm**, from any state: disable the fire pins
-**first** → boolean Inactive (cancel any arming) → re-derive the output (GPIOs
+**first** → lower the fire supply (boost back to its VSET level) → boolean Inactive (cancel any arming) → re-derive the output (GPIOs
 already isolated) → restart the test. Arming is **refused** — fails safe to the
 warning, disable pins, Inactive, test resumed disarmed — if any step fails,
 including the part not configuring.

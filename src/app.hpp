@@ -121,6 +121,8 @@ namespace alc
       int DisableFirePins() override;
       int RestartDetection(bool armed) override;
       int EnableFirePins() override;
+      int RaiseFireSupply() override;
+      void LowerFireSupply() override;
       // ScannerRunning() is declared once, below with DetectionHardware, and
       // overrides both interfaces.
       bool TakeScannerLost() override;

@@ -22,6 +22,7 @@ namespace
   constexpr int M_ENABLE_FAILURE { -ENODEV };
   constexpr int M_DISABLE_FAILURE { -EBUSY };
   constexpr int M_SCANNER_FAILURE { -ENODEV };
+  constexpr int M_SUPPLY_FAILURE { -EIO };
   constexpr bool M_BOTH_CALLBACKS[] { false, true };
 
   enum class Call : uint8_t { DisablePins, RestartArmed, RestartDisarmed, EnablePins, Warning };
@@ -32,6 +33,17 @@ namespace
       ArmState stateAtCall;
       ArmingStep step;
       int result;
+  };
+
+  // Fire supply calls are logged apart from the main log, so the existing order
+  // assertions stand; mainLogSize places each one between the main-log calls.
+  enum class SupplyCall : uint8_t { Raise, Lower };
+
+  struct SupplyEntry
+  {
+      SupplyCall call;
+      ArmState stateAtCall;
+      size_t mainLogSize;
   };
 
   // Records every action in order, with the sequence state observed at the
@@ -79,6 +91,21 @@ namespace
         return enableResult;
       }
 
+      int RaiseFireSupply() override
+      {
+        SupplyEntry entry { SupplyCall::Raise, currentState(), log.size() };
+        supplyLog.push_back(entry);
+        // Raised only on the way to Active, never once there.
+        if (sequence != nullptr) { assert(sequence->State() == ArmState::Arming); }
+        return raiseResult;
+      }
+
+      void LowerFireSupply() override
+      {
+        SupplyEntry entry { SupplyCall::Lower, currentState(), log.size() };
+        supplyLog.push_back(entry);
+      }
+
       bool ScannerRunning() const override
       {
         scannerQueries++;
@@ -122,6 +149,8 @@ namespace
       bool nestedCancelled { false };
       int64_t nestedNowMs { 0 };
       std::vector<LogEntry> log;
+      std::vector<SupplyEntry> supplyLog;
+      int raiseResult { 0 };
       bool forbidActiveOnDisable { false };
       int disableResult { 0 };
       int restartArmedResult { 0 };
@@ -137,9 +166,7 @@ namespace
   {
       Fixture()
           : sequence(actions)
-      {
-        actions.sequence = &sequence;
-      }
+      { actions.sequence = &sequence; }
 
       FakeActions actions;
       ArmingSequence sequence;
@@ -933,6 +960,153 @@ namespace
     printf("arming sequence: scanner lost inside the armed restart never enables: OK\n");
   }
 
+  // Counts supply calls of one kind.
+  size_t supplyCount(const FakeActions& actions, SupplyCall call)
+  {
+    size_t count { 0 };
+
+    for (const SupplyEntry& entry : actions.supplyLog) {
+      if (entry.call == call) { count++; }
+    }
+    return count;
+  }
+
+  // 27. The supply is raised once, after the armed restart and before the enable.
+  void testFireSupplyRaisedBeforeEnable()
+  {
+    Fixture fixture;
+
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    assert(fixture.actions.supplyLog.empty());
+    assert(!fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS - M_ONE_MS));
+    assert(fixture.actions.supplyLog.empty());
+
+    assert(fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+    assert(fixture.sequence.State() == ArmState::Active);
+    assert(fixture.actions.supplyLog.size() == 1);
+    assert(fixture.actions.supplyLog[0].call == SupplyCall::Raise);
+    assert(fixture.actions.supplyLog[0].stateAtCall == ArmState::Arming);
+    // After RestartArmed (log[0]), before EnablePins (log[1]).
+    assert(fixture.actions.supplyLog[0].mainLogSize == 1);
+    assert(fixture.actions.log[0].call == Call::RestartArmed);
+    assert(fixture.actions.log[1].call == Call::EnablePins);
+
+    printf("arming sequence: fire supply raised between restart and enable: OK\n");
+  }
+
+  // 28. A failed raise fails safe: no enable, pins disabled, supply lowered, Inactive, warned.
+  void testFireSupplyRaiseFailure()
+  {
+    Fixture fixture;
+    ArmingStep step { ArmingStep::DisablePins };
+    int result { 0 };
+
+    fixture.actions.forbidActiveOnDisable = true;
+    fixture.actions.raiseResult           = M_SUPPLY_FAILURE;
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    assert(!fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(!logContains(fixture.actions, Call::EnablePins));
+
+    assert(fixture.actions.log.size() == 4);
+    assert(fixture.actions.log[0].call == Call::RestartArmed);
+    assert(fixture.actions.log[1].call == Call::DisablePins);
+    assert(fixture.actions.log[1].stateAtCall == ArmState::Arming);
+    assert(fixture.actions.log[2].call == Call::RestartDisarmed);
+    assert(fixture.actions.log[2].stateAtCall == ArmState::Inactive);
+    assert(fixture.actions.log[3].call == Call::Warning);
+    assert(fixture.actions.log[3].step == ArmingStep::FireSupply);
+    assert(fixture.actions.log[3].result == M_SUPPLY_FAILURE);
+
+    // Raise, then the fail-safe's lower straight after the disable, still Arming.
+    assert(fixture.actions.supplyLog.size() == 2);
+    assert(fixture.actions.supplyLog[0].call == SupplyCall::Raise);
+    assert(fixture.actions.supplyLog[1].call == SupplyCall::Lower);
+    assert(fixture.actions.supplyLog[1].mainLogSize == 2);
+    assert(fixture.actions.supplyLog[1].stateAtCall == ArmState::Arming);
+
+    assert(fixture.sequence.TakeFailure(step, result));
+    assert(step == ArmingStep::FireSupply && result == M_SUPPLY_FAILURE);
+
+    printf("arming sequence: fire supply raise failure fails safe: OK\n");
+  }
+
+  // 29. A failure before the raise never raises the supply.
+  void testNoRaiseWhenRestartFails()
+  {
+    Fixture fixture;
+
+    fixture.actions.restartArmedResult = M_RESTART_FAILURE;
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    assert(!fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+    assert(supplyCount(fixture.actions, SupplyCall::Raise) == 0);
+    assert(supplyCount(fixture.actions, SupplyCall::Lower) == 1);
+
+    printf("arming sequence: no fire supply raise after a failed restart: OK\n");
+  }
+
+  // 30. Every disarm lowers the supply, straight after the pins and before Inactive -
+  // from Active, from Arming, and from Inactive (the boot disarm).
+  void testDisarmLowersFireSupply()
+  {
+    Fixture active;
+    Fixture arming;
+    Fixture inactive;
+
+    armFully(active, M_START_MS);
+    active.actions.supplyLog.clear();
+    assert(!active.sequence.Disarm());
+    assert(active.actions.supplyLog.size() == 1);
+    assert(active.actions.supplyLog[0].call == SupplyCall::Lower);
+    assert(active.actions.supplyLog[0].mainLogSize == 1);
+    assert(active.actions.log[0].call == Call::DisablePins);
+    assert(active.actions.supplyLog[0].stateAtCall == ArmState::Active);
+
+    assert(arming.sequence.BeginArming(M_START_MS));
+    assert(arming.sequence.Disarm());
+    assert(supplyCount(arming.actions, SupplyCall::Raise) == 0);
+    assert(supplyCount(arming.actions, SupplyCall::Lower) == 1);
+    assert(arming.actions.supplyLog[0].mainLogSize == 1);
+
+    assert(!inactive.sequence.Disarm());
+    assert(supplyCount(inactive.actions, SupplyCall::Lower) == 1);
+
+    printf("arming sequence: every disarm lowers the fire supply after the pins: OK\n");
+  }
+
+  // 31. A disarm inside the enable: the last supply action is a lower, after the final disable.
+  void testDisarmInsideEnableLowersSupplyLast()
+  {
+    Fixture fixture;
+
+    fixture.actions.disarmInsideEnable = true;
+    assert(fixture.sequence.BeginArming(M_START_MS));
+    assert(!fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(!fixture.actions.supplyLog.empty());
+    assert(fixture.actions.supplyLog.back().call == SupplyCall::Lower);
+    assert(fixture.actions.supplyLog.back().mainLogSize == fixture.actions.log.size());
+    assert(lastPinCallIsDisable(fixture.actions));
+
+    printf("arming sequence: disarm inside enable ends with the supply lowered: OK\n");
+  }
+
+  // 32. A scanner loss while Active lowers the supply in its fail-safe.
+  void testScannerLossLowersFireSupply()
+  {
+    Fixture fixture;
+
+    armFully(fixture, M_START_MS);
+    fixture.actions.supplyLog.clear();
+    fixture.actions.scannerRunning = false;
+    assert(fixture.sequence.ServiceScannerHealth());
+    assert(fixture.actions.supplyLog.size() == 1);
+    assert(fixture.actions.supplyLog[0].call == SupplyCall::Lower);
+    assert(fixture.actions.supplyLog[0].mainLogSize == 1);
+
+    printf("arming sequence: scanner loss lowers the fire supply: OK\n");
+  }
+
 }
 
 void run_arming_sequence_tests()
@@ -963,5 +1137,11 @@ void run_arming_sequence_tests()
   testBeginArmingDiscardsStaleScannerLoss();
   testHealedScannerLossAtDeadline();
   testScannerLostInsideArmedRestart();
+  testFireSupplyRaisedBeforeEnable();
+  testFireSupplyRaiseFailure();
+  testNoRaiseWhenRestartFails();
+  testDisarmLowersFireSupply();
+  testDisarmInsideEnableLowersSupplyLast();
+  testScannerLossLowersFireSupply();
   printf("arming sequence: OK\n");
 }

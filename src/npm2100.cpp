@@ -109,9 +109,7 @@ namespace alc
   }
 
   int Npm2100::writeTask(uint8_t regAddr)
-  {
-    return writeRegister(regAddr, M_TASK_TRIGGER);
-  }
+  { return writeRegister(regAddr, M_TASK_TRIGGER); }
 
   int Npm2100::readBurst(uint8_t firstReg, uint8_t* dst, size_t len)
   {
@@ -152,9 +150,7 @@ namespace alc
   }
 
   Npm2100::ResetReason Npm2100::parseResetReason(uint8_t raw)
-  {
-    return (raw <= 13) ? static_cast<ResetReason>(raw) : ResetReason::Unknown;
-  }
+  { return (raw <= 13) ? static_cast<ResetReason>(raw) : ResetReason::Unknown; }
 
   // ---------- RESET (button, scratch, sticky) ----------
 
@@ -183,9 +179,7 @@ namespace alc
   }
 
   int Npm2100::ReadScratchA(uint8_t& value)
-  {
-    return readRegister(M_RESET_READ, value);
-  }
+  { return readRegister(M_RESET_READ, value); }
 
   int Npm2100::WriteScratchB(uint8_t value)
   {
@@ -194,9 +188,7 @@ namespace alc
   }
 
   int Npm2100::ReadScratchB(uint8_t& value)
-  {
-    return readRegister(M_RESET_SCRATCHB, value);
-  }
+  { return readRegister(M_RESET_SCRATCHB, value); }
 
   int Npm2100::writeStickyBits(uint8_t value)
   {
@@ -260,6 +252,12 @@ namespace alc
 
     m_boost_millivolts = snappedMv;
     return 0;
+  }
+
+  int Npm2100::BoostUseVsetPin()
+  {
+    if (!m_initialised) return -ENODEV;
+    return writeRegister(M_BOOST_VOUTSEL, 0);
   }
 
   int Npm2100::BoostSetMode(BoostMode mode)
@@ -693,9 +691,7 @@ namespace alc
   }
 
   int Npm2100::GpioReadAll(uint8_t& bits)
-  {
-    return readRegister(M_GPIO_READ, bits);
-  }
+  { return readRegister(M_GPIO_READ, bits); }
 
   // ---------- Live status & die-temp monitoring ----------
 
@@ -743,89 +739,49 @@ namespace alc
   // ---------- Events & Interrupts (per-group) ----------
 
   int Npm2100::GetSystemEventsPending(uint8_t& bits)
-  {
-    return eventGet(M_MAIN_EVENTS_SYSTEM_SET, bits);
-  }
+  { return eventGet(M_MAIN_EVENTS_SYSTEM_SET, bits); }
   int Npm2100::ClearSystemEvents(uint8_t bits)
-  {
-    return eventClear(M_MAIN_EVENTS_SYSTEM_CLR, bits);
-  }
+  { return eventClear(M_MAIN_EVENTS_SYSTEM_CLR, bits); }
   int Npm2100::EnableSystemInterrupts(uint8_t bits)
-  {
-    return eventEnable(M_MAIN_INTEN_SYSTEM_SET, bits);
-  }
+  { return eventEnable(M_MAIN_INTEN_SYSTEM_SET, bits); }
   int Npm2100::DisableSystemInterrupts(uint8_t bits)
-  {
-    return eventDisable(M_MAIN_INTEN_SYSTEM_CLR, bits);
-  }
+  { return eventDisable(M_MAIN_INTEN_SYSTEM_CLR, bits); }
 
   int Npm2100::GetAdcEventsPending(uint8_t& bits)
-  {
-    return eventGet(M_MAIN_EVENTS_ADC_SET, bits);
-  }
+  { return eventGet(M_MAIN_EVENTS_ADC_SET, bits); }
   int Npm2100::ClearAdcEvents(uint8_t bits)
-  {
-    return eventClear(M_MAIN_EVENTS_ADC_CLR, bits);
-  }
+  { return eventClear(M_MAIN_EVENTS_ADC_CLR, bits); }
   int Npm2100::EnableAdcInterrupts(uint8_t bits)
-  {
-    return eventEnable(M_MAIN_INTEN_ADC_SET, bits);
-  }
+  { return eventEnable(M_MAIN_INTEN_ADC_SET, bits); }
   int Npm2100::DisableAdcInterrupts(uint8_t bits)
-  {
-    return eventDisable(M_MAIN_INTEN_ADC_CLR, bits);
-  }
+  { return eventDisable(M_MAIN_INTEN_ADC_CLR, bits); }
 
   int Npm2100::GetGpioEventsPending(uint8_t& bits)
-  {
-    return eventGet(M_MAIN_EVENTS_GPIO_SET, bits);
-  }
+  { return eventGet(M_MAIN_EVENTS_GPIO_SET, bits); }
   int Npm2100::ClearGpioEvents(uint8_t bits)
-  {
-    return eventClear(M_MAIN_EVENTS_GPIO_CLR, bits);
-  }
+  { return eventClear(M_MAIN_EVENTS_GPIO_CLR, bits); }
   int Npm2100::EnableGpioInterrupts(uint8_t bits)
-  {
-    return eventEnable(M_MAIN_INTEN_GPIO_SET, bits);
-  }
+  { return eventEnable(M_MAIN_INTEN_GPIO_SET, bits); }
   int Npm2100::DisableGpioInterrupts(uint8_t bits)
-  {
-    return eventDisable(M_MAIN_INTEN_GPIO_CLR, bits);
-  }
+  { return eventDisable(M_MAIN_INTEN_GPIO_CLR, bits); }
 
   int Npm2100::GetBoostEventsPending(uint8_t& bits)
-  {
-    return eventGet(M_MAIN_EVENTS_BOOST_SET, bits);
-  }
+  { return eventGet(M_MAIN_EVENTS_BOOST_SET, bits); }
   int Npm2100::ClearBoostEvents(uint8_t bits)
-  {
-    return eventClear(M_MAIN_EVENTS_BOOST_CLR, bits);
-  }
+  { return eventClear(M_MAIN_EVENTS_BOOST_CLR, bits); }
   int Npm2100::EnableBoostInterrupts(uint8_t bits)
-  {
-    return eventEnable(M_MAIN_INTEN_BOOST_SET, bits);
-  }
+  { return eventEnable(M_MAIN_INTEN_BOOST_SET, bits); }
   int Npm2100::DisableBoostInterrupts(uint8_t bits)
-  {
-    return eventDisable(M_MAIN_INTEN_BOOST_CLR, bits);
-  }
+  { return eventDisable(M_MAIN_INTEN_BOOST_CLR, bits); }
 
   int Npm2100::GetLdoSwEventsPending(uint8_t& bits)
-  {
-    return eventGet(M_MAIN_EVENTS_LDOSW_SET, bits);
-  }
+  { return eventGet(M_MAIN_EVENTS_LDOSW_SET, bits); }
   int Npm2100::ClearLdoSwEvents(uint8_t bits)
-  {
-    return eventClear(M_MAIN_EVENTS_LDOSW_CLR, bits);
-  }
+  { return eventClear(M_MAIN_EVENTS_LDOSW_CLR, bits); }
   int Npm2100::EnableLdoSwInterrupts(uint8_t bits)
-  {
-    return eventEnable(M_MAIN_INTEN_LDOSW_SET, bits);
-  }
+  { return eventEnable(M_MAIN_INTEN_LDOSW_SET, bits); }
   int Npm2100::DisableLdoSwInterrupts(uint8_t bits)
-  {
-    return eventDisable(M_MAIN_INTEN_LDOSW_CLR, bits);
-  }
+  { return eventDisable(M_MAIN_INTEN_LDOSW_CLR, bits); }
 
   int Npm2100::ClearAllPendingEvents()
   {

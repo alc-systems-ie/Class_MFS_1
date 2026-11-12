@@ -1,4 +1,5 @@
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/dt-bindings/gpio/nordic-nrf-gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -35,6 +36,9 @@ namespace alc
     // is asserted first and FIRE_2 this long after. Clearing is not staggered -
     // both gates are always cleared together.
     constexpr int32_t M_FIRE_STAGGER_MS { 10 };
+
+    // High drive on both levels for the gates (see Enable()).
+    constexpr gpio_flags_t M_FIRE_DRIVE { NRF_GPIO_DRIVE_H0H1 };
 
     // Checks one pin at boot: plain input with no pull, read raw, then
     // disconnected. The disconnect is attempted whatever the configure or read
@@ -141,8 +145,12 @@ namespace alc
     // GPIO_INPUT is requested alongside so Set() can read back what it drove. Not
     // every SoC will connect the input buffer on an output pin, so a refusal here
     // is tolerated and read-back is disabled rather than treated as a fault.
-    result = gpio_pin_configure_dt(&s_fire1, GPIO_OUTPUT_INACTIVE | GPIO_INPUT);
-    if (result == 0) { result = gpio_pin_configure_dt(&s_fire2, GPIO_OUTPUT_INACTIVE | GPIO_INPUT); }
+    //
+    // HIGH DRIVE on both levels (NRF_GPIO_DRIVE_H0H1): the gate is held closer
+    // to the supply under any load on the line, such as the bench unit's LEDs.
+    // The MOSFETs have little margin at 3.3 V (see App::RaiseFireSupply()).
+    result = gpio_pin_configure_dt(&s_fire1, GPIO_OUTPUT_INACTIVE | GPIO_INPUT | M_FIRE_DRIVE);
+    if (result == 0) { result = gpio_pin_configure_dt(&s_fire2, GPIO_OUTPUT_INACTIVE | GPIO_INPUT | M_FIRE_DRIVE); }
 
     if (result == 0) {
       m_readback_supported = true;
@@ -150,8 +158,8 @@ namespace alc
       LOG_WRN("Fire pins will not take GPIO_INPUT (%d) - driving without read-back verification.", result);
       m_readback_supported = false;
 
-      result = gpio_pin_configure_dt(&s_fire1, GPIO_OUTPUT_INACTIVE);
-      if (result == 0) { result = gpio_pin_configure_dt(&s_fire2, GPIO_OUTPUT_INACTIVE); }
+      result = gpio_pin_configure_dt(&s_fire1, GPIO_OUTPUT_INACTIVE | M_FIRE_DRIVE);
+      if (result == 0) { result = gpio_pin_configure_dt(&s_fire2, GPIO_OUTPUT_INACTIVE | M_FIRE_DRIVE); }
       if (result < 0) {
         enterFaultState("fire pin configure failed at enable", result);
         return result;

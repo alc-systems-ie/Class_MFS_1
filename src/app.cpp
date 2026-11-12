@@ -82,6 +82,22 @@ namespace alc
     // ADXL367 datasheet recommends when power cycling.
     constexpr uint32_t M_LSOUT_DISCHARGE_MS { 50 };
 
+    // Fire supply while armed (arming step RaiseFireSupply). The nRF runs from the
+    // nPM2100 boost output, and the fire gates are driven from the nRF's GPIOs, so
+    // VOUT is the gate drive. The two STL8DN6LF3 MOSFETs in series are only partly
+    // on at the ~3.0 V VSET default - the e-match fired late or not at all - and
+    // fully on at 3.3 V, the boost's maximum (bench, 2026-11-12).
+    constexpr uint16_t M_FIRE_SUPPLY_MILLIVOLTS { 3300 };
+
+    // Lowest VOUT that counts as raised. The PMIC's VOUT ADC tops out at exactly
+    // 3.3 V, so the check is a floor, not a match; 3.2 V allows for ADC tolerance.
+    constexpr uint16_t M_FIRE_SUPPLY_MIN_MILLIVOLTS { 3200 };
+
+    // Time for the boost to slew up before VOUT is measured.
+    constexpr int32_t M_FIRE_SUPPLY_SETTLE_MS { 20 };
+
+    constexpr float M_MILLIVOLTS_PER_VOLT { 1000.0f };
+
     // Time from LSOUT rising to the ADXL367 answering on I2C. It must load fuses and
     // enter standby first. Diagnosed 2026-08-18: after an overnight power-down the
     // probe ran 0.57 ms after the rail came up and the part did not respond. Earlier
@@ -169,6 +185,8 @@ namespace alc
           return "scanner not running - a disarm could not be heard";
         case ArmingStep::ScannerLost:
           return "scanner not running while arming or armed - a disarm could not be heard";
+        case ArmingStep::FireSupply:
+          return "arming failed - fire supply would not reach 3.3 V";
       }
       return "unknown arming step"; // Unreachable while every ArmingStep is handled above - -Wswitch warns if a new one is added.
     }
@@ -830,6 +848,10 @@ namespace alc
       case ArmingStep::ScannerLost:
         LOG_ERR("Scanner not running while arming or armed - disarmed (fail safe)!");
         break;
+
+      case ArmingStep::FireSupply:
+        LOG_ERR("Arming failed at the fire supply raise (%d) - device Inactive, fire pins disabled, no acknowledgement!", result);
+        break;
     }
   }
 
@@ -910,6 +932,51 @@ namespace alc
   {
     // The LAST step of arming. Must not call back into m_arming.
     return m_output_switch.Enable();
+  }
+
+  int App::RaiseFireSupply()
+  {
+    // Must not call back into m_arming. Runs in the synchronous arming step, so
+    // the settle delay blocks the main loop for M_FIRE_SUPPLY_SETTLE_MS once.
+    float voutVolts { 0.0f };
+    int voutMillivolts { 0 };
+    int result { m_pmic.BoostSetVoltage(M_FIRE_SUPPLY_MILLIVOLTS) };
+
+    if (result < 0) {
+      LOG_ERR("Fire supply: boost would not take %u mV (%d)!", M_FIRE_SUPPLY_MILLIVOLTS, result);
+      return result;
+    }
+
+    k_msleep(M_FIRE_SUPPLY_SETTLE_MS);
+
+    // VERIFIED, not assumed. A boost that cannot reach the level - a battery too
+    // weak to support it - would leave the gates half on and the e-match unfired,
+    // so arming fails safe instead of reporting a device that could not fire.
+    result = m_pmic.AdcReadVout(voutVolts);
+    if (result < 0) {
+      LOG_ERR("Fire supply: VOUT read failed (%d)!", result);
+      return result;
+    }
+
+    voutMillivolts = static_cast<int>(voutVolts * M_MILLIVOLTS_PER_VOLT);
+    if (voutMillivolts < M_FIRE_SUPPLY_MIN_MILLIVOLTS) {
+      LOG_ERR("Fire supply: VOUT %d mV, below %u mV after raising the boost!", voutMillivolts, M_FIRE_SUPPLY_MIN_MILLIVOLTS);
+      return -EIO;
+    }
+
+    LOG_INF("Fire supply raised: boost %u mV, VOUT %d mV.", M_FIRE_SUPPLY_MILLIVOLTS, voutMillivolts);
+    return 0;
+  }
+
+  void App::LowerFireSupply()
+  {
+    // Must not call back into m_arming - it runs inside the fail-safe itself.
+    // Called on every disarm, including the one at boot, so a reset while armed -
+    // the nPM2100 keeps its registers across an SoC reset - cannot leave the
+    // boost raised. A failure only costs battery: the pins are already isolated.
+    int result { m_pmic.BoostUseVsetPin() };
+
+    if (result < 0) { LOG_WRN("Fire supply: boost would not return to its VSET level (%d).", result); }
   }
 
   bool App::TakeScannerLost()

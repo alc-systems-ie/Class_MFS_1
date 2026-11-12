@@ -88,6 +88,17 @@ namespace alc
       return false;
     }
 
+    // The fire gates need more than the boost's ~3.0 V default to switch fully
+    // on. Raised only now, after every other check, so a device that is not
+    // about to arm never runs the higher supply. Cannot re-enter, so no session
+    // check follows.
+    result = m_actions.RaiseFireSupply();
+    if (result < 0) {
+      failSafe();
+      raiseFailure(ArmingStep::FireSupply, result);
+      return false;
+    }
+
     // The LAST step. Active only once the pins are verified enabled.
     result = m_actions.EnableFirePins();
 
@@ -96,6 +107,7 @@ namespace alc
     // more, whatever the enable returned, so a disable is the last pin action.
     if (superseded(session)) {
       disableResult = m_actions.DisableFirePins();
+      m_actions.LowerFireSupply();
       if (disableResult < 0) { raiseFailure(ArmingStep::DisablePins, disableResult); }
       return false;
     }
@@ -154,6 +166,9 @@ namespace alc
     // changes, and a disable failure does not stop the rest of the disarm.
     int disableResult { m_actions.DisableFirePins() };
 
+    // Pins first, then the supply: only a driven gate makes the supply level matter.
+    m_actions.LowerFireSupply();
+
     m_state = ArmState::Inactive;
     m_session++;
 
@@ -173,9 +188,7 @@ namespace alc
   }
 
   bool ArmingSequence::superseded(uint32_t session) const
-  {
-    return (m_state != ArmState::Arming) || (m_session != session);
-  }
+  { return (m_state != ArmState::Arming) || (m_session != session); }
 
   void ArmingSequence::raiseFailure(ArmingStep step, int result)
   {

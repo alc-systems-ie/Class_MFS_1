@@ -29,9 +29,10 @@ namespace alc
    * ScannerCheck: the scanner was not running when an Arm was accepted, or was not
    * running - or had gone down since last checked - at the end of the exit delay or
    * just before the fire pins were enabled. ScannerLost: it went down while Arming
-   * or Active and ServiceScannerHealth() failed safe.
+   * or Active and ServiceScannerHealth() failed safe. FireSupply: the fire supply
+   * would not rise to its firing level just before the pins were enabled.
    */
-  enum class ArmingStep : uint8_t { DisablePins, RestartDetection, EnablePins, ScannerCheck, ScannerLost };
+  enum class ArmingStep : uint8_t { DisablePins, RestartDetection, EnablePins, ScannerCheck, ScannerLost, FireSupply };
 
   /**
    * @brief The hardware effects the arming sequence drives. Implemented by App.
@@ -39,8 +40,9 @@ namespace alc
    * RE-ENTRANCY: RestartDetection(true) and EnableFirePins() may re-enter
    * ArmingSequence::Disarm() (a disarm command handled while they run), and may
    * follow it with BeginArming(). The disarm wins - see ArmingSequence::Service().
-   * DisableFirePins(), RestartDetection(false) and SignalWarning() must not call
-   * back into the sequence: they run inside the fail-safe itself.
+   * DisableFirePins(), RestartDetection(false), LowerFireSupply() and
+   * SignalWarning() must not call back into the sequence: they run inside the
+   * fail-safe itself. RaiseFireSupply() must not call back into it either.
    */
   class ArmingActions
   {
@@ -55,6 +57,27 @@ namespace alc
 
       /** @brief Configure the fire pins as outputs, inactive, verified low. 0 or negative errno. */
       virtual int EnableFirePins() = 0;
+
+      /**
+       * @brief Raise the supply the fire gates are driven from to its firing level, verified.
+       *
+       * The step immediately before EnableFirePins(). The STL8DN6LF3 gates are
+       * only partly on at the nPM2100's ~3.0 V default, so the boost is raised to
+       * 3.3 V while armed. 0 once the supply is verified at the firing level, or
+       * negative errno - the arming then fails safe. Must not call back into the
+       * sequence.
+       */
+      virtual int RaiseFireSupply() = 0;
+
+      /**
+       * @brief Return the fire supply to its idle level. Best effort.
+       *
+       * Called by every fail-safe and disarm, straight after DisableFirePins().
+       * No result: with the pins isolated a raised supply is a battery cost, not
+       * a firing risk, so the implementation logs a failure and nothing more.
+       * Must not call back into the sequence.
+       */
+      virtual void LowerFireSupply() = 0;
 
       /**
        * @brief Whether the command scanner is running, so a Disarm could be heard.
@@ -88,24 +111,25 @@ namespace alc
    * SAFETY CRITICAL ORDERING (amendment sections 2 and 3):
    *
    * - Arm: Arming for exactly M_EXIT_DELAY_MS with nothing done, then in one
-   *   synchronous Service() call: RestartDetection(true) -> EnableFirePins() ->
-   *   Active. Active is set only after the enable returned 0; the enable is never
-   *   attempted if the restart failed.
-   * - Any arming-step failure: DisableFirePins() -> Inactive ->
-   *   RestartDetection(false) -> SignalWarning(step, result).
+   *   synchronous Service() call: RestartDetection(true) -> RaiseFireSupply() ->
+   *   EnableFirePins() -> Active. Active is set only after the enable returned 0;
+   *   neither the raise nor the enable is attempted if an earlier step failed.
+   * - Any arming-step failure: DisableFirePins() -> LowerFireSupply() -> Inactive
+   *   -> RestartDetection(false) -> SignalWarning(step, result).
    * - Scanner lost while Arming or Active (ServiceScannerHealth()): the same
    *   fail-safe order, with step ScannerLost - including a loss that has healed
    *   by the time it is checked (ArmingActions::TakeScannerLost()).
-   * - Disarm, from ANY state: DisableFirePins() FIRST -> Inactive ->
-   *   RestartDetection(false). A disable failure does not stop the disarm; it is
+   * - Disarm, from ANY state: DisableFirePins() FIRST -> LowerFireSupply() ->
+   *   Inactive -> RestartDetection(false). A disable failure does not stop the disarm; it is
    *   warned after the disarm completes.
    *
    * RE-ENTRANCY: if a callback re-enters Disarm() during Service(), the disarm
    * wins. Service() checks after each callback whether its arming is still the
    * current one (state Arming and the same arming session); if not it returns
    * false at once, never enables or goes Active and raises no warning. A disarm
-   * inside EnableFirePins() is followed by one more DisableFirePins(), because
-   * the enable may have configured the pins after the nested disable.
+   * inside EnableFirePins() is followed by one more DisableFirePins() and
+   * LowerFireSupply(), because the enable may have configured the pins after the
+   * nested disable.
    *
    * The sequence has no output-derivation hook: the disarm order's "re-derive
    * the output" step (between Inactive and the restart) belongs at the start of
@@ -136,7 +160,8 @@ namespace alc
        * Does nothing before the deadline. At or after it checks the scanner is
        * running and has not gone down since last checked (else fails safe, step
        * ScannerCheck), then runs restart -> the same scanner check again (the
-       * restart touches the scanner cadence) -> enable -> Active. Returns true on
+       * restart touches the scanner cadence) -> raise the fire supply -> enable ->
+       * Active. Returns true on
        * the call that went Active, false otherwise
        * (including a failed arming, which is reported through SignalWarning()
        * and TakeFailure()).
@@ -164,7 +189,7 @@ namespace alc
       bool ServiceScannerHealth();
 
       /**
-       * @brief From any state: DisableFirePins() FIRST, then Inactive, then RestartDetection(false).
+       * @brief From any state: DisableFirePins() FIRST, LowerFireSupply(), then Inactive, then RestartDetection(false).
        *
        * The restart's own result is not a warning (amendment section 4); the
        * implementation of RestartDetection() logs and retries it.
@@ -176,7 +201,7 @@ namespace alc
       /**
        * @brief The last failure, if any since the last read. Cleared by the read.
        *
-       * Records arming-step failures (ScannerCheck, RestartDetection, EnablePins), a
+       * Records arming-step failures (ScannerCheck, RestartDetection, FireSupply, EnablePins), a
        * ScannerLost fail-safe and a DisablePins failure, whether in Disarm() or in an arming fail-safe. A
        * DisablePins failure is sticky: a later arming-step failure does not
        * overwrite it before it is read, because the pins may not be isolated.
@@ -193,7 +218,7 @@ namespace alc
       // now or went down since the latch was last consumed.
       bool scannerDownOrLost();
 
-      // DisableFirePins() -> Inactive -> RestartDetection(false). A disable
+      // DisableFirePins() -> LowerFireSupply() -> Inactive -> RestartDetection(false). A disable
       // failure is warned and recorded here, after the restart.
       void failSafe();
 

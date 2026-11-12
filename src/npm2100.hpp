@@ -296,6 +296,17 @@ namespace alc
       uint16_t BoostGetVoltageSetting() const { return m_boost_millivolts; }
 
       /**
+       * @brief Hand the boost output back to the VSET pin selection.
+       *
+       * Clears BOOST.VOUTSEL, undoing BoostSetVoltage(): the output returns to
+       * the level the board's VSET resistor selects. BoostGetVoltageSetting() is
+       * left at the last register value, which no longer drives the output.
+       *
+       * @return 0 on success; -ENODEV before Init(); negative errno on I2C failure.
+       */
+      int BoostUseVsetPin();
+
+      /**
        * @brief Select the boost converter operating mode.
        *
        * Writes BOOST.OPER.MODE via read-modify-write, leaving other bits in
