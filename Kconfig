@@ -125,13 +125,13 @@ config MFS_ADXL_ACTIVITY_SAMPLES
 	  25 Hz (800 ms) to reject cistern fill-valve transients.
 
 config MFS_BATTERY_TEST
-	bool "Battery-life test build: LED A becomes a periodic liveness blink"
+	bool "Battery-life test build: green becomes a periodic liveness blink"
 	default n
 	help
-	  Repurposes LED A from "on while Inactive" to a short blink once per scan
-	  period, so an unattended device can be seen to be alive across a long
-	  battery test. LED B is unchanged. The device still starts deactivated and
-	  is still armed by the engineer toggle.
+	  Replaces green's disarmed level (steady before the time sync, slow flash
+	  after it) with a short blink once per scan period, so an unattended
+	  device can be seen to be alive across a long battery test. Red and
+	  orange are unchanged. The device still starts disarmed.
 
 	  READ THIS BEFORE TRUSTING THE RESULT: the blink dominates the power
 	  budget. At an assumed 2 mA of LED current, 500 ms every 5970 ms is 8.38%
@@ -145,10 +145,9 @@ config MFS_BLINK_MS
 	help
 	  Rounded down to the 100 ms main-loop poll interval.
 
-	  SET TO 0 TO DISABLE LED A ENTIRELY - not blinking, and not lit as an
-	  Inactive indicator either. That is the setting for a true measurement.
-	  LED B still works, so arming the device and nudging it is the liveness
-	  check.
+	  SET TO 0 TO KEEP GREEN DARK - not blinking, and not lit as the disarmed
+	  indicator either. That is the setting for a true measurement. Red and
+	  orange still work, so a disarmed test trigger (red) is the liveness check.
 
 	  500 ms is highly visible but costs ~169 uA at 2 mA LED current. 100 ms
 	  costs ~34 uA and is still clearly visible; 10 ms would cost ~3 uA but
@@ -166,22 +165,19 @@ config MFS_SCAN_DIAG
 	  first four on-air bytes. Tells "not received" apart from "received and
 	  silently discarded". Leave off in production - it reveals reception.
 
-config MFS_DEBUG_LED
-	bool "Drive the idle/detection indication on the LEDs (bench only)"
+config MFS_DEBUG_DETECTION_LOG
+	bool "Log detection met / cleared transitions (bench only)"
 	default y
 	help
-	  Between acknowledgement patterns: LED A on while Inactive, LED B shows
-	  DETECTION (the ADXL367 loop engine's 5 s period) rather than the fire
-	  output - in EITHER arm state, so it simulates triggers while tuning
-	  Inactive and confirms one while Active. NOT VIABLE IN PRODUCTION for
-	  LED A: a continuously lit LED draws ~2 mA against a ~69 uA budget,
-	  roughly 29 days of battery life. Set n for production until a bounded
-	  indication scheme is chosen — see docs/v1-scope.md section 5.
+	  Logs each transition of the detection signal - the engine's trigger or a
+	  rehearsal FIRE's window - in either arm state. While disarmed nothing
+	  else logs a test trigger, so without it a test shows "Activation 3 of 3."
+	  and then silence.
 
-	  Independent of this option, in EVERY build including production: LED A
-	  still plays the acknowledgement pattern for an accepted command (Armed,
-	  Disarmed, Settings applied, Mode changed, Arm refused, ...). Setting n
-	  only removes the idle "on while Inactive" level between patterns.
+	  Logging only. The LEDs behave identically in every build: green while
+	  disarmed and red for a simulated firing are production behaviour (see
+	  docs/superpowers/specs/2026-11-12-three-led-indication-design.md).
+	  Replaces CONFIG_MFS_DEBUG_LED, whose LED meaning was removed.
 
 config ALC_DEVICE_SERIAL
 	string "Device serial number"

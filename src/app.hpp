@@ -15,6 +15,7 @@
 #include "detection_engine.hpp"
 #include "device_clock.hpp"
 #include "fire_sequence.hpp"
+#include "led_indicator.hpp"
 #include "led_sequencer.hpp"
 #include "npm2100.hpp"
 #include "output_switch.hpp"
@@ -82,13 +83,9 @@ namespace alc
 
       int initAccelerometer();
 
-      // Writes LED A. Split from LED B so the main loop can skip this call while
-      // the LED timer owns the pin - see ledSequencerActive in Run().
-      int applyLedA(bool ledA);
-
-      // Writes LED B. Split from LED A for the same reason: the main loop skips
-      // this call while the warning timer owns the pin - see warningActive in Run().
-      int applyLedB(bool ledB);
+      // Writes all three LEDs. Called by the main loop only while no overlay
+      // plays - the LED timer owns every pin while one does. See overlayActive in Run().
+      int applyLeds(const LedLevels& levels);
 
       // Derives m_output_active. The single place the arm state and the
       // accelerometer are combined — see IsOutputActive(). EngineTick::Skip
@@ -205,18 +202,16 @@ namespace alc
       void handleCommandCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs);
 
       // Carries out an ACCEPTED command: arm transitions, settings, clock trim and
-      // the LED A acknowledgement. Called only after AccessControl has persisted
+      // the confirmation overlay. Called only after AccessControl has persisted
       // the sequence number.
       void applyCommand(const AccessControl::Evaluation& evaluation, int64_t uptimeSecs);
 
-      // Starts an LED A pattern and the 10 ms timer that renders it.
+      // Starts an overlay pattern and the 10 ms timer that renders it. A pattern
+      // outranked by the one playing is dropped - see LedSequencer::Start().
       void playLedPattern(LedPattern pattern);
 
-      // k_timer expiry: renders LED A while a pattern plays, then stops itself.
+      // k_timer expiry: renders all three LEDs while an overlay plays, then stops itself.
       static void ledTimerHandler(struct k_timer* timer);
-
-      // k_timer expiry: renders LED B while the warning plays, then stops itself.
-      static void warningTimerHandler(struct k_timer* timer);
 
       // Adopts the clock's current day at most once every M_ADVANCE_INTERVAL_SECS,
       // so a device that receives no commands for days still advances its
@@ -315,18 +310,19 @@ namespace alc
       // touch - the fire output, the engine and the output state.
       ArmingSequence m_arming;
 
-      // LED A acknowledgement patterns. The sequencer is read from the timer
-      // handler and written from the main loop; see playLedPattern().
+      // The one overlay playing (red flash, orange triple or orange steady). The
+      // sequencer is read from the timer handler and written from the main
+      // thread; see playLedPattern(). While it plays, m_led_timer is the only
+      // writer of all three LEDs; the main loop writes them once it has ended.
       LedSequencer m_led_sequencer;
       struct k_timer m_led_timer;
 
-      // The interim warning on LED B. Same ownership rule as LED A: while it
-      // plays, m_warning_timer is LED B's only writer; the main loop writes LED B
-      // only once it has ended. Started by signalWarning() from the main thread.
-      LedSequencer m_warning_sequencer;
-      struct k_timer m_warning_timer;
+      // Display only: the device disarmed itself (armed trigger, fail-safe
+      // disarm) and no authenticated command has been accepted since. Shows
+      // steady orange. Never affects the arm state or the output.
+      bool m_fault_display_latched;
 
-      // False until initLeds() has configured both LED pins. A warning raised
+      // False until initLeds() has configured the three LED pins. A warning raised
       // before then (the boot pin check) starts its sequencer at once but its
       // timer only after initLeds() - see Run().
       bool m_leds_initialised;

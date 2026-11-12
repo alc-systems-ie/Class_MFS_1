@@ -8,18 +8,17 @@
  * I²C 1 (i2c21) - nPM2100:      SCL P1.04, SDA P1.05, addr 0x74.
  * I²C 2 (i2c22) - ADXL367:      SCL P1.08, SDA P1.07, addr 0x1D.
  *                 OPT3001:      same bus (not used by v1 firmware).
- * LEDs (replace DK's):          LED A = LED3 P2.04 (led0), LED B = LED2 P2.03 (led1).
- *                               LED1 P2.02 is fitted but unused by the app.
+ * LEDs:                         LED1 red P2.02 (zephyr,user led-red-gpios),
+ *                               LED2 orange P2.03 (led1), LED3 green P2.04 (led0).
  * Fire outputs:                 FIRE_1 P2.05, FIRE_2 P2.09 (see zephyr,user).
  * ADXL367 INT1:                 P1.03 — wakes the SoC.
  * ADXL367 INT2:                 P1.13 — routed to the SoC, NOT to the nPM2100
  *                               SHPHLD pin as on alc_drawer_master. Unused.
  * OPT3001 INT:                  P1.12 (unused).
  * ANTI_TAMP button:             P1.02, pulled high, active low (unused by v1).
- * nPM2100 host signals:         GPIO0 P1.06, RESET P2.00 (unused by firmware).
- *
- * !!! OPEN: the board pin list gives P2.02 as both LED1 and nPM2100 GPIO_1.
- * !!! The firmware leaves P2.02 undriven until that is confirmed.
+ * nPM2100 host signals:         GPIO0 P1.06, GPIO1 P2.01, RESET P2.00 (unused by firmware).
+ *                               (GPIO_1 is P2.01, not P2.02 - the board pin list
+ *                               had a typo, corrected by the owner 2026-11-12.)
  *
  * GPIO active levels for PMIC_RESET and the interrupt inputs are inherited
  * assumptions from alc_drawer_master; confirm against the PMIC / ADXL pin
@@ -167,6 +166,12 @@
         pmic-reset-gpios = <&gpio2 0 GPIO_ACTIVE_LOW>;
         adxl-int1-gpios  = <&gpio1 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 
+        /* LED1, red. Active-high is assumed, like LED2 and LED3 - verify on
+         * first power-up (bench checklist): the wrong polarity lights red
+         * throughout Armed. The DK's nRF54L05 board files define only led0
+         * and led1, so it lives here rather than as led2. */
+        led-red-gpios = <&gpio2 2 GPIO_ACTIVE_HIGH>;
+
         /* ─── FIRE OUTPUT — THE DEVICE'S ACTUAL OUTPUT ───
          *
          * Fire1 and Fire2 form ONE logical channel. They are not a set/reset
@@ -217,7 +222,7 @@
 
 /* Override DK's LED pins to match the bespoke board.
  * The DK's nRF54L05 variant only defines led0 and led1 (no led2/led3).
- * led0 = LED A (Inactive indicator), led1 = LED B (Active + triggered). */
+ * led0 = LED3 green, led1 = LED2 orange. LED1 red is led-red-gpios in zephyr,user. */
 &led0 {
     gpios = <&gpio2 4 GPIO_ACTIVE_HIGH>;
 };
