@@ -76,8 +76,17 @@
     zephyr,user {
         /* OPT3001 INT is open-drain, active low (POL = 0). */
         opt-int-gpios = <&gpio1 12 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+        /* ANTI_TAMP button arms (10 s delay) and disarms. Active low. */
+        tamper-gpios = <&gpio1 2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+        /* LED3: flashes during the arming delay, steady while armed. */
+        led3-gpios = <&gpio2 4 GPIO_ACTIVE_HIGH>;
         /* Bench unit: LEDs on the fire pins. External 10k pull-downs. */
         fire-gpios = <&gpio2 5 GPIO_ACTIVE_HIGH>,
                      <&gpio2 9 GPIO_ACTIVE_HIGH>;
     };
+};
+
+/* P1.02 (ANTI_TAMP) is an NFC pin: release it to GPIO. */
+&uicr {
+    nfct-pins-as-gpios;
 };
