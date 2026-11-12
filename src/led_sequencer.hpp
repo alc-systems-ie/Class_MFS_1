@@ -63,6 +63,12 @@ namespace alc
 
       void Stop() { m_pattern = LedPattern::None; }
 
+      /** @brief Stop the pattern playing only if it is `pattern`. A disarm cancels a red flash this way. */
+      void Cancel(LedPattern pattern)
+      {
+        if (m_pattern == pattern) { Stop(); }
+      }
+
       LedPattern Current() const { return m_pattern; }
 
       /** @brief True until the pattern and both of its dark gaps have elapsed. */

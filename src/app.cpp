@@ -390,7 +390,7 @@ namespace alc
       m_advertiser.Service(k_uptime_get());
 
       // A failed arming has already failed safe and raised the warning inside
-      // Service(). No LED A acknowledgement.
+      // Service(). No confirmation - the orange warning instead.
       logArmingFailure(FailureSource::Sequence);
 
       // Every exit from Arming - Active, cancelled by a Disarm command above, or a
@@ -406,7 +406,7 @@ namespace alc
       // idle, mid exit delay, or with a trigger delay pending. Decided in the
       // host-tested ArmingSequence::ServiceScannerHealth(): pins isolated first,
       // Inactive (arming and any pending trigger cancelled), test restarted, then
-      // the warning. No LED A acknowledgement. IsScanning() is false only when a
+      // the warning. No confirmation. IsScanning() is false only when a
       // scan start and its fallback have both failed; a scan stuck at the fallback
       // cadence still hears a disarm and is serviceScanHealth()'s to retry.
       // Checked after every scanner call above and BEFORE the output is derived,
@@ -429,6 +429,7 @@ namespace alc
       if (!m_fire.LiveInProgress()) {
         stateBeforeHealthCheck = m_arming.State();
         if (m_arming.ServiceScannerHealth()) {
+          latchFaultDisplay();
           logArmingFailure(FailureSource::Sequence);
           LOG_INF("Arm state: Inactive%s (uptime %lld ms).", (stateBeforeHealthCheck == ArmState::Arming) ? " - arming cancelled" : "",
                   k_uptime_get());
@@ -436,8 +437,8 @@ namespace alc
       }
 
       // The arming is acknowledged only now, after the cadence gate and the
-      // scanner check: either can undo it on the tick it completed, and LED A
-      // must never report Armed for a device the fail-safe has just disarmed.
+      // scanner check: either can undo it on the tick it completed, and the red
+      // flash must never report Armed for a device the fail-safe has just disarmed.
       if (armedThisTick && m_arming.State() == ArmState::Active) { playLedPattern(LedPattern::RedFlash); }
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
@@ -457,12 +458,13 @@ namespace alc
       // no longer be trusted. Acted on here, not there, for the same reason as the
       // trigger latch below: the disarm path re-enters updateOutputState(). This
       // is the ordinary disarm - pins isolated first, Inactive, test restarted -
-      // with no LED A acknowledgement.
+      // with no confirmation; the device-disarmed orange latch shows instead.
       if (m_switch_fault_pending) {
         m_switch_fault_pending = false;
         if (m_arming.State() == ArmState::Active) {
           LOG_WRN("Fire switch fault while armed - disarmed (fail safe).");
           (void)disarmDevice();
+          latchFaultDisplay();
         }
       }
 
@@ -473,6 +475,7 @@ namespace alc
       if (m_engine.TakeTriggerComplete() && m_arming.State() == ArmState::Active) {
         LOG_WRN("Trigger complete - latched Inactive. Re-arming needs an engineer command.");
         (void)disarmDevice();
+        latchFaultDisplay();
       }
 
       // Compute the LED levels HERE, once, so the log below reports what is
@@ -781,6 +784,11 @@ namespace alc
     bool cancelled { m_arming.Disarm() };
 
     logArmingFailure(FailureSource::Sequence);
+
+    // A red flash still playing (arming completed, or an armed replay, under
+    // 3 s ago) must not carry on over a disarmed device - and, since it outranks
+    // the orange triple, it would also swallow a Disarm's confirmation.
+    cancelRedFlash();
 
     // Deliberately says nothing about the LEDs: the main loop logs their actual
     // applied values.
@@ -1199,7 +1207,7 @@ namespace alc
         if (event.armed) {
           LOG_WRN("TRIGGER PENDING: firing in %u s. Deactivating cancels it.", event.seconds);
         } else {
-          LOG_INF("TEST trigger pending: LED B in %u s.", event.seconds);
+          LOG_INF("TEST trigger pending: red in %u s.", event.seconds);
         }
         break;
 
@@ -1219,7 +1227,7 @@ namespace alc
 
       case DetectionEventType::DelayExpired:
         // Armed, the output assertion itself is what gets logged, as before.
-        if (!event.armed) { LOG_INF("TEST delay elapsed - LED B on."); }
+        if (!event.armed) { LOG_INF("TEST delay elapsed - red on."); }
         break;
 
       case DetectionEventType::DelayExpiredScanLostSuppressed:
@@ -1371,6 +1379,12 @@ namespace alc
             m_clock.MinuteOfDay(uptimeSecs) / 60U, m_clock.MinuteOfDay(uptimeSecs) % 60U);
 
     if (m_access.Advance(m_clock, uptimeSecs) < 0) { LOG_ERR("Day rollover could not be persisted after the time sync!"); }
+
+    // An applied time sync is an accepted, authenticated command: it clears the
+    // device-disarmed latch and is confirmed by the orange triple. Green then
+    // turns from steady (clock not set) to its slow flash.
+    m_fault_display_latched = false;
+    playLedPattern(LedPattern::OrangeTriple);
   }
 
   void App::handleCommandCandidate(const CommandScanner::Candidate& candidate, int64_t uptimeSecs)
@@ -1389,6 +1403,12 @@ namespace alc
       LOG_WRN("Command rejected: %s (failures %u).", verdictName(evaluation.verdict), m_access.ConsecutiveFailures());
       return;
     }
+
+    // Any ACCEPTED command - whatever it then does, including an ignored or
+    // replayed one - clears the device-disarmed latch. A rejected one never
+    // reaches here, so it shows nothing and leaves the latch set.
+    if (m_fault_display_latched) { LOG_INF("Accepted command - device-disarmed indication cleared."); }
+    m_fault_display_latched = false;
 
     // Decoded field by field on purpose: when a slider produces the wrong byte
     // this is where you see it, rather than inferring it from an LED. Arm and
@@ -1451,7 +1471,7 @@ namespace alc
     }
 
     // Armed, and not a disarm: nothing changes - no settings, mode or trim - but
-    // LED A replays Armed so an engineer who did not know the state learns it.
+    // the red flash replays so an engineer who did not know the state learns it.
     // The command authenticated, so this is not a breach of silence on failure.
     if (decision.action == ArmAction::ReplayArmed) {
       LOG_INF("Armed: %s from slot %u n %u changes nothing - replaying Armed.", protocol::CommandTypeName(command.type), evaluation.slot,
@@ -1502,10 +1522,8 @@ namespace alc
         // way to reset a long cooldown or delay (amendment section 3.1). A
         // disarm carries no settings.
         //
-        // The double blink means a pending TRIGGER was cancelled, so it plays
-        // only for an ARMED delay, read before disarming. Cancelling a test
-        // delay is not a cancelled trigger, and while Arming the engine runs
-        // disarmed, so a cancelled arming plays the plain Disarmed flash.
+        // Confirmed by the orange triple in every case. A cancelled armed
+        // trigger is told apart in the log only, read before disarming.
         if (disarmDevice()) { LOG_INF("Arming cancelled by slot %u n %u.", evaluation.slot, evaluation.n); }
         pattern = LedPattern::OrangeTriple;
         if (armedDelayWasPending) { LOG_WRN("Disarmed with a trigger PENDING - the trigger is cancelled."); }
@@ -1516,14 +1534,15 @@ namespace alc
         // already stored, never the command's own settings fields.
         //
         // Only the exit delay starts here. The pins stay isolated and NOTHING is
-        // acknowledged: LED A stays silent until the main loop's Service() has
-        // restarted detection armed and enabled the pins. A failure then fails
-        // safe to the warning, not to LED A.
+        // acknowledged: red stays steady through the exit delay, and the red
+        // flash plays only once the main loop's Service() has restarted
+        // detection armed and enabled the pins. A failure fails safe to the
+        // orange warning instead.
         //
         // NO SCANNER, NO ARMING. From Inactive the sequence refuses the Arm when
         // the scanner is not running and has already raised the warning; the
         // refusal is logged here from its recorded failure. Nothing else follows:
-        // no continuous scan, no LED A, no exit delay.
+        // no continuous scan, no exit delay - only the orange warning.
         if (!m_arming.BeginArming(k_uptime_get())) {
           if (armStateBefore == ArmState::Inactive) {
             logArmingFailure(FailureSource::ArmCommand);
@@ -1558,11 +1577,11 @@ namespace alc
         break;
 
       case ArmAction::Fire: {
-        // Active fires live; Inactive rehearses (LED B only). FireSequence starts
+        // Active fires live; Inactive rehearses (red only, while disarmed). FireSequence starts
         // its 10 s unstoppable countdown and, at expiry, asserts for one detection
         // hold period before self-terminating. The pins are already live for a
-        // live fire (the device is Active); a rehearsal never touches them. NO LED
-        // A pattern here - the confirmation advert below is the acknowledgement.
+        // live fire (the device is Active); a rehearsal never touches them. No
+        // overlay here - the confirmation advert below is the acknowledgement.
         bool live { m_arming.State() == ArmState::Active };
         uint8_t confirmUuid[protocol::M_UUID_BYTES];
 
@@ -1586,7 +1605,7 @@ namespace alc
         }
 
         // Return, not break: FIRE applied no settings, so the shared "Applied:"
-        // settings log below would be misleading. There is no LED A pattern.
+        // settings log below would be misleading. There is no overlay.
         return;
       }
 
@@ -1628,6 +1647,20 @@ namespace alc
     // ISR context. gpio_pin_set_dt() is ISR-safe on the nRF GPIO driver. The
     // only writer of all three LEDs while the overlay plays.
     (void)self->applyLeds(OverlayLevels(self->m_led_sequencer.Current(), self->m_led_sequencer.Level(now)));
+  }
+
+  void App::cancelRedFlash()
+  {
+    // Same stop-then-touch order as playLedPattern(). Any other overlay carries on.
+    k_timer_stop(&m_led_timer);
+    m_led_sequencer.Cancel(LedPattern::RedFlash);
+    if (m_leds_initialised && m_led_sequencer.IsActive(k_uptime_get())) { k_timer_start(&m_led_timer, K_NO_WAIT, K_MSEC(M_LED_TICK_MS)); }
+  }
+
+  void App::latchFaultDisplay()
+  {
+    m_fault_display_latched = true;
+    LOG_INF("Device disarmed itself - orange until the next accepted command.");
   }
 
   int App::applyLeds(const LedLevels& levels)

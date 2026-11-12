@@ -14,8 +14,8 @@ namespace alc
     Disarm,      ///< -> Inactive. From Active the only state change a command can make; Arming: cancels; Inactive: restarts the test.
     Arm,         ///< Inactive -> Arming (then Active after the exit delay) with the STORED settings.
     Tune,        ///< Inactive stays Inactive; the command's settings applied and the test restarted.
-    ReplayArmed, ///< Armed, and the command does not disarm. State unchanged; LED A replays Armed.
-    Fire,        ///< Active: fires (live). Inactive: rehearsal (LED B only). Never while Arming.
+    ReplayArmed, ///< Armed, and the command does not disarm. State unchanged; the red flash replays.
+    Fire,        ///< Active: fires (live). Inactive: rehearsal (red LED only). Never while Arming.
   };
 
   struct ArmDecision
@@ -44,14 +44,14 @@ namespace alc
    * | Inactive  | Disarm   | Stay Inactive, restart test   | no       | no   | yes  |
    * | Inactive  | Settings | Tune                          | yes      | slot 0 only | yes |
    * | Active    | FIRE     | Fire (live, one-shot)         | no       | no   | yes  |
-   * | Inactive  | FIRE     | Fire (rehearsal, LED B only)  | no       | no   | yes  |
+   * | Inactive  | FIRE     | Fire (rehearsal, red only)    | no       | no   | yes  |
    * | Arming    | FIRE     | Ignore - nothing, no confirmation | no   | no   | no   |
    *
    * **An armed device has only two ways out of the armed state: a disarm
    * command, or firing** (App latches Inactive when the output period ends).
    * Power loss also leaves it Inactive, because cold start is Inactive. Arm and
    * Settings sent to an armed device change nothing but replay the Armed state
-   * on LED A, so an engineer who does not know the state learns it.
+   * on the red LED, so an engineer who does not know the state learns it.
    *
    * Arm and Disarm carry no settings: arming uses exactly the settings already
    * stored, never the command's own settings fields.
@@ -59,7 +59,7 @@ namespace alc
    * App::applyCommand() must act on this decision and on nothing else.
    *
    * Arming is treated as armed for command policy, except that nothing is
-   * replayed: LED A has not acknowledged the arm yet, so a replay would reveal
+   * replayed: the red flash has not acknowledged the arm yet, so a replay would reveal
    * the state early and an Arm must not restart the exit delay.
    *
    * @param state              The device's arm state now.
@@ -77,7 +77,7 @@ namespace alc
       // Arming: only Disarm acts during the exit delay. No confirmation.
       if (state == ArmState::Arming) { return decision; }
 
-      // Active fires live; Inactive rehearses on LED B only. App decides which
+      // Active fires live; Inactive rehearses on the red LED only. App decides which
       // from the arm state; the policy just returns Fire for both.
       decision.action    = ArmAction::Fire;
       decision.trimClock = true;
@@ -100,7 +100,7 @@ namespace alc
 
     if (state == ArmState::Active) {
       // Arm or Settings while armed: no settings, no mode, no trim, no re-arm.
-      // LED A replays Armed so an engineer who did not know the state learns it.
+      // The red flash replays so an engineer who did not know the state learns it.
       decision.action = ArmAction::ReplayArmed;
       return decision;
     }

@@ -103,5 +103,19 @@ void run_led_sequencer_tests()
   assert(leds.Start(LedPattern::OrangeTriple, M_START + M_GAP + 3000 + M_GAP));
   assert(leds.Current() == LedPattern::OrangeTriple);
 
+  // A disarm cancels a red flash still playing, so a disarmed device never
+  // shows the armed pattern and the disarm's confirmation can play.
+  leds.Stop();
+  assert(leds.Start(LedPattern::RedFlash, M_START));
+  leds.Cancel(LedPattern::RedFlash);
+  assert(!leds.IsActive(M_START + 100));
+  assert(leds.Start(LedPattern::OrangeTriple, M_START + 100));
+
+  // Cancel leaves any other pattern playing.
+  assert(leds.Start(LedPattern::OrangeSteady, M_START + 200));
+  leds.Cancel(LedPattern::RedFlash);
+  assert(leds.Current() == LedPattern::OrangeSteady);
+  assert(leds.IsActive(M_START + 300));
+
   printf("led sequencer: OK\n");
 }

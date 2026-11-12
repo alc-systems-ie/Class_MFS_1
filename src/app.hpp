@@ -104,10 +104,9 @@ namespace alc
       // BeginArming().
       void logArmingFailure(FailureSource source);
 
-      // The warning (arming sequence amendment section 4). Logs, and - until the
-      // dedicated warning light is chosen - plays three long pulses on LED B in
-      // every build, replacing any warning already playing. The one place a
-      // dedicated pin is wired later. Must not call back into m_arming.
+      // The warning (arming sequence amendment section 4). Logs, and plays orange
+      // steady for 3 s in every build, outranking any other overlay (three-LED
+      // spec section 3.2). Must not call back into m_arming.
       void signalWarning(const char* reason, int result);
 
       // ArmingActions - see arming_sequence.hpp for each contract.
@@ -210,6 +209,14 @@ namespace alc
       // outranked by the one playing is dropped - see LedSequencer::Start().
       void playLedPattern(LedPattern pattern);
 
+      // Stops a red flash still playing; any other overlay carries on. Called on
+      // every disarm, so a disarmed device never shows the armed pattern.
+      void cancelRedFlash();
+
+      // Sets m_fault_display_latched: the device disarmed itself. Called only at
+      // the armed-trigger, switch-fault and scanner-loss disarms in Run().
+      void latchFaultDisplay();
+
       // k_timer expiry: renders all three LEDs while an overlay plays, then stops itself.
       static void ledTimerHandler(struct k_timer* timer);
 
@@ -291,7 +298,7 @@ namespace alc
 
       // The FIRE command's 10 s unstoppable countdown and bounded assertion
       // window. Serviced every main-loop tick; its live latch is ORed into the
-      // output in updateOutputState() and its rehearsal latch lights LED B. It
+      // output in updateOutputState() and its rehearsal latch lights red. It
       // self-terminates through the engine one-shot - no second disarm path.
       FireSequence m_fire;
 

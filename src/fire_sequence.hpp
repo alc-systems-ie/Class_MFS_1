@@ -24,7 +24,7 @@ namespace alc
    *
    * `live` (set by Start()) decides which latch the Firing state sets -
    * FireLatched() for a live fire, consumed by App::updateOutputState() to
-   * drive the fire pins; RehearsalFired() for a rehearsal, which lights LED B
+   * drive the fire pins; RehearsalFired() for a rehearsal, which lights the red LED while disarmed
    * only - and also gates LiveInProgress()/AcceptsDisarm(): amendment §4's
    * uninterruptible-by-Disarm carve-out applies to a LIVE fire only, so a
    * rehearsal countdown or its assertion window remains interruptible.
@@ -80,7 +80,7 @@ namespace alc
       /** @brief True only during Firing, and only for a live fire - the only output App::updateOutputState() ORs in. */
       bool FireLatched() const { return m_state == FireState::Firing && m_live; }
 
-      /** @brief True only during Firing, and only for a rehearsal - LED B only, never the fire pins. */
+      /** @brief True only during Firing, and only for a rehearsal - the red LED only, never the fire pins. */
       bool RehearsalFired() const { return m_state == FireState::Firing && !m_live; }
 
       /** @brief True once a fire-switch fault aborted the countdown before it fired. */

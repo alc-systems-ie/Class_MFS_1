@@ -14,7 +14,7 @@ namespace alc
    * the activity to inactivity cycle itself and acknowledges its own interrupts,
    * so the host needs no timer. The AWAKE status bit is mapped to INT1, which
    * therefore asserts on motion and de-asserts after the configured stillness
-   * period. That signal is the LED B timeout — see docs/v1-scope.md section 1.
+   * period. That signal feeds the detection engine — see docs/v1-scope.md section 1.
    *
    * @warning INT2 is deliberately configured to **never assert**. On the Drawer
    *          Master board it is wired to the nPM2100 SHPHLD pin, where a sustained
