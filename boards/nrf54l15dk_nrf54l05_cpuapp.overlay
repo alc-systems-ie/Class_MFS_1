@@ -1,7 +1,10 @@
 /*
  * Project CLASS MFS_1 pin map — CLASS MFS hardware, first full revision
- * (2026-11-10). nRF54L05 + nPM2100 + ADXL367 + OPT3001. No nRF21540 FEM.
+ * (2026-11-10). nRF54L05 + nPM2100 + ADXL367 + OPT3001 + nRF21540 FEM.
  *
+ * SPI (spi30) - nRF21540 FEM:   SCK P0.03, MOSI P0.02, MISO P0.01, CS P0.00.
+ * nRF21540 control:             PDN P0.04, TX_EN P1.09, RX_EN P1.10, MODE P1.11.
+ *                               Pinout as alc_drawer_master; MPSL drives it.
  * I²C 1 (i2c21) - nPM2100:      SCL P1.04, SDA P1.05, addr 0x74.
  * I²C 2 (i2c22) - ADXL367:      SCL P1.08, SDA P1.07, addr 0x1D.
  *                 OPT3001:      same bus (not used by v1 firmware).
@@ -57,6 +60,42 @@
             low-power-enable;
         };
     };
+
+    /* ─── spi30 → nRF21540 FEM ───
+     * spi30, not spi22: P0 is in the 30-series peripheral/clock domain on
+     * nRF54L, and spi22 silently cannot reach P0 pads even though pinctrl
+     * writes succeed (alc_drawer_master). */
+    spi30_default: spi30_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK,  0, 3)>,
+                    <NRF_PSEL(SPIM_MOSI, 0, 2)>,
+                    <NRF_PSEL(SPIM_MISO, 0, 1)>;
+        };
+    };
+
+    spi30_sleep: spi30_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK,  0, 3)>,
+                    <NRF_PSEL(SPIM_MOSI, 0, 2)>,
+                    <NRF_PSEL(SPIM_MISO, 0, 1)>;
+            low-power-enable;
+        };
+    };
+};
+
+&spi30 {
+    status = "okay";
+    pinctrl-0 = <&spi30_default>;
+    pinctrl-1 = <&spi30_sleep>;
+    pinctrl-names = "default", "sleep";
+    cs-gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
+
+    nrf_radio_fem_spi: nrf21540_fem_spi@0 {
+        compatible = "nordic,nrf21540-fem-spi";
+        status = "okay";
+        reg = <0>;
+        spi-max-frequency = <8000000>;
+    };
 };
 
 &i2c22 {
@@ -100,6 +139,25 @@
 };
 
 / {
+    /* nRF21540 front-end module. MPSL finds it by the nrf_radio_fem label and
+     * drives it for every radio event: PA on transmit, LNA on receive, powered
+     * down (PDN low, 45 nA) otherwise. Until 2026-11-12 the firmware believed
+     * the FEM was not fitted and never declared it, so it sat powered down in
+     * the RF path: range was ~5 m on the ground (tools/range_pong). There is
+     * no bypass mode - the LNA must be on for the device to hear commands.
+     * Cost: docs/power-budget.md section 5. */
+    nrf_radio_fem: nrf21540_fem {
+        compatible  = "nordic,nrf21540-fem";
+        tx-en-gpios = <&gpio1  9 GPIO_ACTIVE_HIGH>;
+        rx-en-gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
+        pdn-gpios   = <&gpio0  4 GPIO_ACTIVE_HIGH>;
+        mode-gpios  = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+        spi-if      = <&nrf_radio_fem_spi>;
+        /* Required by the nRF21540 built-in power model, or the build fails.
+         * 3000 mV as every Nordic reference design; the FEM runs from VOUT. */
+        supply-voltage-mv = <3000>;
+    };
+
     /* Application-side control GPIOs that don't belong to a standard driver
      * binding. Access from C++ via e.g.:
      *   GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), adxl_int1_gpios)
@@ -176,8 +234,9 @@
  * load-capacitance-femtofarad must be a multiple of 250 fF per the
  * nordic,nrf54l-hfxo binding enum.
  *
- * NOTE: that trim was measured with the FEM in TX state. MFS_1 has no FEM, so
- * re-verify the residual on this build before relying on it.
+ * NOTE: that trim was measured on the Drawer Master board, with the FEM in TX
+ * state. MFS_1 also has the FEM, but its layout differs, so re-verify the
+ * residual on this board before relying on it.
  */
 &hfxo {
     load-capacitance-femtofarad = <14000>;

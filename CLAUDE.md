@@ -24,9 +24,12 @@ challenge/response authentication replaced by **day keys** issued per engineer,
 per device, per day (`docs/tan-scheme.md`, rewritten 2026-09-13).
 
 Hardware is the **CLASS MFS board** (first full revision, brought up 2026-11-10):
-**nRF54L05 + nPM2100 + ADXL367 + OPT3001**, no FEM, board target
-`nrf54l15dk/nrf54l05/cpuapp`. It began as the `alc_drawer_master` board minus the
-FEM; its pin map (below) is now its own. Earlier bench work (everything before
+**nRF54L05 + nPM2100 + ADXL367 + OPT3001 + nRF21540 FEM**, board target
+`nrf54l15dk/nrf54l05/cpuapp`. It began as the `alc_drawer_master` board, and the
+FEM keeps that board's pinout; the rest of its pin map (below) is now its own.
+(Until 2026-11-12 this file wrongly said the FEM was not fitted, so the firmware
+left it powered down in the RF path and range was ~5 m — see
+`docs/power-budget.md` §5.) Earlier bench work (everything before
 2026-11-10) ran on a Drawer Master board or a bare DK with the old map.
 
 | Decision | Value |
@@ -34,11 +37,11 @@ FEM; its pin map (below) is now its own. Earlier bench work (everything before
 | Sleep architecture | **System ON idle + RTC wake** — *not* nPM2100 Hibernate |
 | Scan | **100 ms passive every 5.970 s** (1.675% RX duty cycle) |
 | ADXL367 | Continuous measurement mode, 100 Hz ODR |
-| nRF21540 FEM | **Not fitted** — costs 3 dB TX (+7 dBm native vs +10 dBm) |
+| nRF21540 FEM | **Fitted, driven by MPSL** — LNA on for every scan (no bypass mode), POUTB +10 dBm on TX |
 | Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version 0x03 with an explicit command type |
 | Day boundary | **04:00 UTC**, no multi-day validity window |
 | Timekeeping | **LFXO** 32.768 kHz (fitted), GRTC-sourced. **No external RTC** (BOM, reaffirmed 2026-09-13). Invalid on every boot until provisioner sync |
-| Battery | CR123A, ~2.4 year expected life at ~69 µA average |
+| Battery | CR123A, **~1.4 year** expected life at ~117 µA average (69 µA + 49 µA FEM LNA) |
 
 Full derivation, component figures with citations, and the reasoning behind each
 choice: **`docs/power-budget.md`**. Read it before changing the duty cycle, the
@@ -61,6 +64,8 @@ specific numeric constraint recorded there.
 | LED1 | P2.02 | **Undriven** — see open item below |
 | nPM2100 GPIO0 | P1.06 | Unused |
 | nPM2100 RESET | P2.00, active low | Unused |
+| nRF21540 SPI (`spi30`) | SCK P0.03, MOSI P0.02, MISO P0.01, CS P0.00 | MPSL FEM driver (as `alc_drawer_master`) |
+| nRF21540 PDN / TX_EN / RX_EN / MODE | P0.04 / P1.09 / P1.10 / P1.11 | MPSL FEM driver |
 
 **OPEN — P2.02.** The board pin list gives P2.02 as both LED1 and nPM2100
 GPIO_1. The firmware leaves it undriven until the schematic settles it.
@@ -206,8 +211,13 @@ Constraints from that analysis that are easy to violate by accident:
   design originally proposed budgets at 815 µA — about 74 days on a CR123A.
 - **Hibernate_PT cannot power the ADXL367** — it force-disables LDOSW and resets
   the PMIC registers. Only plain Hibernate can hold LSOUT up in ULP mode.
-- **Never enable an nRF21540 LNA for scanning** in any future FEM-equipped
-  variant — +5 mA at 1.675% duty is +83.8 µA, more than doubling the whole budget.
+- **The nRF21540 LNA must stay on for scanning** (reversed 2026-11-12). The FEM
+  has no bypass mode; powered down it blocks reception (~5 m range, measured).
+  The LNA costs 2.9 mA × 1.675% = **+48.6 µA**, taking life from 2.4 to ~1.4
+  years. Never remove the `nrf_radio_fem` node or `CONFIG_MPSL_FEM` to save
+  power — making the LNA an app-set option is the sanctioned route
+  (`docs/todo.md`). **POUTB (+10 dB) only** on transmit, for Irish EIRP
+  compliance.
 - **The counterpart's advertising interval is not ours to set.** Measured
   (2026-09-14, `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`
   §1): **187.5 ms, steady**, from a Mac (`CoreBluetooth`, foreground); **~35 ms,

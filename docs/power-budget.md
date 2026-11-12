@@ -15,13 +15,13 @@ them.
 | Scan period | **5970 ms** (5.970 s since 2026-09-14, see scan-reliability amendment) | `CONFIG_MFS_SCAN_PERIOD_MS=5970` |
 | Scan window | **100 ms** passive | 1.675% RX duty cycle (5970 ms period); detection margin per §6 |
 | ADXL367 | Continuous measurement mode | Always-on motion detect, 100 Hz ODR |
-| nRF21540 FEM | **Not fitted in this version** | Costs 3 dB TX; saves BOM and risk — see §5 |
+| nRF21540 FEM | **Fitted; LNA on for every scan** (corrected 2026-11-12) | No bypass mode — without the LNA the device hears commands at ~5 m. Costs ~49 µA — see §5 |
 | Battery | CR123A (3.0 V Li-MnO2) | ~1450 mAh usable behind the nPM2100 |
 | Access scheme | **Day keys**, derived on demand, expire at day end | Rewritten 2026-09-13 from per-day paper TAN sheets - a lost key compromises one day only, `docs/tan-scheme.md` §1-2, superseding §8.1 below |
 | Access persistent state | **`day` (2 bytes) + `next[8]` (32 bytes)** | Sequence number per slot, not a consumed bitmap; horizon is unbounded, not 1 or 3 years — `docs/tan-scheme.md` §6.2, superseding §8.2 below |
 | Day boundary | **04:00 UTC**, no multi-day window | Keeps clock error out of working hours — §8.5 |
 | Timekeeping | **LFXO** — Abracon ABS06N, CL 9 pF | ±20–50 ppm; load cap set, trim pending — §8.5.3 |
-| Expected life | **~2.4 years** | Bracket 2.2–2.7 years, §3 |
+| Expected life | **~1.4 years** with the FEM LNA (2.4 years without) | Bracket 1.3–1.5 years, §3 and §5 |
 
 ## 2. Component reference figures
 
@@ -39,8 +39,9 @@ them.
 | ADXL367 measurement mode, 100 Hz ODR | 0.89 µA @ 2.0 V | ADXL367 Datasheet, supply current |
 | ADXL367 motion-triggered wake-up mode | 181 nA | ADXL367 Datasheet |
 | ADXL367 standby | 40 nA | ADXL367 Datasheet |
-| nRF21540 RX (LNA active) — *not fitted, §5* | ~5 mA | nRF21540 Product Specification |
-| nRF21540 standby — *not fitted, §5* | ~0.4 µA | nRF21540 Product Specification |
+| nRF21540 RX (LNA active), 13 dB gain, NF 2.7 dB | 2.9 mA typ @ 3 V | nRF21540 Product Specification, I<sub>RX</sub> (corrected 2026-11-12; was quoted as ~5 mA) |
+| nRF21540 power down (PDN low) | 45 nA typ | nRF21540 PS, I<sub>PD</sub> (was quoted as ~0.4 µA standby) |
+| nRF21540 TX at +10 dBm (POUTB) | 38 mA typ | nRF21540 PS, I<sub>TX_10dBm</sub> |
 | nRF54L05 max TX power (QFN) | +7 dBm | nRF54L05 product page |
 | nRF54L05 RX sensitivity, LE 1M | −96 dBm | nRF54L05 product page |
 
@@ -86,9 +87,16 @@ System ON idle, 100 ms passive scan every 5970 ms. Duty cycle 100/5970 = 1.675%
 | nRF54L05 System ON idle (RAM retention + RTC) | continuous | 2.5 µA |
 | ADXL367, autosleep in wake-up mode while still | continuous | 0.2 µA |
 | nPM2100 quiescent (pass-through / ULP) | continuous | 0.3 µA |
-| **Total** | | **≈ 68.8 µA** (was ≈ 69.9 µA at 5876 ms) |
+| **Total, without the FEM** | | **≈ 68.8 µA** (was ≈ 69.9 µA at 5876 ms) |
+| nRF21540 LNA during each scan window (added 2026-11-12, §5) | 2.9 mA × 1.675% | **48.6 µA** |
+| **Total, with the FEM LNA** | | **≈ 117.4 µA** |
 
-**1450 mAh ÷ 0.0688 mA = 21,076 h ≈ 878 days ≈ 2.4 years.** (Was 1450 mAh ÷
+**With the FEM LNA (the configuration since 2026-11-12): 1450 mAh ÷ 0.1174 mA =
+12,351 h ≈ 515 days ≈ 1.4 years.** The rest of this section, and the measurements
+below, predate the discovery that the FEM is fitted; they are the no-FEM
+figures, and §5 adds the LNA on top.
+
+**Without the FEM: 1450 mAh ÷ 0.0688 mA = 21,076 h ≈ 878 days ≈ 2.4 years.** (Was 1450 mAh ÷
 0.0699 mA = 20,745 h ≈ 864 days at 5876 ms, and 1450 mAh ÷ 0.0685 mA = 21,170 h
 ≈ 882 days ≈ 2.4 years at the original 6000 ms — the longer period claws back
 most of the 5876 ms penalty: it now costs only about 4 days across the service
@@ -188,17 +196,22 @@ Bracket on the soft numbers:
 | Planning | As tabulated above | 69 µA | **2.4 years** |
 | Worst | Measured RX 4.0 mA, idle 3.0 µA, 8 ms scan overhead | 75 µA | 2.2 years |
 
-**The scan is ~91% of the budget.** Trimming the ADXL ODR and tuning RAM
-retention together move the total by under 2 µA. Duty cycle is the only lever
-with real authority — dropping the FEM entirely (§5) bought 0.4 µA, about five
-days.
+Adding the FEM LNA's 48.6 µA (§5) to each row: best 111 µA → 1.5 years,
+**planning 117 µA → 1.4 years**, worst 124 µA → 1.3 years.
+
+**The scan is ~91% of the no-FEM budget, ~97% with the LNA.** Trimming the ADXL
+ODR and tuning RAM retention together move the total by under 2 µA. Duty cycle is
+the only lever with real authority; every scan millisecond now costs the LNA's
+2.9 mA on top of the SoC's 3.8 mA.
 
 Routes to 3 years, if the requirement changes:
 
-| Change | Average | Life |
-|--------|---------|------|
-| 100 ms every **8 s** | 53.0 µA | 3.1 years |
-| **75 ms** every 6 s | 53.5 µA | 3.1 years |
+| Change | Average, no FEM | Life | Average, FEM LNA | Life |
+|--------|---------|------|---------|------|
+| 100 ms every **8 s** | 53.0 µA | 3.1 years | 89.3 µA | 1.9 years |
+| **75 ms** every 6 s | 53.5 µA | 3.1 years | 89.8 µA | 1.8 years |
+
+Any period or window change must be re-checked with `tools/scan_phase_check.py`.
 
 ## 4. Why System ON idle, not nPM2100 Hibernate
 
@@ -234,34 +247,50 @@ Hibernate (320 nA, not 175 nA) can hold LDOSW on in Ultra-Low Power mode to keep
 the ADXL367 supplied so it can assert INT2 → SHPHLD. `alc_drawer_master`
 documents this same trap in its hand-off notes.
 
-## 5. nRF21540 FEM — removed in this version
+## 5. nRF21540 FEM — fitted, LNA on for every scan
 
-The FEM is **not fitted** on MFS_1. What that costs and saves:
+**Corrected 2026-11-12.** This section previously said the FEM was not fitted
+on MFS_1. It is: the CLASS MFS board carries the nRF21540 with the
+`alc_drawer_master` pinout (SPI on `spi30`: SCK P0.03, MOSI P0.02, MISO P0.01,
+CS P0.00; PDN P0.04, TX_EN P1.09, RX_EN P1.10, MODE P1.11). Because the firmware
+believed otherwise it never declared the FEM, so the nRF21540 sat **powered down
+in the RF path** — attenuating both directions.
 
-**Battery: nothing meaningful.** It removes only the 0.4 µA standby — about five
-days of the 878. The LNA was already specified off during the scan (below), so
-there was no scan-path saving to make.
+**Measured (2026-11-12, `tools/range_ping` on a Thingy:53 at +20 dBm,
+`tools/range_pong` on the MFS board, Coded PHY S8).** With the FEM powered down
+the MFS heard pings to only ~5 m with the board on the ground and ~20 m at waist
+height. With MPSL driving the FEM (LNA on receive, POUTB on transmit) **every
+ping was received** over the same walk.
 
-**Link budget: −3 dB on transmit.** The nRF54L05's native maximum is +7 dBm
-(QFN) against the +10 dBm at antenna that `alc_drawer_master` achieves via
-nRF21540 POUTB. Receive is unchanged at −96 dBm (LE 1M) sensitivity. Coded PHY
-S=8 remains available and contributes far more (+12 dB coding gain vs LE 1M) than
-the 3 dB lost, so the link stays comfortable — but any range figure inherited from
-`alc_drawer_master` must be re-derated by 3 dB.
+**There is no bypass mode.** The nRF21540's states are power down, program, RX
+(LNA) and TX (PA); a powered-down part is not a through path. So the choice is
+LNA on for every scan or a device that hears commands at a few metres. The
+firmware now declares the FEM (`nrf_radio_fem` in the board overlay,
+`CONFIG_MPSL_FEM=y` in `prj.conf`) and MPSL engages the LNA for every scan
+window. Making this an app-set option is tracked in `docs/todo.md`.
 
-**Simplification, which is the real reason.** No MPSL FEM Kconfig, no `spi30`, no
-TX_EN/RX_EN/PDN/MODE GPIOs, no `supply-voltage-mv` build trap, smaller BOM and
-board. It also removes the standing risk recorded below.
+### Cost
 
-### Why the LNA was never going to be used
+| State | Current (nRF21540 PS, 3 V) | Duty | Average |
+|---|---|---|---|
+| RX, LNA on | 2.9 mA | 100 ms / 5970 ms = 1.675% | **48.6 µA** |
+| Power down | 45 nA | ~98% | 0.04 µA |
+| PG (transition) | 1.1 mA | µs per scan | negligible |
+| TX, +10 dBm (POUTB) | 38 mA | FIRE confirmation burst only | negligible |
 
-Retained for the record, and because it applies to any future FEM-equipped
-variant: the nRF21540 LNA draws ~5 mA when active. Enabled across the 100 ms scan
-window it would add 5 mA × 1.675% = **83.8 µA** — more than doubling the total
-budget and cutting life to roughly 10 months. Any FEM-equipped variant of this
-design must keep the LNA off for the periodic scan and engage the FEM only for the
-transmit/connect burst following a detected event, at POUTB (+10 dB) per the Irish
-EIRP allocation.
+**+48.6 µA: 68.8 µA → 117.4 µA, 2.4 years → ~1.4 years** on the 1450 mAh
+CR123A. Continuous-scan periods (the 10 s arming exit delay, a pending armed
+trigger) run the LNA continuously too, but are rare enough not to move the
+average.
+
+The earlier version of this section put the LNA at ~5 mA and +83.8 µA. The
+Product Specification gives 2.9 mA typical, so the real cost is about 42% lower
+than feared — though still the largest single change this budget has seen.
+
+**Transmit.** POUTB (+10 dB) only, per the Irish EIRP allocation: the controller
+splits the requested +10 dBm at the antenna (`CONFIG_BT_CTLR_TX_PWR_ANTENNA=10`)
+into 0 dBm from the SoC plus 10 dB from the FEM. POUTA (+20 dB) is for bench
+tools only.
 
 ## 6. Detection probability at a 100 ms window
 

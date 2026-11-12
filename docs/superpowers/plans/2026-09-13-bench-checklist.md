@@ -361,6 +361,13 @@ fire line **is low / is not high**.
    ignored - no confirmation, no countdown, no LED - and the original arming
    still completes at its own 10 s deadline.
 
+## 5g. nRF21540 FEM in the main firmware (2026-11-12, `docs/power-budget.md` §5)
+
+- [ ] 1. Boot is clean with the FEM declared: no MPSL/FEM error, `Passive scan started` as before.
+- [ ] 2. Commands are heard at range: Arm and Disarm from the phone at 20 m+, board on the ground.
+- [ ] 3. Idle current on the PPK II over 10 min: expect ~117 µA at 3.0 V (was 68–75 µA without the LNA).
+- [ ] 4. FIRE confirmation burst still received by `tools/uuid_observer` (now +10 dBm through the PA).
+
 ## 9. Bench log
 
 ### 2026-09-14 — first bench session (J-Link 853003346, nRF54L05, device 0xFBACBE88)

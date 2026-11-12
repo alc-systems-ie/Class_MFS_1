@@ -164,8 +164,9 @@ must use the gated `triggered`, never the raw INT1 level.
 
 ### 1.1 Explicitly deferred
 
-No alarm transmission, no nightly status, no fuel gauge reporting, no FEM, no
-Coded PHY fallback. The BLE **connection** is also deferred — see §4.
+No alarm transmission, no nightly status, no fuel gauge reporting, no
+Coded PHY fallback. (The FEM was listed here until 2026-11-12, when it turned out
+to be fitted: it is now driven by MPSL, LNA on for every scan — `docs/power-budget.md` §5.) The BLE **connection** is also deferred — see §4.
 
 ## 2. Hardware hazard — ADXL367 INT2 and PMIC SHPHLD
 
@@ -445,7 +446,9 @@ against Apple's recommended 211.25 ms interval. A later value, 5876 ms, passed
 the simulation but sat only 3 BLE units from its passing island's edge; the
 owner moved the default to 5970 ms, the middle of the wider 9537–9565 island.)
 Average current at 5970 ms recomputes to **~68.8 µA**, still ~2.4 years on a
-CR123A. See
+CR123A. **Amended 2026-11-12:** the ladder predates the FEM; its LNA adds
+2.9 mA × 100 ms = 290 µC per wake, so the 5970 ms default is ~117 µA, ~1.4 years
+(`docs/power-budget.md` §5). See
 `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md` and
 `docs/power-budget.md` §3. The ladder above is otherwise unaffected — it is
 kept as the derivation record for the other nine cadences, none of which
