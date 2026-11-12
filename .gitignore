@@ -16,3 +16,6 @@ __pycache__/
 
 # macOS.
 .DS_Store
+
+# Fleet credentials (tools/gen_fleet_credentials.py) - device secrets. Never commit.
+secrets/
