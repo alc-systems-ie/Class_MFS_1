@@ -1,5 +1,9 @@
 # MFS_1 Command Types — Design Amendment
 
+> **LEDs superseded 2026-11-12.** Every LED A / LED B behaviour in this document is
+> replaced by `docs/superpowers/specs/2026-11-12-three-led-indication-design.md` (red /
+> orange / green, the same in every build). The rest of this document stands.
+
 **Date:** 2026-09-14 (bench session 1)
 **Amends:** `docs/superpowers/specs/2026-09-12-app-control-design.md` §2, §4, §4.1,
 §4.2, §6.4, §6.5, §6.7, §8.1, §8.2; `docs/tan-scheme.md` §3 (`protocolVersion`), §6.1,

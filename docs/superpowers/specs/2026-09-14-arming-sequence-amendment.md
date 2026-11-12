@@ -1,5 +1,9 @@
 # MFS_1 Arming Sequence and Fire-Pin Isolation — Design Amendment
 
+> **LEDs superseded 2026-11-12.** Every LED A / LED B behaviour in this document is
+> replaced by `docs/superpowers/specs/2026-11-12-three-led-indication-design.md` (red /
+> orange / green, the same in every build). The rest of this document stands.
+
 **Date:** 2026-09-14 (bench session 1)
 **Amends:** `docs/superpowers/specs/2026-09-14-disarmed-test-mode-amendment.md` §3, §3.3;
 `docs/superpowers/specs/2026-09-14-command-types-amendment.md` §2.2; the `OutputSwitch`

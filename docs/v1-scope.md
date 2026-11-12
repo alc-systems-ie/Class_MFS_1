@@ -19,15 +19,16 @@ design toward so that later work does not require rework.
 5. **Engineer's action is an authenticated command, not a toggle** — a single
    16-byte encrypted service UUID that asserts arm state and settings together
    (§4, `docs/tan-scheme.md`).
-6. **LEDs:**
-   - LED A **acknowledges accepted commands**
-     (`docs/superpowers/specs/2026-09-12-app-control-design.md` §6.7) — a bounded
-     pattern plays once per accepted command, rather than marking Inactive as a
-     standing state.
-   - LED B **shows detection in both arm states** — lit for about 5 s on every
-     detection, confirming a real trigger while Active or simulating one during
-     tuning while Inactive, that 5 s being the ADXL367 loop period rather than a
-     software timer.
+6. **LEDs** — three, red / orange / green (`docs/superpowers/specs/2026-11-12-three-led-indication-design.md`, superseding the
+   two-LED scheme of 2026-09-12 §6.7):
+   - **Green** while disarmed: steady until the provisioner time sync, then
+     500 ms on / 2500 ms off.
+   - **Red** steady through the 10 s exit delay, then a 3 s flash when armed; then
+     **nothing visible while armed**. Red also shows a simulated firing while
+     disarmed, for the window the output would be asserted if armed.
+   - **Orange**: a triple flash confirms an accepted command or time set; 3 s
+     steady for a refused arm or any fault; steady until the next accepted
+     command when the device disarmed itself (armed trigger, fail-safe).
 
 Also required, because it is how commands arrive: the 100 ms passive scan
 loop (every 6 s as originally scoped; now every 5970 ms, and continuous during the
@@ -60,9 +61,8 @@ BLE notification:
 - **Never re-derive the condition** at the consumer. `OutputSwitch` is the worked
   example: it is driven as `m_output_switch.Set(m_output_active);` from the
   derivation point itself, never from a second call site that could disagree with
-  it. LED B is **not** this example — it is a bench-only detection indicator
-  (`ledB = m_detection_met;`), lit in both arm states for tuning, and is gated out
-  of production builds.
+  it. The red simulated-firing LED is **not** this example — it is a display
+  (`DetectionMet() || RehearsalFired()`), shown only while disarmed.
 - **If the condition must change, change `updateOutputState()`**, so every consumer
   moves together and none is left behind.
 
@@ -82,7 +82,7 @@ precisely so no other translation unit can reach it.
 > fire-pin isolation:** `docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`
 > further supersedes the table and identifiers below. There is now a third arm
 > state, `ArmState::Arming`, between Inactive and Active: an accepted Arm starts
-> a 10 s exit delay (LED A dark, LED B suppressed) before the restart below
+> a 10 s exit delay (red steady, simulated firing masked) before the restart below
 > runs, and the fire pins are `GPIO_DISCONNECTED` at every other time, attached
 > only as the last step of a successful arm. The state lives in
 > `m_arming.State()` (`ArmingSequence`), set via `App::disarmDevice()` (which
@@ -117,7 +117,7 @@ deliberate in both directions:
 | 2. Restart: `ConfigureLoopMode()` — soft reset, bootstrap cycle, real thresholds | 2. `m_arming.State()` = `Inactive` (cancel any arming) |
 | 3. Confirm `AWAKE == 0` from STATUS | 3. `updateOutputState()` — output re-derives to 0 (pins already isolated) |
 | 4. Enable the fire pins — the last step | 4. Restart: reconfigure the ADXL367 afresh, test resumes from zero |
-| 5. `m_arming.State()` = `Active` only if every step succeeded, LED A plays Armed | |
+| 5. `m_arming.State()` = `Active` only if every step succeeded, red flashes 3 s, then dark | |
 
 Any arming-step failure fails safe: disable the fire pins, `Inactive`, restart
 the test disarmed, raise the warning
@@ -143,7 +143,7 @@ this is now defence in depth rather than a live hazard.)
 
 `enableAccelerometer()` **refuses to arm** if the part will not configure or its
 AWAKE state cannot be read. A device that reported itself armed with a dead sensor
-would be a silent loss of function; instead it stays Inactive with LED A lit.
+would be a silent loss of function; instead it stays Inactive with green lit.
 
 `m_ignore_stale_trigger` is kept as belt and braces: if the part is somehow awake
 in the moments between configuring and arming, the flag suppresses it until INT1
@@ -314,7 +314,7 @@ guidance does not govern them. And **AUTOSLEEP at step 7 is not optional** — i
 what moves the part between measurement and wake-up mode as the loop cycles, and
 AWAKE reports which of those states it is in.
 
-Using the ADXL's loop timing as the LED B timeout is deliberate — the hardware does
+Using the ADXL's loop timing as the detection hold (and so the red simulated-firing window) is deliberate — the hardware does
 the timing, so no software `k_timer` is needed.
 
 ### 3.2 Power-up sequencing
@@ -347,9 +347,9 @@ the provisioner time sync (`docs/tan-scheme.md` §6.1).
 So v1 is **advert-only**: the device scans, authenticates the command, applies it,
 and never transmits. This removes the entire connection stack from the first build.
 
-**Trade-off:** no acknowledgement to the phone over the radio — **LED A is the
-acknowledgement**. It plays a bounded pattern once an accepted command has taken
-effect (`docs/superpowers/specs/2026-09-12-app-control-design.md` §6.7), which is
+**Trade-off:** no acknowledgement to the phone over the radio — **the orange
+triple is the acknowledgement**. It plays once an accepted command has taken
+effect (`docs/superpowers/specs/2026-11-12-three-led-indication-design.md` §3.2), which is
 adequate on the bench and arguably preferable there. An outward connection, if ever
 needed, remains a later addition rather than something v1 is missing.
 
@@ -374,13 +374,12 @@ For v1 bench work this is accepted. Gate it behind a Kconfig as
 | Blink 10 ms every 5 s | ~4 µA |
 | Continuous (as specified for v1) | ~2 mA — not viable |
 
-**Answered for LED A** (`docs/superpowers/specs/2026-09-12-app-control-design.md`
-§6.7): bounded patterns only, a few seconds per command — the first row above,
-generalised from "after a toggle" to "after any accepted command". A production
-build (`CONFIG_MFS_DEBUG_LED=n`) leaves LED A dark between patterns rather than
-lighting it while Inactive, so the standing cost is zero. LED B remains a bench-only
-detection indicator, never a production consumer, and is not addressed by this
-answer.
+**Superseded 2026-11-12** (`docs/superpowers/specs/2026-11-12-three-led-indication-design.md`): the owner chose a standing green
+level while disarmed, in every build — steady until the time sync, then a 1-in-6
+slow flash (~170–330 µA). Armed, every LED is dark, so a deployed (armed) device
+pays nothing. The disarmed cost is accepted until a display-status option is set
+from the app (`docs/todo.md`). The earlier answer — bounded patterns only, LED A dark
+between them in production — no longer applies.
 
 ## 6. Arm-state persistence — decided
 

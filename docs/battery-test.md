@@ -11,8 +11,8 @@ Identical to `main` except for LED A:
 
 | | `main` | This branch |
 |---|---|---|
-| LED A | On while Inactive | **Never lit** (`CONFIG_MFS_BLINK_MS=0`), or blink if set |
-| LED B | On while Active **and** triggered, ~5 s | Unchanged |
+| Green (LED3) | Disarmed: steady until the time sync, then 500 ms on / 2500 ms off | **Never lit** (`CONFIG_MFS_BLINK_MS=0`), or the liveness blink if set |
+| Red / orange | Three-LED scheme (`docs/superpowers/specs/2026-11-12-three-led-indication-design.md`) | Unchanged |
 | Start state | Inactive | Unchanged |
 | Arming | Engineer toggle from the DK | Unchanged |
 
@@ -62,9 +62,9 @@ Note the blink is quantised to `M_POLL_INTERVAL_MS` (100 ms), so
 
 ## 2.1 Configured for the true figure
 
-`CONFIG_MFS_BLINK_MS=0`. LED A is **never lit** — not blinking, and not lit as an
-Inactive indicator either. LED B still works, so the liveness check is: **arm the
-device from the DK, then nudge it.** LED B lights for ~5 s.
+`CONFIG_MFS_BLINK_MS=0`. Green is **never lit** — not blinking, and not lit as the
+disarmed indicator either. Red still works, so the liveness check is: **nudge the
+disarmed device past its activation count.** Red lights for ~5 s (a simulated firing).
 
 Arming does not change the idle current — the arm state is a firmware flag, and
 the ADXL367 sits in autosleep wake-up mode either way. So the device can be left

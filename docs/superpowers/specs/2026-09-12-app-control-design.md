@@ -1,5 +1,9 @@
 # MFS_1 App Control — Design
 
+> **LEDs superseded 2026-11-12.** Every LED A / LED B behaviour in this document is
+> replaced by `docs/superpowers/specs/2026-11-12-three-led-indication-design.md` (red /
+> orange / green, the same in every build). The rest of this document stands.
+
 Recorded 2026-09-12.
 
 Replaces the Thingy:53 toggle tool with a Flutter app that sets MFS_1's parameters

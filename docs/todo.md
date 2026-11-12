@@ -74,3 +74,20 @@ Case open:   NC closed → pin low, tamper
 external resistor; an edge interrupt wakes the SoC from System ON idle, as INT1
 does. While the case is open the pull-up draws ~214 µA, so latch the event,
 disable the pull-up, and re-check periodically for the case closing again.
+
+## LED follow-ups (three-LED indication)
+
+**Added 2026-11-12** (owner), from `docs/superpowers/specs/2026-11-12-three-led-indication-design.md` §7.
+
+- **Orange reason codes.** After the 3 s orange steady, a flash code naming why
+  arming was refused or what faulted (scanner down, fire supply, pin check,
+  switch fault...). Today every fault shows the same orange.
+- **Variable exit delay.** Make the 10 s pre-arming delay
+  (`ArmingSequence::M_EXIT_DELAY_MS`) configurable. The steady red follows it.
+- **Display-status option in the app.** Bound the green battery cost (steady
+  ~1–2 mA before the time sync, ~170–330 µA flashing after it) — e.g. LEDs on only
+  for a while after a command, or off entirely — set from the app.
+- **Fault message.** When the device disarms itself (armed trigger, fail-safe),
+  send a message confirming the fault. Needs its own design: the device never
+  advertises to solicit contact, so it would be a further documented exception
+  like the FIRE confirmation burst.

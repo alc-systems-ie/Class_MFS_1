@@ -59,16 +59,20 @@ specific numeric constraint recorded there.
 | OPT3001 INT | P1.12 | Unused |
 | ANTI_TAMP | P1.02, button pulled high, **active low** | Unused in v1 (proven by `tools/tamper_test`). An NFC pin: needs `&uicr { nfct-pins-as-gpios; }` |
 | FIRE_1 / FIRE_2 | P2.05 / P2.09 | Fire output — FIRE_1, then FIRE_2 **10 ms later**; cleared together |
-| LED A (`led0`) | LED3, P2.04 | Command acknowledgements |
-| LED B (`led1`) | LED2, P2.03 | Detection indicator and interim warning |
-| LED1 | P2.02 | **Undriven** — see open item below |
-| nPM2100 GPIO0 | P1.06 | Unused |
+| LED1 red (`zephyr,user` `led-red-gpios`) | P2.02 | Arming (steady), arming completed (flash), simulated firing while disarmed. Active-high **assumed** — bench polarity check |
+| LED2 orange (`led1`) | P2.03 | Warning / fault (3 s steady), confirmation (triple), device-disarmed latch |
+| LED3 green (`led0`) | P2.04 | Disarmed: steady until the time sync, then 500 ms on / 2500 ms off |
+| nPM2100 GPIO0 / GPIO1 | P1.06 / P2.01 | Unused |
 | nPM2100 RESET | P2.00, active low | Unused |
 | nRF21540 SPI (`spi30`) | SCK P0.03, MOSI P0.02, MISO P0.01, CS P0.00 | MPSL FEM driver (as `alc_drawer_master`) |
 | nRF21540 PDN / TX_EN / RX_EN / MODE | P0.04 / P1.09 / P1.10 / P1.11 | MPSL FEM driver |
 
-**OPEN — P2.02.** The board pin list gives P2.02 as both LED1 and nPM2100
-GPIO_1. The firmware leaves it undriven until the schematic settles it.
+**LED scheme: `docs/superpowers/specs/2026-11-12-three-led-indication-design.md`**
+(owner, 2026-11-12) — the same in every build, production included. Base level from
+the state in the pure, host-tested `BaseLevels()` (`src/led_indicator.hpp`);
+overlays (red flash, orange triple, orange steady) from `LedSequencer`, one at a
+time by priority. Armed shows nothing. (nPM2100 GPIO_1 is P2.01; the old "P2.02
+shared with GPIO_1" note was a typo in the board pin list.)
 
 **OPEN — LEDs on the first board.** Only LED3 lit on the bench although every LED
 pin reached 3 V; the LED parts are suspected (owner, 2026-11-10). On the bench unit
@@ -119,15 +123,15 @@ firing while deactivated is dangerous.
   notification — calls `IsOutputActive()` and **never** reads INT1, the AWAKE bit
   or `Adxl367::ReadAwake()` directly, and never re-derives the condition.
 - `m_output_switch.Set(m_output_active);`, called from inside
-  `updateOutputState()` itself, is the worked example future consumers copy. LED B
-  (`ledB = m_detection_met;`) is a bench-only detection indicator, not an output
-  consumer, and is gated out of production builds.
+  `updateOutputState()` itself, is the worked example future consumers copy. The red
+  simulated-firing LED (`DetectionMet() || RehearsalFired()`, shown only while
+  Inactive) is a display, not an output consumer.
 - Armed, the device's only path out is a disarm command or a one-shot trigger —
   see `DecideCommand()` (`src/arm_policy.hpp`), restated under Access rules below.
   While **Arming**, the only command that acts is Disarm, which cancels it — see
   below.
 - **Disarmed differs from armed in exactly two ways** — parameters change only
-  while disarmed, and a trigger shows on LED B instead of the fire GPIOs.
+  while disarmed, and a trigger shows on the red LED instead of the fire GPIOs.
   Detection, cooldown and delay run identically; Disarm restarts a test from
   zero; arming always starts a fresh session
   (`docs/superpowers/specs/2026-09-14-disarmed-test-mode-amendment.md`).
@@ -136,15 +140,16 @@ firing while deactivated is dangerous.
   enables the pins last, and any step failure fails safe to the warning
   (`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`).
   `App::signalWarning()` is the one warning path: it logs `WARNING (light TBC)`
-  and, **until the dedicated warning light is chosen, plays three long pulses on
-  LED B in every build** (production included), overriding the bench detection
-  level while it plays. Sources: an arming-step failure, the boot pin check, a
+  and plays **orange steady for 3 s in every build** (production included),
+  outranking every other overlay. Sources: an arming-step failure, the boot pin check, a
   fire-pin disable failure, a fire switch `Set()` failure while Active (once
   per Active session), and the scanner not running while Arming or Active. An
-  arming failure shows **no** LED A acknowledgement.
+  arming failure shows **no** confirmation.
   **A fire switch fault while Active fails safe to disarmed** — the main loop runs
   the ordinary disarm beside the trigger latch and logs `Fire switch fault while
-  armed - disarmed (fail safe).`, with no LED A acknowledgement (amendment §4.1).
+  armed - disarmed (fail safe).`, with no confirmation (amendment §4.1); the
+  orange device-disarmed latch then shows until the next accepted command, as
+  after an armed trigger or a scanner-loss fail-safe.
   `Set(false)` **latches and isolates** on a failed clear write *or* a clear
   read-back that is not low, logging once (both gates = the `BOTH FIRE GATES
   FAILED TO CLEAR` emergency, one = lost redundancy).
@@ -181,11 +186,11 @@ that is the common case, not an edge case. The device therefore **reconfigures t
 ADXL367 afresh on every arm — and on every test restart — so there is no stale
 level to inherit**. The order is load-bearing and now also carries the fire-pin
 isolation (`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`):
-**arm** is accepted → **Arming**; nothing for 10 s (`M_EXIT_DELAY_MS`, LED A dark,
-LED B suppressed); then, synchronously, restart detection armed (configure, confirm
+**arm** is accepted → **Arming**; nothing for 10 s (`M_EXIT_DELAY_MS`, red
+steady, simulated firing masked); then, synchronously, restart detection armed (configure, confirm
 AWAKE clear) → **raise the fire supply** (nPM2100 boost to 3.3 V, VOUT verified
 ≥ 3.2 V) → enable the fire pins **last** → boolean Active only on every step's
-success, LED A plays Armed. **Disarm**, from any state: disable the fire pins
+success, red flashes for 3 s, then every LED is dark. **Disarm**, from any state: disable the fire pins
 **first** → lower the fire supply (boost back to its VSET level) → boolean Inactive (cancel any arming) → re-derive the output (GPIOs
 already isolated) → restart the test. Arming is **refused** — fails safe to the
 warning, disable pins, Inactive, test resumed disarmed — if any step fails,
@@ -276,7 +281,7 @@ next 04:00 UTC only — `docs/power-budget.md` §8.1):
   carry no settings, so an engineer can arm or disarm without knowing the device's
   tuning; settings are applied only by a Settings command while Inactive. **Armed,
   the only state change is disarm** — Arm or Settings to an armed device changes
-  nothing and replays the Armed pattern on LED A. **While Arming (the 10 s exit
+  nothing and replays the red flash. **While Arming (the 10 s exit
   delay), only Disarm acts** — it cancels the arming (§2 disarm order); Arm and
   Settings are ignored outright, logged, with no LED and no clock trim
   (`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md` §3.1).
@@ -290,12 +295,12 @@ next 04:00 UTC only — `docs/power-budget.md` §8.1):
   refused when the scanner is not running, both when the Arm is accepted (no
   Arming state entered) and, fail-safe, at the end of the exit delay before the
   armed restart — a device that could not hear a Disarm must never reach Active.
-  The refusal raises the warning pattern (LED B) naming the scanner, gives no LED
-  A acknowledgement, and leaves the device Inactive with pins isolated and the
+  The refusal raises the warning (orange steady) naming the scanner, gives no
+  confirmation, and leaves the device Inactive with pins isolated and the
   detection test running. Checked in the host-tested `ArmingSequence` via
   `ArmingActions::ScannerRunning()` — never a second check in `App`.
-- **Persist before acting**, and **failures emit nothing** — no advert, no LED. LED A
-  acknowledges only *accepted* commands, never a failed authentication.
+- **Persist before acting**, and **failures emit nothing** — no advert, no LED. The orange
+  triple confirms only *accepted* commands, never a failed authentication.
 - **The device never advertises to solicit contact.** It scans. Report modes are
   documented exceptions (design spec §4.3). Advertising forfeits covertness.
   **FIRE's confirmId burst is a further, bounded exception**: an authenticated,

@@ -368,6 +368,23 @@ fire line **is low / is not high**.
 - [ ] 3. Idle current on the PPK II over 10 min: expect ~117 µA at 3.0 V (was 68–75 µA without the LNA).
 - [ ] 4. FIRE confirmation burst still received by `tools/uuid_observer` (now +10 dBm through the PA).
 
+## 5h. Three-LED indication (2026-11-12, spec `docs/superpowers/specs/2026-11-12-three-led-indication-design.md`)
+
+Every step holds in a production build too - no LED differs between builds.
+
+- [ ] 1. **Red polarity first.** After boot, red (LED1, P2.02) is **dark**. If it is lit, the polarity is wrong: stop and fix `led-red-gpios` in the overlay before going on (wrong polarity lights red throughout Armed).
+- [ ] 2. Boot: green **steady**, red and orange dark. No orange (boot does not set the device-disarmed latch).
+- [ ] 3. Provisioner time sync: orange **triple**, then green **flashes 500 ms on / 2500 ms off**.
+- [ ] 4. Settings, then Disarm: orange triple each, green flash resumes.
+- [ ] 5. Arm while a triple is still playing: **red steady at once** for the 10 s exit delay, then red **flashes** ~3 s, then every LED dark.
+- [ ] 6. Armed, send Arm (or Settings): red flash replays; nothing else changes.
+- [ ] 7. Disarm within 3 s of arming completing: the red flash **stops at once**, the orange triple plays, then green.
+- [ ] 8. Armed trigger (motion past activations/delay): output fires; afterwards orange **steady** and stays on. A failed-authentication or replayed command leaves it on; the next accepted command (any type) clears it.
+- [ ] 9. Refused Arm (stop the scanner, or a low battery for the fire supply): orange steady ~3 s, then green. No red.
+- [ ] 10. Disarmed test trigger: red lights for the would-be output window (~5 s), green dark meanwhile; RTT `Detection met (test) - red on while disarmed.`
+- [ ] 11. Disarmed rehearsal FIRE: red for its assertion window after the 10 s countdown. Then a rehearsal FIRE immediately followed by an Arm: **no** simulated red during Arming or Active.
+- [ ] 12. Battery-test build (`CONFIG_MFS_BATTERY_TEST=y`): green is the liveness blink only; with `CONFIG_MFS_BLINK_MS=0` green never lights.
+
 ## 9. Bench log
 
 ### 2026-09-14 — first bench session (J-Link 853003346, nRF54L05, device 0xFBACBE88)

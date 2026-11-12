@@ -1,5 +1,9 @@
 # MFS_1 Scan Reliability, Send/Stop — Design Amendment
 
+> **LEDs superseded 2026-11-12.** Every LED A / LED B behaviour in this document is
+> replaced by `docs/superpowers/specs/2026-11-12-three-led-indication-design.md` (red /
+> orange / green, the same in every build). The rest of this document stands.
+
 **Date:** 2026-09-14 (bench session 1)
 **Amends:** `docs/power-budget.md` (scan period), `docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md` §3 (scanning during Arming), `docs/superpowers/specs/2026-09-12-app-control-design.md` §3 and §8 (Send UI), `docs/superpowers/specs/2026-09-14-command-types-amendment.md` §3 (pre-empt removed). Where this document and those disagree, **this document wins**.
 
