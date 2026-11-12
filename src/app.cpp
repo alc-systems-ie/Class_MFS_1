@@ -521,9 +521,9 @@ namespace alc
         previousDetection = simulatedFiring;
         if (simulatedFiring) {
           detectionStartMs = ledNowMs;
-          LOG_INF("Detection met (%s) - red on while disarmed.", m_arming.State() == ArmState::Active ? "armed" : "test");
+          LOG_INF("Detection met (%s).", m_arming.State() == ArmState::Active ? "armed" : "test");
         } else {
-          LOG_INF("Detection cleared after %lld ms - red off.", ledNowMs - detectionStartMs);
+          LOG_INF("Detection cleared after %lld ms.", ledNowMs - detectionStartMs);
         }
       }
 #endif
@@ -1213,7 +1213,7 @@ namespace alc
         if (event.armed) {
           LOG_WRN("TRIGGER PENDING: firing in %u s. Deactivating cancels it.", event.seconds);
         } else {
-          LOG_INF("TEST trigger pending: red in %u s.", event.seconds);
+          LOG_INF("TEST trigger pending: simulated firing in %u s.", event.seconds);
         }
         break;
 
@@ -1233,7 +1233,7 @@ namespace alc
 
       case DetectionEventType::DelayExpired:
         // Armed, the output assertion itself is what gets logged, as before.
-        if (!event.armed) { LOG_INF("TEST delay elapsed - red on."); }
+        if (!event.armed) { LOG_INF("TEST delay elapsed - simulated firing."); }
         break;
 
       case DetectionEventType::DelayExpiredScanLostSuppressed:

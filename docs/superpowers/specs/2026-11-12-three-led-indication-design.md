@@ -112,6 +112,9 @@ Notes:
   `DetectionEngine::DetectionMet()` is that signal — set only on the final activation or
   delay expiry, then held 5 s. A rehearsal FIRE's window
   (`FireSequence::RehearsalFired()`) is ORed in, as it is today.
+- **Simulated firing shows only once the clock is set** (owner, 2026-11-12): before the
+  provisioner time sync the device shows only steady green. The detection engine still
+  runs underneath; only the display waits.
 - **Simulated firing shows only while Inactive.** *My call:* a disarmed rehearsal FIRE
   runs 10 s and an Arm accepted during it is not cancelled (`FireSequence` has no cancel
   path, and §8 leaves FIRE untouched), so its red window can fall into Arming or Active.

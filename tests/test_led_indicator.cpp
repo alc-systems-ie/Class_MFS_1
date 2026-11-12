@@ -43,11 +43,16 @@ void run_led_indicator_tests()
     }
   }
 
-  // Simulated firing while disarmed: red, green off.
-  LedInputs simulatedInputs { ArmState::Inactive, false, false, true };
-  assert(BaseLevels(simulatedInputs, 0) == M_RED);
+  // Simulated firing while disarmed, clock set: red, green off.
   LedInputs simulatedReady { ArmState::Inactive, true, false, true };
+  assert(BaseLevels(simulatedReady, 0) == M_RED);
   assert(BaseLevels(simulatedReady, 1000) == M_RED);
+
+  // Not before the clock is set (owner, 2026-11-12): a device waiting for its
+  // time sync shows only steady green, whatever the accelerometer does.
+  LedInputs simulatedBeforeSync { ArmState::Inactive, false, false, true };
+  assert(BaseLevels(simulatedBeforeSync, 0) == M_GREEN);
+  assert(BaseLevels(simulatedBeforeSync, 1000) == M_GREEN);
 
   // Arming: steady red, simulated firing masked.
   for (bool simulated : { false, true }) {

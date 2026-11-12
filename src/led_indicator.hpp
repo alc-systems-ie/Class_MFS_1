@@ -42,8 +42,9 @@ namespace alc
    * - Active: all dark - nothing visible while armed.
    * - Arming: red steady. Simulated firing is masked.
    * - Inactive, fault latched: orange steady.
+   * - Inactive, clock not set: green steady - simulated firing is not shown
+   *   until the time sync.
    * - Inactive, simulated firing: red, green off.
-   * - Inactive, clock not set: green steady.
    * - Inactive, clock set: green slow flash.
    */
   LedLevels BaseLevels(const LedInputs& inputs, int64_t nowMs);

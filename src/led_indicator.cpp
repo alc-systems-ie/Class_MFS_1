@@ -19,12 +19,14 @@ namespace alc
         break;
     }
 
+    // Before the time sync the device only waits for its clock: simulated firing
+    // starts once the clock is set (owner, 2026-11-12).
     if (inputs.faultLatched) {
       levels.orange = true;
-    } else if (inputs.simulatedFiring) {
-      levels.red = true;
     } else if (!inputs.clockValid) {
       levels.green = true;
+    } else if (inputs.simulatedFiring) {
+      levels.red = true;
     } else {
       levels.green = static_cast<uint64_t>(nowMs) % M_GREEN_FLASH_PERIOD_MS < M_GREEN_FLASH_ON_MS;
     }

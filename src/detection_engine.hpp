@@ -59,7 +59,7 @@ namespace alc
     DelayScanLost,                  ///< ERR "Scanner not running at the start of a delay - a disarm may not be heard!" (armed only).
     DelayFastScanFailed,            ///< WRN "Continuous scan unavailable at the start of a delay - retrying; ..." (armed only) - result.
     DelayScanRestoreFailed,         ///< ERR "Failed to restore duty-cycled scanning: %d!" - result.
-    DelayExpired,                   ///< Armed: no log of its own. Disarmed: INF "TEST delay elapsed - red on." Not raised when suppressed.
+    DelayExpired,                   ///< Armed: no log of its own. Disarmed: INF "TEST delay elapsed - simulated firing." Not raised when suppressed.
     DelayExpiredScanLostSuppressed, ///< ERR "Trigger suppressed: the scanner was not running during the delay (fail safe)!" (armed only; no fire).
     WatchdogRearm,                  ///< ERR "ADXL stuck AWAKE for %u s - re-arming the loop engine!" - seconds.
     WatchdogRearmFailed,            ///< ERR "ADXL re-arm failed!" - result.
