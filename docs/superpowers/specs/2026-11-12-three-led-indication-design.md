@@ -42,14 +42,16 @@ this applies in **every build, production included** (see §5).
 |-------|-------|-----|--------|
 | **Disarmed, clock not set** — every boot, until the provisioner time sync | **steady on** | off | off |
 | **Disarmed, clock set** (Inactive) | **slow flash: 500 ms on, 2500 ms off** | off | off |
-| **Disarmed by the device itself** — latched after an armed trigger or a fail-safe disarm | off | off | **steady on** until the next accepted command |
+| **Disarmed by the device itself** — latched after an armed trigger, a fail-safe disarm, or an arming that failed at the end of the exit delay | off | off | **steady on** until the next accepted command |
 | **Arming** (10 s exit delay) | off | **steady on** | off |
 | **Armed** (Active) | off | off | off — **nothing visible** |
 
 **Device-initiated disarm shows orange, not green** (owner, 2026-11-12, "show yellow
 (fault)"). The device can fall back to disarmed with nobody present: after every armed
 trigger (`TakeTriggerComplete()` → `disarmDevice()`, and a live FIRE's end), after every
-fail-safe disarm (scanner lost, fire switch fault while armed). Green there would sit beside whoever set it
+fail-safe disarm (scanner lost, fire switch fault while armed), and after an arming that
+fails at the end of the exit delay (owner, 2026-11-12: the engineer has usually walked
+away believing it armed; a Disarm from the app acknowledges it and turns it green). Green there would sit beside whoever set it
 off and read as "safe". Instead orange stays on, steadily, until the next **accepted,
 authenticated** command (any type, including a time set), which returns it to the normal
 base level for the state that command leaves. This needs a small display latch tracked
@@ -88,7 +90,7 @@ pulse further without the owner.
 | **Arm accepted** | Steady red for the whole exit delay (the Arming base level) | Red | — |
 | **Arming completed** (device Active) | **Red flashing** — today's Armed pattern (~8 Hz, 3 s) moved to red | Red | Dark (Armed) |
 | **Accepted command confirmation** — Disarm (incl. one that cancels an arming or a pending trigger), Settings applied, Mode changed, **Time set** (new) | **Orange triple flash**, short (~1 s in all) | Orange | Back to the base level |
-| **Arming refused / fault** — every source that today raises `App::signalWarning()` | **Orange steady ~3 s** | Orange | Back to the base level (normally green: every fault fails safe to disarmed) |
+| **Arming refused / fault** — every source that today raises `App::signalWarning()` | **Orange steady ~3 s** | Orange | Back to the base level: green for an Arm refused on receipt (the engineer is there); the orange latch for a failure at the end of the exit delay or a fail-safe disarm |
 | **Simulated firing while disarmed** — a disarmed test trigger, and a disarmed (rehearsal) FIRE | **Red on** for the window in which the fire output *would* be asserted if armed | Red | Back to green |
 
 Notes:

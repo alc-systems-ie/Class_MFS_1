@@ -149,7 +149,8 @@ firing while deactivated is dangerous.
   the ordinary disarm beside the trigger latch and logs `Fire switch fault while
   armed - disarmed (fail safe).`, with no confirmation (amendment §4.1); the
   orange device-disarmed latch then shows until the next accepted command, as
-  after an armed trigger or a scanner-loss fail-safe.
+  after an armed trigger, a scanner-loss fail-safe, or an arming that failed at
+  the end of the exit delay (acknowledged by a Disarm from the app → green).
   `Set(false)` **latches and isolates** on a failed clear write *or* a clear
   read-back that is not low, logging once (both gates = the `BOTH FIRE GATES
   FAILED TO CLEAR` emergency, one = lost redundancy).

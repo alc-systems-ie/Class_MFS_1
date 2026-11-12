@@ -264,6 +264,7 @@ namespace alc
     bool previousTriggered { false };
     bool armedThisTick { false };
     ArmState stateBeforeHealthCheck { ArmState::Inactive };
+    ArmState stateBeforeService { ArmState::Inactive };
     LedLevels leds { false, false, false };
     bool overlayActive { false };
     bool simulatedFiring { false };
@@ -371,7 +372,16 @@ namespace alc
       // derived below, so nothing ticks the engine or derives the output between
       // the armed restart and Active. Only a completed arming is acknowledged, and
       // only once the scanner check below has passed - see armedThisTick.
-      armedThisTick = m_arming.Service(k_uptime_get());
+      stateBeforeService = m_arming.State();
+      armedThisTick      = m_arming.Service(k_uptime_get());
+
+      // A failed arming at the deadline - any step of the armed restart, or the
+      // scanner check - leaves Arming for Inactive inside Service() (a Disarm
+      // command acts earlier, in serviceCandidates()). The engineer has usually
+      // walked away believing the device armed, so it stays orange until a
+      // command acknowledges it, rather than returning to green (owner, 2026-11-12).
+      if (stateBeforeService == ArmState::Arming && m_arming.State() == ArmState::Inactive) { latchFaultDisplay(); }
+
       if (armedThisTick) {
         // A new Active session: its first switch fault is warned and disarmed.
         m_switch_fault_pending = false;
