@@ -272,8 +272,8 @@ namespace alc
     int64_t detectionStartMs { 0 };
 #endif
 #if defined(CONFIG_MFS_BATTERY_TEST)
-    uint32_t blinkTicks { 0 };
-    uint32_t blinkOnTicks { 0 };
+    LivenessBlink liveness { M_BLINK_PERIOD_TICKS, M_BLINK_ON_TICKS };
+    bool livenessLit { false };
 #endif
 
     LOG_INF("MFS_1 starting, serial %s.", CONFIG_ALC_DEVICE_SERIAL);
@@ -442,11 +442,7 @@ namespace alc
       if (armedThisTick && m_arming.State() == ArmState::Active) { playLedPattern(LedPattern::RedFlash); }
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
-      if (++blinkTicks >= M_BLINK_PERIOD_TICKS) {
-        blinkTicks   = 0;
-        blinkOnTicks = M_BLINK_ON_TICKS;
-      }
-      if (blinkOnTicks > 0) { --blinkOnTicks; }
+      livenessLit = liveness.Tick();
 #endif
 
       // The ONE place the output state is derived. See updateOutputState().
@@ -502,7 +498,7 @@ namespace alc
 #if defined(CONFIG_MFS_BATTERY_TEST)
         // The liveness blink replaces green, steady or flashing: a lit LED would
         // swamp the measurement. Dark throughout with CONFIG_MFS_BLINK_MS=0.
-        leds.green = blinkOnTicks > 0;
+        leds.green = livenessLit;
 #endif
       }
 

@@ -70,5 +70,33 @@ void run_led_indicator_tests()
   assert(OverlayLevels(LedPattern::OrangeSteady, false) == M_DARK);
   assert(OverlayLevels(LedPattern::None, true) == M_DARK);
 
+  // Battery-test liveness blink: lit for exactly onTicks ticks once every
+  // periodTicks. A 100 ms blink at a 100 ms tick is one lit tick, not none
+  // (final review 2026-11-12: the decrement used to run before the read).
+  alc::LivenessBlink oneTick { 3, 1 };
+  assert(!oneTick.Tick());
+  assert(!oneTick.Tick());
+  assert(oneTick.Tick());
+  assert(!oneTick.Tick());
+  assert(!oneTick.Tick());
+  assert(oneTick.Tick());
+
+  alc::LivenessBlink fiveTicks { 8, 5 };
+  uint32_t lit { 0 };
+  for (uint32_t tick = 0; tick < 8; tick++) {
+    if (fiveTicks.Tick()) { lit++; }
+  }
+  // Ticks 8 to 12 are lit; the next period's first lit tick would be 16.
+  for (uint32_t tick = 0; tick < 7; tick++) {
+    if (fiveTicks.Tick()) { lit++; }
+  }
+  assert(lit == 5);
+  assert(fiveTicks.Tick());
+
+  alc::LivenessBlink never { 3, 0 };
+  for (uint32_t tick = 0; tick < 10; tick++) {
+    assert(!never.Tick());
+  }
+
   printf("led indicator: OK\n");
 }

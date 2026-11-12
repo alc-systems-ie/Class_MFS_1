@@ -54,4 +54,30 @@ namespace alc
    */
   LedLevels OverlayLevels(LedPattern pattern, bool on);
 
+  /**
+   * @brief The battery-test liveness blink (CONFIG_MFS_BATTERY_TEST): lit for
+   *        exactly `onTicks` main-loop ticks once every `periodTicks`.
+   *
+   * Call Tick() once per main-loop tick; it returns the level for that tick.
+   * `onTicks` of 0 never lights.
+   */
+  class LivenessBlink
+  {
+    public:
+      LivenessBlink(uint32_t periodTicks, uint32_t onTicks)
+          : m_period_ticks(periodTicks)
+          , m_on_ticks(onTicks)
+          , m_ticks(0)
+          , m_remaining_ticks(0)
+      {}
+
+      bool Tick();
+
+    private:
+      const uint32_t m_period_ticks;
+      const uint32_t m_on_ticks;
+      uint32_t m_ticks;
+      uint32_t m_remaining_ticks;
+  };
+
 }

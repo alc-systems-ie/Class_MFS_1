@@ -54,4 +54,19 @@ namespace alc
     return levels;
   }
 
+  bool LivenessBlink::Tick()
+  {
+    bool lit { false };
+
+    if (++m_ticks >= m_period_ticks) {
+      m_ticks           = 0;
+      m_remaining_ticks = m_on_ticks;
+    }
+
+    // Read before the decrement, so a one-tick blink is lit for its one tick.
+    lit = m_remaining_ticks > 0;
+    if (lit) { --m_remaining_ticks; }
+    return lit;
+  }
+
 }
