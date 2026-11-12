@@ -442,7 +442,7 @@ namespace alc
       // The arming is acknowledged only now, after the cadence gate and the
       // scanner check: either can undo it on the tick it completed, and LED A
       // must never report Armed for a device the fail-safe has just disarmed.
-      if (armedThisTick && m_arming.State() == ArmState::Active) { playLedPattern(LedPattern::Armed); }
+      if (armedThisTick && m_arming.State() == ArmState::Active) { playLedPattern(LedPattern::RedFlash); }
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
       if (++blinkTicks >= M_BLINK_PERIOD_TICKS) {
@@ -866,7 +866,7 @@ namespace alc
     // half-written; a new warning replaces one already playing. Before
     // initLeds() the timer is left stopped and Run() starts it.
     k_timer_stop(&m_warning_timer);
-    m_warning_sequencer.Start(LedPattern::Warning, k_uptime_get());
+    (void)m_warning_sequencer.Start(LedPattern::OrangeSteady, k_uptime_get());
     if (m_leds_initialised) { k_timer_start(&m_warning_timer, K_NO_WAIT, K_MSEC(M_LED_TICK_MS)); }
   }
 
@@ -1457,7 +1457,6 @@ namespace alc
     const protocol::Command& command { evaluation.command };
     bool fromNetworkManager { evaluation.slot == access::M_SLOT_NETWORK_MANAGER };
     ArmDecision decision { DecideCommand(m_arming.State(), fromNetworkManager, command) };
-    protocol::Mode previousMode { m_settings.OperatingMode() };
     bool armedDelayWasPending { m_engine.DelayPendingArmed() };
     ArmState armStateBefore { m_arming.State() };
     int result { 0 };
@@ -1490,7 +1489,7 @@ namespace alc
     if (decision.action == ArmAction::ReplayArmed) {
       LOG_INF("Armed: %s from slot %u n %u changes nothing - replaying Armed.", protocol::CommandTypeName(command.type), evaluation.slot,
               evaluation.n);
-      playLedPattern(LedPattern::Armed);
+      playLedPattern(LedPattern::RedFlash);
       return;
     }
 
@@ -1541,7 +1540,7 @@ namespace alc
         // delay is not a cancelled trigger, and while Arming the engine runs
         // disarmed, so a cancelled arming plays the plain Disarmed flash.
         if (disarmDevice()) { LOG_INF("Arming cancelled by slot %u n %u.", evaluation.slot, evaluation.n); }
-        pattern = armedDelayWasPending ? LedPattern::DisarmedDelayCancelled : LedPattern::Disarmed;
+        pattern = LedPattern::OrangeTriple;
         if (armedDelayWasPending) { LOG_WRN("Disarmed with a trigger PENDING - the trigger is cancelled."); }
         break;
 
@@ -1588,7 +1587,7 @@ namespace alc
         // reset a long cooldown or delay (amendment section 3.1).
         result = restartEngine(false);
         if (result < 0) { LOG_ERR("Could not start the engine for the test - retrying every %u ms!", M_ENGINE_RETRY_MS); }
-        pattern = (m_settings.OperatingMode() != previousMode) ? LedPattern::ModeChanged : LedPattern::SettingsApplied;
+        pattern = LedPattern::OrangeTriple;
         break;
 
       case ArmAction::Fire: {
@@ -1644,7 +1643,7 @@ namespace alc
     // Stop the timer before touching the sequencer, so the handler never reads it
     // half-written. A new command replaces whatever was playing.
     k_timer_stop(&m_led_timer);
-    m_led_sequencer.Start(pattern, k_uptime_get());
+    (void)m_led_sequencer.Start(pattern, k_uptime_get());
     k_timer_start(&m_led_timer, K_NO_WAIT, K_MSEC(M_LED_TICK_MS));
   }
 

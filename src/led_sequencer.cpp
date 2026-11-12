@@ -19,35 +19,57 @@ namespace alc
     };
 
     constexpr uint16_t M_LONG_PATTERN_MS { 3000 };
+    constexpr uint16_t M_TRIPLE_PATTERN_MS { 1000 };
 
-    constexpr Step M_ARMED[] { { 60, 65 } };
-    constexpr Step M_DISARMED[] { { 500, 500 } };
-    constexpr Step M_DELAY_CANCELLED[] { { 100, 100 }, { 100, 700 } };
-    constexpr Step M_WARNING[] { { 700, 300 } };
-    constexpr Step M_SINGLE_BLINK[] { { 200, 0 } };
-    constexpr Step M_DOUBLE_BLINK[] { { 200, 200 }, { 200, 0 } };
-
-    constexpr uint16_t M_SINGLE_BLINK_MS { 200 };
-    constexpr uint16_t M_DOUBLE_BLINK_MS { 600 };
+    constexpr Step M_RED_FLASH[] { { 60, 65 } };
+    constexpr Step M_ORANGE_TRIPLE[] { { 150, 200 } };
+    constexpr Step M_ORANGE_STEADY[] { { M_LONG_PATTERN_MS, 0 } };
 
     Definition definitionOf(LedPattern pattern)
     {
       switch (pattern) {
-        case LedPattern::Armed:
-          return { M_ARMED, 1, M_LONG_PATTERN_MS };
-        case LedPattern::Disarmed:
-          return { M_DISARMED, 1, M_LONG_PATTERN_MS };
-        case LedPattern::DisarmedDelayCancelled:
-          return { M_DELAY_CANCELLED, 2, M_LONG_PATTERN_MS };
-        case LedPattern::Warning:
-          return { M_WARNING, 1, M_LONG_PATTERN_MS };
-        case LedPattern::SettingsApplied:
-          return { M_SINGLE_BLINK, 1, M_SINGLE_BLINK_MS };
-        case LedPattern::ModeChanged:
-          return { M_DOUBLE_BLINK, 2, M_DOUBLE_BLINK_MS };
+        case LedPattern::RedFlash:
+          return { M_RED_FLASH, 1, M_LONG_PATTERN_MS };
+        case LedPattern::OrangeTriple:
+          return { M_ORANGE_TRIPLE, 1, M_TRIPLE_PATTERN_MS };
+        case LedPattern::OrangeSteady:
+          return { M_ORANGE_STEADY, 1, M_LONG_PATTERN_MS };
         default:
           return { nullptr, 0, 0 };
       }
+    }
+
+    // Higher wins (spec section 3.3). None is lowest so it never blocks anything.
+    constexpr uint8_t M_PRIORITY_NONE { 0 };
+    constexpr uint8_t M_PRIORITY_CONFIRMATION { 1 };
+    constexpr uint8_t M_PRIORITY_RED_FLASH { 2 };
+    constexpr uint8_t M_PRIORITY_WARNING { 3 };
+
+    uint8_t priorityOf(LedPattern pattern)
+    {
+      switch (pattern) {
+        case LedPattern::OrangeSteady:
+          return M_PRIORITY_WARNING;
+        case LedPattern::RedFlash:
+          return M_PRIORITY_RED_FLASH;
+        case LedPattern::OrangeTriple:
+          return M_PRIORITY_CONFIRMATION;
+        default:
+          return M_PRIORITY_NONE;
+      }
+    }
+  }
+
+  LedColour ColourOf(LedPattern pattern)
+  {
+    switch (pattern) {
+      case LedPattern::RedFlash:
+        return LedColour::Red;
+      case LedPattern::OrangeTriple:
+      case LedPattern::OrangeSteady:
+        return LedColour::Orange;
+      default:
+        return LedColour::None;
     }
   }
 
@@ -56,10 +78,13 @@ namespace alc
       , m_start_ms(0)
   {}
 
-  void LedSequencer::Start(LedPattern pattern, int64_t nowMs)
+  bool LedSequencer::Start(LedPattern pattern, int64_t nowMs)
   {
+    if (IsActive(nowMs) && priorityOf(pattern) < priorityOf(m_pattern)) { return false; }
+
     m_pattern  = pattern;
     m_start_ms = nowMs;
+    return true;
   }
 
   bool LedSequencer::IsActive(int64_t nowMs) const

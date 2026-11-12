@@ -5,12 +5,14 @@
 
 void run_led_sequencer_tests()
 {
+  using alc::ColourOf;
+  using alc::LedColour;
   using alc::LedPattern;
   using alc::LedSequencer;
 
   constexpr int64_t M_START { 1000 };
-  // Every pattern is framed by a dark gap before and after, so it stays
-  // visible on a bench build where LED A idles lit while Inactive.
+  // Every pattern is framed by a dark gap before and after, so it reads the
+  // same on a lit or a dark base level.
   constexpr int64_t M_GAP { LedSequencer::M_FRAME_GAP_MS };
   LedSequencer leds;
 
@@ -18,73 +20,88 @@ void run_led_sequencer_tests()
   assert(!leds.IsActive(M_START));
   assert(!leds.Level(M_START));
 
-  // Armed: dark gap, then 60 ms on / 65 ms off for 3 s, then a dark gap.
-  leds.Start(LedPattern::Armed, M_START);
+  // Red flash (arming completed, armed replay): dark gap, then 60 ms on /
+  // 65 ms off for 3 s, then a dark gap.
+  assert(leds.Start(LedPattern::RedFlash, M_START));
   assert(leds.IsActive(M_START));
-  assert(!leds.Level(M_START));             // lead-in is dark
-  assert(!leds.Level(M_START + M_GAP - 1)); // still dark
-  assert(leds.Level(M_START + M_GAP));      // first on phase
+  assert(!leds.Level(M_START));
+  assert(!leds.Level(M_START + M_GAP - 1));
+  assert(leds.Level(M_START + M_GAP));
   assert(leds.Level(M_START + M_GAP + 59));
   assert(!leds.Level(M_START + M_GAP + 60));
   assert(!leds.Level(M_START + M_GAP + 124));
   assert(leds.Level(M_START + M_GAP + 125));
-  assert(!leds.Level(M_START + M_GAP + 3000)); // trailing gap is dark
-  assert(leds.IsActive(M_START + M_GAP + 3000 + M_GAP - 1));
-  assert(!leds.IsActive(M_START + M_GAP + 3000 + M_GAP));
-
-  // Double blink each second: on 0-99, off 100-199, on 200-299, off 300-999.
-  leds.Start(LedPattern::DisarmedDelayCancelled, M_START);
-  assert(leds.Level(M_START + M_GAP + 50));
-  assert(!leds.Level(M_START + M_GAP + 150));
-  assert(leds.Level(M_START + M_GAP + 250));
-  assert(!leds.Level(M_START + M_GAP + 500));
-  assert(leds.Level(M_START + M_GAP + 1050));
-
-  // Settings applied: THE CASE THAT WAS INVISIBLE ON THE BENCH. On an LED that
-  // idles lit, a bare 200 ms on phase changes nothing; framed, it reads as
-  // off - blink - off, then back to the idle level.
-  leds.Start(LedPattern::SettingsApplied, M_START);
-  assert(!leds.Level(M_START + 100));
-  assert(leds.Level(M_START + M_GAP + 100));
-  assert(!leds.Level(M_START + M_GAP + 200 + 100));
-  assert(leds.IsActive(M_START + M_GAP + 200 + M_GAP - 1));
-  assert(!leds.IsActive(M_START + M_GAP + 200 + M_GAP));
-
-  // Mode changed: two 200 ms blinks, framed.
-  leds.Start(LedPattern::ModeChanged, M_START);
-  assert(leds.Level(M_START + M_GAP + 100));
-  assert(!leds.Level(M_START + M_GAP + 300));
-  assert(leds.Level(M_START + M_GAP + 500));
-  assert(!leds.Level(M_START + M_GAP + 600 + 100));
-  assert(!leds.IsActive(M_START + M_GAP + 600 + M_GAP));
-
-  // Warning (LED B, interim): dark gap, then 700 ms on / 300 ms off for 3 s -
-  // three long pulses - then a dark gap.
-  leds.Start(LedPattern::Warning, M_START);
-  assert(!leds.Level(M_START + M_GAP - 1));
-  assert(leds.Level(M_START + M_GAP));
-  assert(leds.Level(M_START + M_GAP + 699));
-  assert(!leds.Level(M_START + M_GAP + 700));
-  assert(!leds.Level(M_START + M_GAP + 999));
-  assert(leds.Level(M_START + M_GAP + 1000));
-  assert(leds.Level(M_START + M_GAP + 2699));
-  assert(!leds.Level(M_START + M_GAP + 2700));
   assert(!leds.Level(M_START + M_GAP + 3000));
   assert(leds.IsActive(M_START + M_GAP + 3000 + M_GAP - 1));
   assert(!leds.IsActive(M_START + M_GAP + 3000 + M_GAP));
 
-  // A new warning replaces one already playing: the pattern restarts from its lead-in.
-  leds.Start(LedPattern::Warning, M_START + 2000);
-  assert(!leds.Level(M_START + 2000 + M_GAP - 1));
-  assert(leds.Level(M_START + 2000 + M_GAP));
-  assert(leds.IsActive(M_START + 2000 + M_GAP + 3000 + M_GAP - 1));
+  // Orange steady (arming refused, every fault): on for 3 s, framed.
+  leds.Stop();
+  assert(leds.Start(LedPattern::OrangeSteady, M_START));
+  assert(!leds.Level(M_START + M_GAP - 1));
+  assert(leds.Level(M_START + M_GAP));
+  assert(leds.Level(M_START + M_GAP + 1500));
+  assert(leds.Level(M_START + M_GAP + 2999));
+  assert(!leds.Level(M_START + M_GAP + 3000));
+  assert(leds.IsActive(M_START + M_GAP + 3000 + M_GAP - 1));
+  assert(!leds.IsActive(M_START + M_GAP + 3000 + M_GAP));
 
-  // A new command replaces the pattern playing.
-  leds.Start(LedPattern::Disarmed, M_START);
-  leds.Start(LedPattern::SettingsApplied, M_START + 100);
-  assert(leds.Current() == LedPattern::SettingsApplied);
-  assert(!leds.Level(M_START + 250));
-  assert(leds.Level(M_START + 100 + M_GAP + 50));
+  // Orange triple (accepted command confirmation): three 150 ms flashes 350 ms
+  // apart within 1 s, framed.
+  leds.Stop();
+  assert(leds.Start(LedPattern::OrangeTriple, M_START));
+  assert(leds.Level(M_START + M_GAP + 0));
+  assert(leds.Level(M_START + M_GAP + 149));
+  assert(!leds.Level(M_START + M_GAP + 150));
+  assert(!leds.Level(M_START + M_GAP + 349));
+  assert(leds.Level(M_START + M_GAP + 350));
+  assert(!leds.Level(M_START + M_GAP + 500));
+  assert(leds.Level(M_START + M_GAP + 700));
+  assert(leds.Level(M_START + M_GAP + 849));
+  assert(!leds.Level(M_START + M_GAP + 850));
+  assert(!leds.Level(M_START + M_GAP + 999));
+  assert(leds.IsActive(M_START + M_GAP + 1000 + M_GAP - 1));
+  assert(!leds.IsActive(M_START + M_GAP + 1000 + M_GAP));
+
+  // Each pattern names the one LED it plays on.
+  assert(ColourOf(LedPattern::RedFlash) == LedColour::Red);
+  assert(ColourOf(LedPattern::OrangeTriple) == LedColour::Orange);
+  assert(ColourOf(LedPattern::OrangeSteady) == LedColour::Orange);
+  assert(ColourOf(LedPattern::None) == LedColour::None);
+
+  // Priority: a confirmation never cuts short a warning still playing.
+  leds.Stop();
+  assert(leds.Start(LedPattern::OrangeSteady, M_START));
+  assert(!leds.Start(LedPattern::OrangeTriple, M_START + 500));
+  assert(leds.Current() == LedPattern::OrangeSteady);
+  assert(!leds.Start(LedPattern::RedFlash, M_START + 500));
+  assert(leds.Current() == LedPattern::OrangeSteady);
+
+  // A warning replaces a confirmation.
+  leds.Stop();
+  assert(leds.Start(LedPattern::OrangeTriple, M_START));
+  assert(leds.Start(LedPattern::OrangeSteady, M_START + 100));
+  assert(leds.Current() == LedPattern::OrangeSteady);
+
+  // The same pattern restarts from its lead-in.
+  leds.Stop();
+  assert(leds.Start(LedPattern::OrangeTriple, M_START));
+  assert(leds.Start(LedPattern::OrangeTriple, M_START + 100));
+  assert(!leds.Level(M_START + 100 + M_GAP - 1));
+  assert(leds.Level(M_START + 100 + M_GAP));
+
+  // Red flash outranks a confirmation.
+  leds.Stop();
+  assert(leds.Start(LedPattern::OrangeTriple, M_START));
+  assert(leds.Start(LedPattern::RedFlash, M_START + 100));
+  assert(!leds.Start(LedPattern::OrangeTriple, M_START + 200));
+  assert(leds.Current() == LedPattern::RedFlash);
+
+  // Once a pattern has ended, any pattern starts.
+  leds.Stop();
+  assert(leds.Start(LedPattern::OrangeSteady, M_START));
+  assert(leds.Start(LedPattern::OrangeTriple, M_START + M_GAP + 3000 + M_GAP));
+  assert(leds.Current() == LedPattern::OrangeTriple);
 
   printf("led sequencer: OK\n");
 }

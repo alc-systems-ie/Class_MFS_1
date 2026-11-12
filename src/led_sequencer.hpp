@@ -6,47 +6,60 @@ namespace alc
 {
 
   /**
-   * @brief The acknowledgement patterns LED A plays, and the interim warning on LED B. PROVISIONAL scheme.
+   * @brief The overlay patterns, each on one LED. See
+   *        docs/superpowers/specs/2026-11-12-three-led-indication-design.md section 3.2.
    *
-   * An LED A pattern plays only after an AUTHENTICATED command has been accepted
+   * A confirmation plays only after an AUTHENTICATED command has been accepted
    * and only once the new state is real. A failed authentication never shows
    * anything, or the LED would tell an attacker which guesses got through.
-   * See the design spec section 6.7.
-   *
-   * Warning is not an acknowledgement: it plays on LED B, from App::signalWarning(),
-   * until the dedicated warning light is chosen (arming sequence amendment section 4).
    */
   enum class LedPattern : uint8_t {
     None,
-    Armed,                  ///< Rapid flash ~8 Hz, 3 s.
-    Disarmed,               ///< Slow flash 1 Hz, 3 s.
-    DisarmedDelayCancelled, ///< Double blink each second, 3 s - a pending trigger really was cancelled.
-    Warning,                ///< Three long pulses, 3 s, on LED B - the interim warning (arming failure, fire switch fault).
-    SettingsApplied,        ///< One 200 ms blink.
-    ModeChanged,            ///< Two 200 ms blinks - slot-0 command changed the operating mode.
+    RedFlash,     ///< Rapid flash ~8 Hz, 3 s, red - arming completed, or an armed device replaying its state.
+    OrangeTriple, ///< Three 150 ms flashes in 1 s, orange - an accepted command or time set confirmed.
+    OrangeSteady, ///< On for 3 s, orange - arming refused, or any fault (App::signalWarning()).
   };
+
+  /** @brief The three LEDs, by colour. */
+  enum class LedColour : uint8_t {
+    None,
+    Red,    ///< LED1, P2.02.
+    Orange, ///< LED2, P2.03.
+    Green,  ///< LED3, P2.04.
+  };
+
+  /** @brief The LED a pattern plays on. LedColour::None for LedPattern::None. */
+  LedColour ColourOf(LedPattern pattern);
 
   /**
    * @brief Time-based pattern player. Pure: the caller supplies the time.
    *
    * Queried from a 10 ms timer while a pattern is active, so the 60 ms phases of
-   * the Armed pattern are rendered faithfully despite the 100 ms main loop. App
-   * holds one per LED: LED A's acknowledgements and LED B's warning.
+   * the red flash are rendered faithfully despite the 100 ms main loop. App holds
+   * one: only one overlay plays at a time, chosen by priority - see Start().
    */
   class LedSequencer
   {
     public:
-      // Dark gap played before and after every pattern. A bench build lights
-      // LED A steadily while Inactive, and a pattern that begins or ends on an
-      // on phase would merge into that level - a single 200 ms blink on a lit
-      // LED is simply invisible (found on the bench 2026-09-14). Framed in dark,
-      // every pattern reads the same on a lit or a dark idle LED.
+      // Dark gap played before and after every pattern. A pattern that begins or
+      // ends on an on phase would merge into a lit base level - a single 200 ms
+      // blink on a lit LED is simply invisible (found on the bench 2026-09-14).
+      // Framed in dark, every pattern reads the same on a lit or a dark LED.
       static constexpr uint16_t M_FRAME_GAP_MS { 300 };
 
       LedSequencer();
 
-      /** @brief Start a pattern, replacing any pattern already playing. */
-      void Start(LedPattern pattern, int64_t nowMs);
+      /**
+       * @brief Start a pattern, replacing the one playing unless that one outranks it.
+       *
+       * Priority, highest first: OrangeSteady, RedFlash, OrangeTriple. A pattern of
+       * equal or higher priority replaces the one playing and restarts from its
+       * lead-in; a lower one is refused while the current pattern is still active,
+       * so a confirmation never cuts short a warning (spec section 3.3).
+       *
+       * @return True if the pattern started; false if it was refused.
+       */
+      bool Start(LedPattern pattern, int64_t nowMs);
 
       void Stop() { m_pattern = LedPattern::None; }
 
