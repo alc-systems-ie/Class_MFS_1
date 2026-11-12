@@ -7,6 +7,7 @@ void run_access_key_tests();
 void run_device_clock_tests();
 void run_access_control_tests();
 void run_led_sequencer_tests();
+void run_led_indicator_tests();
 void run_settings_tests();
 void run_credentials_tests();
 void run_arm_policy_tests();
@@ -24,6 +25,7 @@ int main()
   run_device_clock_tests();
   run_access_control_tests();
   run_led_sequencer_tests();
+  run_led_indicator_tests();
   run_settings_tests();
   run_credentials_tests();
   run_arm_policy_tests();
