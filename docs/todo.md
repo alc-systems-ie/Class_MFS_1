@@ -29,3 +29,48 @@ Make FEM use a per-device setting, set from the app:
 - **Consider:** whether the "FEM off" setting should be refused while arming or
   armed, in line with "no scanner, no arming" — a device that cannot hear the
   phone must not reach Active.
+
+## Anti-tamper switch: closed case must draw no current
+
+**Added 2026-11-12. Hardware, next board revision.** The casing is meant to hold
+the ANTI_TAMP button (P1.02, active low) down in normal use. With a normally-open
+button that grounds the pin permanently, so its pull-up conducts all the time:
+
+- **Internal pull-up** (14 kΩ typ, 12–16 kΩ, nRF54L datasheet R<sub>PU</sub>):
+  3.0 V ÷ 14 kΩ ≈ **214 µA** (188–250 µA). Budget 117 µA → ~331 µA; CR123A life
+  ~1.4 years → **~6 months**.
+- **NFC-pad leakage:** P1.02 and P1.03 (ADXL INT1, idles high) are the NFCT pad
+  pair. The datasheet warns of leakage between them when held at different logic
+  levels (I<sub>NFC_LEAK</sub>; nRF54L figure still to look up). A held-down
+  button keeps them different permanently.
+
+v1 does not configure P1.02, so neither cost applies today — **unless the board
+has an external pull-up on P1.02.** Check the schematic: if it does, the closed
+case already draws 3.0 V ÷ R.
+
+**Fix: an SPDT snap-action microswitch wired COM–NC** (NO unconnected), so the
+closed case holds the contact open:
+
+```
+VDD ─ internal pull-up ─┬─ P1.02
+                        COM
+                        NC ─ GND
+Case closed: NC open   → pin high, 0 µA, P1.02 and P1.03 both high (no leakage)
+Case open:   NC closed → pin low, tamper
+```
+
+- Subminiature microswitches commonly come SPDT (e.g. Omron D2F / D2HW
+  families) — confirm the exact variant. A short hinge-lever or roller actuator
+  absorbs casing tolerance; check overtravel across the gap range.
+- **Board-mounted, no flying leads.** In this wiring an open circuit reads as
+  "case closed", so a broken lead or lifted joint would look secure. Inside the
+  case it cannot be reached without opening the case first.
+- A wall tamper, if wanted, is a second NC switch in parallel on the same pin.
+- Alternatives if the mechanics are awkward: a lid magnet plus a Hall switch
+  (~0.5–2 µA continuous), or the fitted OPT3001 as a light-on-opening backup
+  (misses an opening in the dark).
+
+**Firmware, when tamper is implemented:** `GPIO_ACTIVE_LOW | GPIO_PULL_UP`, no
+external resistor; an edge interrupt wakes the SoC from System ON idle, as INT1
+does. While the case is open the pull-up draws ~214 µA, so latch the event,
+disable the pull-up, and re-check periodically for the case closing again.
