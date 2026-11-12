@@ -405,6 +405,12 @@ west build -b nrf54l15dk/nrf54l05/cpuapp -p always -- -DEXTRA_CONF_FILE=credenti
 west flash --recover
 ```
 
+**Fleet devices (`MFS1-1126-00001` … `0000A`):** build and flash one by serial with
+`tools/flash_device.sh <serial>` (add `--build` to build only). It loads
+`secrets/<serial>.conf` (gitignored, from `tools/gen_fleet_credentials.py`, with the
+spreadsheet `secrets/MFS1-1126-credentials.xlsx`), checks the image carries that
+serial, then flashes `--recover` to J-Link 853003346 (`MFS_DEV_ID` overrides).
+
 **Always flash this board with `--recover`** — `west flash` alone has reported
 success while the old image kept running (see **West flash needs `--recover`** in
 session memory).
