@@ -408,8 +408,8 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 
 ## 5k. Scan period 7245 ms, FEM power model 5 s (2026-11-14)
 
-- [ ] 1. RTT at boot: `Passive scan started: 100 ms window every 7245 ms.`
-- [ ] 2. PPK2 (ammeter, CR123A), armed, settled, 60 s: scan bursts ~7.25 s apart, the small power-model spikes 5 s apart (were 2 s); average ~106 µA (was 126.7 µA). Record in `docs/power-budget.md`.
+- [x] 1. RTT at boot: `Passive scan started: 100 ms window every 7245 ms.` (MFS1-1126-00006/7, 2026-11-14)
+- [x] 2. **103.4 µA, 2026-11-14** (MFS1-1126-00007, 60 s, armed, debugger unplugged and power-cycled; `docs/power-budget.md`). PPK2 (ammeter, CR123A), armed, settled, 60 s: scan bursts ~7.25 s apart, the small power-model spikes 5 s apart (were 2 s); average ~106 µA (was 126.7 µA). Record in `docs/power-budget.md`.
 - [ ] 3. Command reliability from each phone (iPhone, Mac, the production Android once available): 20 Sends each, Arm/Disarm alternating, all heard within one 30 s Send. Re-run `tools/scan_phase_check.py` with the Android's measured interval.
 
 ## 9. Bench log

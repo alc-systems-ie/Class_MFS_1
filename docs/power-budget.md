@@ -200,6 +200,17 @@ update 2000 → **5000 ms**. Scan charge ≈ 0.70 mC per wake (from the 126.7 µ
 so ≈ 0.70 / 7.245 + ~10 µA idle ≈ **~106 µA → ~1.55 years** — an estimate, to be
 measured. 7245 ms is the centre of a 44-unit passing island at N = 4 (Kconfig help).
 
+**Measured 2026-11-14** (MFS1-1126-00007, firmware 3d1447a, CR123A, PPK2 ammeter,
+armed, debug cable unplugged and board power-cycled, 60 s ≈ 8 scans): **6.20 mC / 60 s
+= 103.4 µA → ~1.6 years** (14,000 h on 1450 mAh). Scans 7.25 s apart with a ~7.5 mA
+radio + LNA plateau; power-model spikes every 5 s; flat floor between.
+
+**Method warning:** a debugger that has connected leaves the nRF54L's debug domain
+powered (~1 mA floor) until a power cycle — unplugging the cable is not enough — and
+intermittent pogo-pin contact gave misleading traces earlier the same day (a 72.8 µA
+single-period reading and a ~5 mA scan plateau, both discarded; the range test showed
+the LNA working). Measure only after unplugging the debugger and power-cycling.
+
 ### MEASURED 2026-09-16 — 23 µA (UNRECONCILED — do not yet trust as the life figure)
 
 PPK II reading of **23 µA average** on the merged post-FIRE build (`main`, LEDs
