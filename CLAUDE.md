@@ -83,11 +83,18 @@ MOSFETs in series on the low side, driven straight from the nRF GPIOs, so the
 gate drive is VOUT. At the boost's ~3.0 V VSET default they are only partly on
 (datasheet Fig. 3/4: threshold up to 2.5 V, R<sub>DS(on)</sub> specified only at
 5 V and 10 V) and the e-match fired late or not at all; at 3.3 V with high-drive
-pins it fires. So arming raises the boost to 3.3 V as its own step
-(`ArmingStep::FireSupply`, `App::RaiseFireSupply()`), every disarm returns it
-to VSET (`App::LowerFireSupply()`, including the boot disarm, since nPM2100
+pins it fires. **The boost is raised to 3.3 V only when a fire is pending**
+(`docs/superpowers/specs/2026-11-14-fire-supply-on-demand-amendment.md`, owner
+2026-11-14 — holding it raised while armed cost ~40 µA, measured): at a live
+FIRE's acceptance, at an armed trigger delay's start, and otherwise just before
+the output asserts (raise → 100 ms → assert; `App::prepareFireSupply()`, the
+backstop in `updateOutputState()`). If it cannot be verified then, the device
+**fires anyway** and logs it (owner). Arming keeps a **battery test**
+(`ArmingStep::FireSupply`): raise, verify, lower, before the pins are enabled, so
+a battery that cannot hold 3.2 V still refuses arming. Every disarm returns the
+boost to VSET (`App::LowerFireSupply()`, including the boot disarm, since nPM2100
 registers survive an SoC reset), and `OutputSwitch::Enable()` configures the
-pins `NRF_GPIO_DRIVE_H0H1`. A battery that cannot hold 3.2 V refuses arming.
+pins `NRF_GPIO_DRIVE_H0H1`.
 **OPEN — hardware:** 3.3 V is still thin margin for these FETs (worse cold);
 choose FETs with R<sub>DS(on)</sub> specified at 2.5 V gate drive on the next
 revision.
@@ -189,8 +196,8 @@ level to inherit**. The order is load-bearing and now also carries the fire-pin
 isolation (`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`):
 **arm** is accepted → **Arming**; nothing for 10 s (`M_EXIT_DELAY_MS`, red
 steady, simulated firing masked); then, synchronously, restart detection armed (configure, confirm
-AWAKE clear) → **raise the fire supply** (nPM2100 boost to 3.3 V, VOUT verified
-≥ 3.2 V) → enable the fire pins **last** → boolean Active only on every step's
+AWAKE clear) → **fire supply battery test** (nPM2100 boost to 3.3 V, VOUT verified
+≥ 3.2 V, then back to VSET) → enable the fire pins **last** → boolean Active only on every step's
 success, red flashes for 3 s, then every LED is dark. **Disarm**, from any state: disable the fire pins
 **first** → lower the fire supply (boost back to its VSET level) → boolean Inactive (cancel any arming) → re-derive the output (GPIOs
 already isolated) → restart the test. Arming is **refused** — fails safe to the

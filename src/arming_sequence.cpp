@@ -88,16 +88,19 @@ namespace alc
       return false;
     }
 
-    // The fire gates need more than the boost's ~3.0 V default to switch fully
-    // on. Raised only now, after every other check, so a device that is not
-    // about to arm never runs the higher supply. Cannot re-enter, so no session
-    // check follows.
+    // BATTERY TEST. The fire gates need more than the boost's ~3.0 V default to
+    // switch fully on, so a cell that cannot hold the firing level refuses arming
+    // here, while the engineer is on site - not at the moment of need. The supply
+    // is lowered again at once: armed, it idles at its default level and App
+    // raises it only when a fire is pending (fire supply amendment 2026-11-14).
+    // Neither call can re-enter, so no session check follows.
     result = m_actions.RaiseFireSupply();
     if (result < 0) {
       failSafe();
       raiseFailure(ArmingStep::FireSupply, result);
       return false;
     }
+    m_actions.LowerFireSupply();
 
     // The LAST step. Active only once the pins are verified enabled.
     result = m_actions.EnableFirePins();

@@ -82,7 +82,8 @@ namespace alc
     // ADXL367 datasheet recommends when power cycling.
     constexpr uint32_t M_LSOUT_DISCHARGE_MS { 50 };
 
-    // Fire supply while armed (arming step RaiseFireSupply). The nRF runs from the
+    // Fire supply, raised only when a fire is pending (fire supply amendment
+    // 2026-11-14) and briefly as the arming battery test. The nRF runs from the
     // nPM2100 boost output, and the fire gates are driven from the nRF's GPIOs, so
     // VOUT is the gate drive. The two STL8DN6LF3 MOSFETs in series are only partly
     // on at the ~3.0 V VSET default - the e-match fired late or not at all - and
@@ -93,8 +94,10 @@ namespace alc
     // 3.3 V, so the check is a floor, not a match; 3.2 V allows for ADC tolerance.
     constexpr uint16_t M_FIRE_SUPPLY_MIN_MILLIVOLTS { 3200 };
 
-    // Time for the boost to slew up before VOUT is measured.
-    constexpr int32_t M_FIRE_SUPPLY_SETTLE_MS { 20 };
+    // Time for the boost to slew up before VOUT is measured and, at fire time,
+    // before the pins assert (owner, 2026-11-14: generous - the boost settles in
+    // well under this).
+    constexpr int32_t M_FIRE_SUPPLY_SETTLE_MS { 100 };
 
     constexpr float M_MILLIVOLTS_PER_VOLT { 1000.0f };
 
@@ -239,6 +242,7 @@ namespace alc
       , m_output_switch()
       , m_output_active(false)
       , m_switch_fault_pending(false)
+      , m_fire_supply_raised(false)
       , m_settings()
       , m_delay_timer {}
       , m_delay_pm_lock_held(false)
@@ -757,7 +761,14 @@ namespace alc
     // derivation point cannot be forgotten by a future edit to the loop, and
     // there is no second call site that could disagree with this one. While the
     // device is not Active the pins are disabled and Set(false) does nothing.
-    int switchResult { m_output_switch.Set(m_output_active) };
+    int switchResult { 0 };
+
+    // BACKSTOP. The supply is normally raised when the fire became pending; an
+    // undelayed armed trigger has no pending stage, so it is raised here and
+    // the assertion waits M_FIRE_SUPPLY_SETTLE_MS. Never refuses the fire.
+    if (m_output_active) { prepareFireSupply(); }
+
+    switchResult = m_output_switch.Set(m_output_active);
 
     // A switch failure while Active - a failed write or read-back, a refused
     // assert - leaves the switch latched faulty with its pins isolated, and the
@@ -917,12 +928,30 @@ namespace alc
 
   int App::RaiseFireSupply()
   {
+    // The arming battery test - the sequence lowers the supply straight after.
     // Must not call back into m_arming. Runs in the synchronous arming step, so
     // the settle delay blocks the main loop for M_FIRE_SUPPLY_SETTLE_MS once.
+    return raiseFireSupply();
+  }
+
+  void App::prepareFireSupply()
+  {
+    int result { 0 };
+
+    if (m_fire_supply_raised) { return; }
+
+    result = raiseFireSupply();
+    if (result < 0) { LOG_ERR("Fire supply not verified at the firing level (%d) - firing anyway!", result); }
+  }
+
+  int App::raiseFireSupply()
+  {
     float voutVolts { 0.0f };
     int voutMillivolts { 0 };
-    int result { m_pmic.BoostSetVoltage(M_FIRE_SUPPLY_MILLIVOLTS) };
+    int result { 0 };
 
+    m_fire_supply_raised = true;
+    result               = m_pmic.BoostSetVoltage(M_FIRE_SUPPLY_MILLIVOLTS);
     if (result < 0) {
       LOG_ERR("Fire supply: boost would not take %u mV (%d)!", M_FIRE_SUPPLY_MILLIVOLTS, result);
       return result;
@@ -932,7 +961,8 @@ namespace alc
 
     // VERIFIED, not assumed. A boost that cannot reach the level - a battery too
     // weak to support it - would leave the gates half on and the e-match unfired,
-    // so arming fails safe instead of reporting a device that could not fire.
+    // so the arming battery test fails safe instead of reporting a device that
+    // could not fire.
     result = m_pmic.AdcReadVout(voutVolts);
     if (result < 0) {
       LOG_ERR("Fire supply: VOUT read failed (%d)!", result);
@@ -957,6 +987,7 @@ namespace alc
     // boost raised. A failure only costs battery: the pins are already isolated.
     int result { m_pmic.BoostUseVsetPin() };
 
+    m_fire_supply_raised = false;
     if (result < 0) { LOG_WRN("Fire supply: boost would not return to its VSET level (%d).", result); }
   }
 
@@ -1212,6 +1243,9 @@ namespace alc
       case DetectionEventType::DelayStarted:
         if (event.armed) {
           LOG_WRN("TRIGGER PENDING: firing in %u s. Deactivating cancels it.", event.seconds);
+          // Raised now so the assertion at expiry does not wait for it. A Disarm
+          // cancelling the delay lowers it again.
+          prepareFireSupply();
         } else {
           LOG_INF("TEST trigger pending: simulated firing in %u s.", event.seconds);
         }
@@ -1592,6 +1626,9 @@ namespace alc
         uint8_t confirmUuid[protocol::M_UUID_BYTES];
 
         m_fire.Start(live, k_uptime_get(), DetectionEngine::M_DELAYED_TRIGGER_HOLD_MS);
+        // A live fire raises the supply at the top of its 10 s countdown, so it has
+        // long settled when the pins assert. A rehearsal never touches it.
+        if (live) { prepareFireSupply(); }
         LOG_WRN("FIRE received from slot %u n %u - %s, %u s countdown.", evaluation.slot, evaluation.n, live ? "LIVE" : "rehearsal",
                 static_cast<unsigned>(FireSequence::M_FIRE_COUNTDOWN_MS / MSEC_PER_SEC));
 

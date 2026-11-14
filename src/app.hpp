@@ -109,6 +109,18 @@ namespace alc
       // spec section 3.2). Must not call back into m_arming.
       void signalWarning(const char* reason, int result);
 
+      // Raises the fire supply, waits M_FIRE_SUPPLY_SETTLE_MS and verifies VOUT.
+      // Shared by the arming battery test and prepareFireSupply(). 0 or negative
+      // errno. Sets m_fire_supply_raised once the boost write is attempted.
+      int raiseFireSupply();
+
+      // Fire supply amendment (2026-11-14): armed, the boost idles at its VSET
+      // level and is raised only when a fire is pending - a live FIRE accepted, an
+      // armed trigger delay started, or, as the backstop, the output about to
+      // assert. At most one attempt per pending fire. A failed raise is logged and
+      // the fire goes ahead (owner decision): aborting is no safer.
+      void prepareFireSupply();
+
       // ArmingActions - see arming_sequence.hpp for each contract.
       //
       // NONE of these may call back into m_arming, directly or indirectly.
@@ -260,6 +272,10 @@ namespace alc
       // A later refused arm (the latched switch fails Enable()) is warned by the
       // arming sequence instead - see Run().
       bool m_switch_fault_pending;
+
+      // The fire supply was raised - or a raise attempted - since the last
+      // LowerFireSupply(). Stops prepareFireSupply() repeating the 100 ms settle.
+      bool m_fire_supply_raised;
 
       // The engineer-settable parameters, NVS-backed.
       Settings m_settings;

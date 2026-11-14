@@ -30,7 +30,8 @@ namespace alc
    * running - or had gone down since last checked - at the end of the exit delay or
    * just before the fire pins were enabled. ScannerLost: it went down while Arming
    * or Active and ServiceScannerHealth() failed safe. FireSupply: the fire supply
-   * would not rise to its firing level just before the pins were enabled.
+   * would not rise to its firing level in the battery test just before the pins
+   * were enabled.
    */
   enum class ArmingStep : uint8_t { DisablePins, RestartDetection, EnablePins, ScannerCheck, ScannerLost, FireSupply };
 
@@ -61,18 +62,21 @@ namespace alc
       /**
        * @brief Raise the supply the fire gates are driven from to its firing level, verified.
        *
-       * The step immediately before EnableFirePins(). The STL8DN6LF3 gates are
-       * only partly on at the nPM2100's ~3.0 V default, so the boost is raised to
-       * 3.3 V while armed. 0 once the supply is verified at the firing level, or
-       * negative errno - the arming then fails safe. Must not call back into the
-       * sequence.
+       * The arming BATTERY TEST, just before EnableFirePins(). The STL8DN6LF3
+       * gates are only partly on at the nPM2100's ~3.0 V default, so a cell that
+       * cannot hold 3.3 V refuses arming. The sequence calls LowerFireSupply()
+       * straight after a success: armed, the supply idles at its default and App
+       * raises it only when a fire is pending (fire supply amendment 2026-11-14).
+       * 0 once the supply is verified at the firing level, or negative errno - the
+       * arming then fails safe. Must not call back into the sequence.
        */
       virtual int RaiseFireSupply() = 0;
 
       /**
        * @brief Return the fire supply to its idle level. Best effort.
        *
-       * Called by every fail-safe and disarm, straight after DisableFirePins().
+       * Called by every fail-safe and disarm, straight after DisableFirePins(),
+       * and after a successful battery test, before EnableFirePins().
        * No result: with the pins isolated a raised supply is a battery cost, not
        * a firing risk, so the implementation logs a failure and nothing more.
        * Must not call back into the sequence.
@@ -112,8 +116,9 @@ namespace alc
    *
    * - Arm: Arming for exactly M_EXIT_DELAY_MS with nothing done, then in one
    *   synchronous Service() call: RestartDetection(true) -> RaiseFireSupply() ->
-   *   EnableFirePins() -> Active. Active is set only after the enable returned 0;
-   *   neither the raise nor the enable is attempted if an earlier step failed.
+   *   LowerFireSupply() (the battery test) -> EnableFirePins() -> Active. Active
+   *   is set only after the enable returned 0; neither the raise nor the enable
+   *   is attempted if an earlier step failed.
    * - Any arming-step failure: DisableFirePins() -> LowerFireSupply() -> Inactive
    *   -> RestartDetection(false) -> SignalWarning(step, result).
    * - Scanner lost while Arming or Active (ServiceScannerHealth()): the same
@@ -160,8 +165,8 @@ namespace alc
        * Does nothing before the deadline. At or after it checks the scanner is
        * running and has not gone down since last checked (else fails safe, step
        * ScannerCheck), then runs restart -> the same scanner check again (the
-       * restart touches the scanner cadence) -> raise the fire supply -> enable ->
-       * Active. Returns true on
+       * restart touches the scanner cadence) -> the battery test (raise the fire
+       * supply, then lower it) -> enable -> Active. Returns true on
        * the call that went Active, false otherwise
        * (including a failed arming, which is reported through SignalWarning()
        * and TakeFailure()).

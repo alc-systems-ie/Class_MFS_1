@@ -971,8 +971,10 @@ namespace
     return count;
   }
 
-  // 27. The supply is raised once, after the armed restart and before the enable.
-  void testFireSupplyRaisedBeforeEnable()
+  // 27. The battery test: the supply is raised once, after the armed restart, and
+  // lowered again before the enable - armed, it idles at its default level and is
+  // raised only when a fire is pending (fire supply amendment 2026-11-14).
+  void testFireSupplyTestedBeforeEnable()
   {
     Fixture fixture;
 
@@ -983,15 +985,18 @@ namespace
 
     assert(fixture.sequence.Service(M_START_MS + M_ARMING_DELAY_MS));
     assert(fixture.sequence.State() == ArmState::Active);
-    assert(fixture.actions.supplyLog.size() == 1);
+    assert(fixture.actions.supplyLog.size() == 2);
     assert(fixture.actions.supplyLog[0].call == SupplyCall::Raise);
     assert(fixture.actions.supplyLog[0].stateAtCall == ArmState::Arming);
-    // After RestartArmed (log[0]), before EnablePins (log[1]).
+    assert(fixture.actions.supplyLog[1].call == SupplyCall::Lower);
+    assert(fixture.actions.supplyLog[1].stateAtCall == ArmState::Arming);
+    // Both after RestartArmed (log[0]), before EnablePins (log[1]).
     assert(fixture.actions.supplyLog[0].mainLogSize == 1);
+    assert(fixture.actions.supplyLog[1].mainLogSize == 1);
     assert(fixture.actions.log[0].call == Call::RestartArmed);
     assert(fixture.actions.log[1].call == Call::EnablePins);
 
-    printf("arming sequence: fire supply raised between restart and enable: OK\n");
+    printf("arming sequence: fire supply tested (raised, lowered) between restart and enable: OK\n");
   }
 
   // 28. A failed raise fails safe: no enable, pins disabled, supply lowered, Inactive, warned.
@@ -1137,7 +1142,7 @@ void run_arming_sequence_tests()
   testBeginArmingDiscardsStaleScannerLoss();
   testHealedScannerLossAtDeadline();
   testScannerLostInsideArmedRestart();
-  testFireSupplyRaisedBeforeEnable();
+  testFireSupplyTestedBeforeEnable();
   testFireSupplyRaiseFailure();
   testNoRaiseWhenRestartFails();
   testDisarmLowersFireSupply();
