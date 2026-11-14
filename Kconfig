@@ -165,6 +165,18 @@ config MFS_SCAN_DIAG
 	  first four on-air bytes. Tells "not received" apart from "received and
 	  silently discarded". Leave off in production - it reveals reception.
 
+config MFS_DIAG_BOOST_PASSTHROUGH
+	bool "Force the nPM2100 boost into pass-through (bench measurement only)"
+	default n
+	help
+	  BENCH MEASUREMENT ONLY - never in a device that may fire. Forces the
+	  boost into pass-through at boot, so the battery feeds the load directly
+	  and a PPK2 in series with the cell shows the true load current instead
+	  of the boost's input pulses. While forced, the boost cannot raise the
+	  fire supply: VOUT follows the battery. Measure disarmed.
+	  Every build sets the boost mode at boot (Auto when this is n), because
+	  nPM2100 registers survive an SoC reset and a reflash.
+
 config MFS_DEBUG_DETECTION_LOG
 	bool "Log detection met / cleared transitions (bench only)"
 	default y

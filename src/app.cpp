@@ -86,13 +86,25 @@ namespace alc
     // 2026-11-14) and briefly as the arming battery test. The nRF runs from the
     // nPM2100 boost output, and the fire gates are driven from the nRF's GPIOs, so
     // VOUT is the gate drive. The two STL8DN6LF3 MOSFETs in series are only partly
-    // on at the ~3.0 V VSET default - the e-match fired late or not at all - and
+    // on at ~3.0 V (the board's VSET level) - the e-match fired late or not at all - and
     // fully on at 3.3 V, the boost's maximum (bench, 2026-11-12).
     constexpr uint16_t M_FIRE_SUPPLY_MILLIVOLTS { 3300 };
 
     // Lowest VOUT that counts as raised. The PMIC's VOUT ADC tops out at exactly
     // 3.3 V, so the check is a floor, not a match; 3.2 V allows for ADC tolerance.
     constexpr uint16_t M_FIRE_SUPPLY_MIN_MILLIVOLTS { 3200 };
+
+    // Idle boost target (owner, 2026-11-14). The nPM2100 passes the battery straight
+    // through whenever it sits more than 100 mV above the target, so a low target
+    // keeps the boost in pass-through for nearly the whole CR123A discharge and it
+    // only regulates near end of life. The board's VSET resistor selects ~3.0 V,
+    // which a CR123A under the 7.6 mA scan load sits just below: the boost then
+    // converted every scan at roughly 50% efficiency - 1.59 mC per scan against
+    // 0.79 mC in pass-through (PPK2, 2026-11-14), about 284 uA against ~140 uA
+    // average. 2.2 V stays above the LDOSW headroom for the ADXL367's 1.8 V
+    // LSOUT, above the nRF21540's RX gain knee (~2.0 V, PS v1.2 Figure 18), and
+    // keeps the LEDs lit.
+    constexpr uint16_t M_IDLE_SUPPLY_MILLIVOLTS { 2200 };
 
     // Time for the boost to slew up before VOUT is measured and, at fire time,
     // before the pins assert (owner, 2026-11-14: generous - the boost settles in
@@ -633,6 +645,34 @@ namespace alc
     }
     LOG_INF("PMIC power-off button disabled - SHPHLD cannot ship the device.");
 
+    // SET THE BOOST MODE EVERY BOOT. nPM2100 registers survive an SoC reset and a
+    // reflash, so a build that forced pass-through would otherwise leave it
+    // forced for the next image.
+#if defined(CONFIG_MFS_DIAG_BOOST_PASSTHROUGH)
+    result = m_pmic.BoostSetMode(Npm2100::BoostMode::ForcedPt);
+    if (result < 0) {
+      LOG_ERR("Failed to force the boost into pass-through: %d!", result);
+      return result;
+    }
+    LOG_WRN("DIAGNOSTIC: boost forced into pass-through - VOUT follows the battery, the fire supply cannot rise. Bench only!");
+#else
+    result = m_pmic.BoostSetMode(Npm2100::BoostMode::Auto);
+    if (result < 0) {
+      LOG_ERR("Failed to set the boost to Auto mode: %d!", result);
+      return result;
+    }
+#endif
+
+    // The idle target, set here as well as by the boot disarm's LowerFireSupply(),
+    // so the rest of bring-up already runs in pass-through. A failure costs
+    // battery, not function: logged, and bring-up carries on.
+    result = m_pmic.BoostSetVoltage(M_IDLE_SUPPLY_MILLIVOLTS);
+    if (result < 0) {
+      LOG_ERR("Failed to set the boost idle target to %u mV: %d!", M_IDLE_SUPPLY_MILLIVOLTS, result);
+    } else {
+      LOG_INF("Boost idle target %u mV - pass-through while the battery is above it.", M_IDLE_SUPPLY_MILLIVOLTS);
+    }
+
     // LSOUT supplies the ADXL367 at 1.8 V.
     //
     // POWER-CYCLE IT. nPM2100 registers survive an SoC reset, so LdoSwEnable() on an
@@ -985,10 +1025,10 @@ namespace alc
     // Called on every disarm, including the one at boot, so a reset while armed -
     // the nPM2100 keeps its registers across an SoC reset - cannot leave the
     // boost raised. A failure only costs battery: the pins are already isolated.
-    int result { m_pmic.BoostUseVsetPin() };
+    int result { m_pmic.BoostSetVoltage(M_IDLE_SUPPLY_MILLIVOLTS) };
 
     m_fire_supply_raised = false;
-    if (result < 0) { LOG_WRN("Fire supply: boost would not return to its VSET level (%d).", result); }
+    if (result < 0) { LOG_WRN("Fire supply: boost would not return to its %u mV idle target (%d).", M_IDLE_SUPPLY_MILLIVOLTS, result); }
   }
 
   bool App::TakeScannerLost()

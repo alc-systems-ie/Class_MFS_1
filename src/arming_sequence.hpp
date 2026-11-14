@@ -65,7 +65,7 @@ namespace alc
        * The arming BATTERY TEST, just before EnableFirePins(). The STL8DN6LF3
        * gates are only partly on at the nPM2100's ~3.0 V default, so a cell that
        * cannot hold 3.3 V refuses arming. The sequence calls LowerFireSupply()
-       * straight after a success: armed, the supply idles at its default and App
+       * straight after a success: armed, the supply idles at its 2.2 V target and App
        * raises it only when a fire is pending (fire supply amendment 2026-11-14).
        * 0 once the supply is verified at the firing level, or negative errno - the
        * arming then fails safe. Must not call back into the sequence.

@@ -389,13 +389,14 @@ Every step holds in a production build too - no LED differs between builds.
 
 On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 
-- [ ] 1. Arm: RTT `Fire supply raised: boost 3300 mV, VOUT ... mV.` once at the end of the exit delay, then Active. Measure VOUT armed: back at the VSET level (~3.0 V), **not** 3.3 V.
+- [ ] 1. Arm: RTT `Fire supply raised: boost 3300 mV, VOUT ... mV.` once at the end of the exit delay, then Active. Measure VOUT armed: equal to the battery voltage (pass-through, 2.2 V idle target), **not** 3.3 V.
 - [ ] 2. PPK2 (ammeter), armed, settled, 60 s window: the boost switching spikes between scans are gone or sparse; average down from ~161 µA towards ~120 µA. Record it in `docs/power-budget.md`.
-- [ ] 3. Armed trigger with a delay: VOUT rises to 3.3 V when `TRIGGER PENDING` logs, the output asserts at expiry, then disarm (orange latch) and VOUT returns to VSET.
+- [ ] 3. Armed trigger with a delay: VOUT rises to 3.3 V when `TRIGGER PENDING` logs, the output asserts at expiry, then disarm (orange latch) and VOUT returns to battery voltage (pass-through).
 - [ ] 4. Armed trigger without a delay (delay 0): the output asserts ~100 ms after detection; VOUT is 3.3 V at assertion. With an e-match: it fires.
-- [ ] 5. Live FIRE: VOUT rises at the top of the 10 s countdown, fires at its end, then returns to VSET. Rehearsal FIRE (disarmed): VOUT never rises.
-- [ ] 6. Disarm during an armed delay: VOUT returns to VSET with the pins disabled.
+- [ ] 5. Live FIRE: VOUT rises at the top of the 10 s countdown, fires at its end, then returns to battery voltage. Rehearsal FIRE (disarmed): VOUT never rises.
+- [ ] 6. Disarm during an armed delay: VOUT returns to battery voltage with the pins disabled.
 - [ ] 7. Optional, with a depleted cell that cannot hold 3.2 V boosted: arming is refused at the battery test (orange stays on, as §5h.9). Fire-anyway at fire time is a code path only: not bench-forced.
+- [ ] 8. PPK2 (ammeter, CR123A), armed, settled, one full scan period: ~0.8 mC per scan with a flat ~7.6 mA plateau (not pulses), average ~140 µA. Record in `docs/power-budget.md`.
 
 ## 9. Bench log
 

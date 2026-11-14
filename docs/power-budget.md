@@ -163,6 +163,31 @@ Still worth measuring: **2.0 V**, which sits just above the ~1.9 V pass-through
 boundary. Below that the boost engages and consumption should turn upward — that
 is the end-of-life knee, and it bounds the last of the capacity.
 
+### MEASURED 2026-11-14 — CLASS MFS board: 284 µA boosting, ~140 µA in pass-through
+
+PPK2 in ammeter mode in series with a CR123A, MFS1-1126-00005, debugger detached,
+FEM LNA on every scan. Selections, not 10 s windows (a 10 s window holds one or
+two 5.97 s scans and reads 161 µA or 300 µA by chance):
+
+| Selection | Boost at VSET (~3.0 V) | Boost forced to pass-through |
+|---|---|---|
+| One scan period (5.974 s) | **1.69 mC → 284 µA** | — |
+| Between scans (5.088 s) | 89 µC → **17.6 µA** | — |
+| One scan (~119 ms) | ~1.59 mC, battery current all inductor pulses | **0.79 mC**, flat **~7.6 mA** plateau |
+
+**The CLASS MFS board breaks the §3.1 / §10 pass-through assumption.** Its VSET
+resistor selects ~3.0 V, and the nPM2100 passes through only when V<sub>BAT</sub>
+exceeds the target by 100 mV; a CR123A under the scan load sits just below
+3.1 V, so the boost converted every scan at roughly 50% efficiency. The load
+itself is on budget (7.6 mA against ~7 mA for radio + LNA, ~100 ms).
+
+Fix (owner, 2026-11-14): firmware sets a **2.2 V idle target** at boot and on every
+disarm, so the boost passes through above ~2.3 V, and raises it to 3.3 V only for
+firing (`docs/superpowers/specs/2026-11-14-fire-supply-on-demand-amendment.md`
+§6). Expected: 0.79 mC / 5.97 s ≈ 132 µA + idle ≈ **~140 µA, ~1.2 years** on
+1450 mAh. To be confirmed by measurement on the normal build (bench checklist
+§5i.8).
+
 ### MEASURED 2026-09-16 — 23 µA (UNRECONCILED — do not yet trust as the life figure)
 
 PPK II reading of **23 µA average** on the merged post-FIRE build (`main`, LEDs

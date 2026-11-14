@@ -80,7 +80,7 @@ the fire pins drive LEDs, not MOSFETs.
 
 **Fire gate drive (bench, 2026-11-12).** The fire gates are two STL8DN6LF3
 MOSFETs in series on the low side, driven straight from the nRF GPIOs, so the
-gate drive is VOUT. At the boost's ~3.0 V VSET default they are only partly on
+gate drive is VOUT. At ~3.0 V (the board's VSET level) they are only partly on
 (datasheet Fig. 3/4: threshold up to 2.5 V, R<sub>DS(on)</sub> specified only at
 5 V and 10 V) and the e-match fired late or not at all; at 3.3 V with high-drive
 pins it fires. **The boost is raised to 3.3 V only when a fire is pending**
@@ -92,9 +92,18 @@ backstop in `updateOutputState()`). If it cannot be verified then, the device
 **fires anyway** and logs it (owner). Arming keeps a **battery test**
 (`ArmingStep::FireSupply`): raise, verify, lower, before the pins are enabled, so
 a battery that cannot hold 3.2 V still refuses arming. Every disarm returns the
-boost to VSET (`App::LowerFireSupply()`, including the boot disarm, since nPM2100
+boost to its **2.2 V idle target** (`App::LowerFireSupply()`, including the boot disarm, since nPM2100
 registers survive an SoC reset), and `OutputSwitch::Enable()` configures the
 pins `NRF_GPIO_DRIVE_H0H1`.
+**Boost idle target 2.2 V, never VSET** (owner 2026-11-14, amendment §6). The
+nPM2100 passes through only when V<sub>BAT</sub> is >100 mV above its target; at the
+board's ~3.0 V VSET a CR123A under scan load kept it converting at ~50% efficiency
+— 1.59 mC per scan against 0.79 mC in pass-through, **284 µA against ~140 µA**.
+Firmware sets 2.2 V at boot and in every lower, and sets the boost mode (Auto)
+every boot because PMIC registers survive a reflash. Do not return to
+`BoostUseVsetPin()` on this board. `CONFIG_MFS_DIAG_BOOST_PASSTHROUGH` (bench only)
+forces pass-through to measure the true load; it refuses arming (the battery test
+cannot reach 3.2 V), which is correct.
 **OPEN — hardware:** 3.3 V is still thin margin for these FETs (worse cold);
 choose FETs with R<sub>DS(on)</sub> specified at 2.5 V gate drive on the next
 revision.
@@ -197,9 +206,9 @@ isolation (`docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md`):
 **arm** is accepted → **Arming**; nothing for 10 s (`M_EXIT_DELAY_MS`, red
 steady, simulated firing masked); then, synchronously, restart detection armed (configure, confirm
 AWAKE clear) → **fire supply battery test** (nPM2100 boost to 3.3 V, VOUT verified
-≥ 3.2 V, then back to VSET) → enable the fire pins **last** → boolean Active only on every step's
+≥ 3.2 V, then back to the 2.2 V idle target) → enable the fire pins **last** → boolean Active only on every step's
 success, red flashes for 3 s, then every LED is dark. **Disarm**, from any state: disable the fire pins
-**first** → lower the fire supply (boost back to its VSET level) → boolean Inactive (cancel any arming) → re-derive the output (GPIOs
+**first** → lower the fire supply (boost back to its 2.2 V idle target) → boolean Inactive (cancel any arming) → re-derive the output (GPIOs
 already isolated) → restart the test. Arming is **refused** — fails safe to the
 warning, disable pins, Inactive, test resumed disarmed — if any step fails,
 including the part not configuring.

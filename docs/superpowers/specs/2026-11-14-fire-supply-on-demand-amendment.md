@@ -15,7 +15,7 @@ battery's whole life: ~1.4 years falls to ~1.0 year.
 
 ## 2. Rule
 
-Armed, the boost idles at its VSET level. It is raised to 3.3 V **only when a
+Armed, the boost idles at its idle target (2.2 V, section 6). It is raised to 3.3 V **only when a
 fire is pending**:
 
 | Fire path | When the supply is raised |
@@ -60,3 +60,34 @@ A rehearsal FIRE never raises it.
 - Host: `testFireSupplyTestedBeforeEnable` (raise then lower, both before the
   enable, still Arming). The fire-time raise lives in `App` and is bench-checked.
 - Bench: checklist §5i.
+
+## 6. Idle target 2.2 V — the real battery cost (owner, 2026-11-14)
+
+The fire-supply change alone did not move the average: measured afterwards,
+**284 µA** over one scan period (1.69 mC / 5.974 s), of which **17.6 µA** between
+scans. The scan was the cost — **1.59 mC per scan**, twice the budget — and the
+battery current through it was pure inductor pulses: the boost was converting.
+
+The nPM2100 enters pass-through only when V<sub>BAT</sub> exceeds the target by
+100 mV. This board's VSET resistor selects ~3.0 V, so a CR123A under the scan
+load (just below 3.1 V) kept the boost converting at roughly 50% efficiency. The
+old board's grounded VSET (1.8 V) ran in pass-through, which is what every
+earlier figure and `docs/power-budget.md` §10 assumed.
+
+Measured with the boost forced into pass-through (bench diagnostic
+`CONFIG_MFS_DIAG_BOOST_PASSTHROUGH`): a flat **~7.6 mA** plateau for ~100 ms,
+**0.79 mC per scan** — the load is on budget. Expected average ~140 µA,
+~1.2 years.
+
+So firmware sets an **idle target of 2.2 V** (`M_IDLE_SUPPLY_MILLIVOLTS`) at boot
+and in every `LowerFireSupply()`, instead of handing back to VSET: pass-through
+above ~2.3 V, the whole CR123A plateau. 2.2 V keeps LDOSW headroom for the 1.8 V
+LSOUT, keeps the nRF21540 above its RX gain knee (flat ~13.4 dB above ~2.1 V, PS
+v1.2 Figure 18), and keeps the LEDs lit. The nRF21540 TX gain falls with VDD
+(POUTB ~9.3 dB at 2.9 V, ~7.9 dB at 2.2 V, Figure 15), but a live FIRE raises the
+supply to 3.3 V before its confirmation burst, and gain never exceeds 9.5 dB, so
+EIRP compliance holds. Every build also sets the boost mode (Auto) at boot,
+because nPM2100 registers survive a reflash.
+
+**Hardware note:** a VSET resistor selecting ~2.2 V on the next revision would make
+this the reset default.

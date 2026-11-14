@@ -114,7 +114,7 @@ namespace alc
       // errno. Sets m_fire_supply_raised once the boost write is attempted.
       int raiseFireSupply();
 
-      // Fire supply amendment (2026-11-14): armed, the boost idles at its VSET
+      // Fire supply amendment (2026-11-14): armed, the boost idles at its 2.2 V
       // level and is raised only when a fire is pending - a live FIRE accepted, an
       // armed trigger delay started, or, as the backstop, the output about to
       // assert. At most one attempt per pending fire. A failed raise is logged and
