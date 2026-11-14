@@ -2,7 +2,7 @@ mainmenu "Project CLASS Multi-Function Sensor 1 (nRF54L05)"
 
 config MFS_SCAN_PERIOD_MS
 	int "Passive scan period (milliseconds)"
-	default 5970
+	default 7245
 	range 1000 10240
 	help
 	  How often the device wakes to scan. Valid range 1000-10240 ms: the
@@ -14,7 +14,21 @@ config MFS_SCAN_PERIOD_MS
 	  fails to compile rather than wrapping silently. Above a few thousand ms
 	  the cell's shelf life, not the radio, becomes the limiting factor.
 
-	  The default 5970 ms (9552 BLE units, 5970.000 ms) replaces preset 5's
+	  The default 7245 ms (11592 BLE units, 7245.000 ms; owner, 2026-11-14)
+	  replaces 5970 ms for battery life: the scan is ~90 % of the budget, and
+	  the longer period took the measured 126.7 uA at 5970 ms to an estimated
+	  ~106 uA (~1.3 -> ~1.55 years on a CR123A). It is the centre of the
+	  passing island 11570-11613 units (7231.25-7258.125 ms, 44 units wide - wider
+	  than 5970 ms's 29), found with --sweep --max-interval-ms 320. At N = 4
+	  (floor(29900 / 7245)) the script reports zero steady misses against the
+	  Mac's 187.5 ms and every Apple interval up to 318.75 ms, and under 10 ms
+	  advDelay jitter 0-1.4 % (centred) / 0.15-1.8 % (one-sided). The worst-case
+	  wait for a command rises from ~6 s to ~7.3 s. The statement below that no
+	  island survives N = 4 was wrong for intervals up to 318.75 ms and is
+	  withdrawn; the production Android interval is still to be measured and
+	  checked against this period.
+
+	  History. 5970 ms (9552 BLE units, 5970.000 ms) replaced preset 5's
 	  6000 ms from the ladder in docs/v1-scope.md section 7.1. 6000 ms is
 	  exactly 32 x 187.5 ms, the advertising interval measured from a macOS
 	  advertiser, so every scan landed at the same phase of its cycle and a
@@ -29,8 +43,8 @@ config MFS_SCAN_PERIOD_MS
 	  rule: tools/scan_phase_check.py sweeps 2000 start phases per interval
 	  and reports the fraction of commands that every one of the N scans
 	  inside a 30 s burst would miss, N = floor((30000 - window) / period).
-	  N = 5 needs a period of at most 5980 ms: RAISING THIS PAST 5980 DROPS
-	  N TO 4, which no passing island survives. 9552 units is the middle of the
+	  N = 5 needs a period of at most 5980 ms; past 5980 N drops to 4 (the
+	  claim that no island survives N = 4 was withdrawn 2026-11-14). 9552 units was the middle of the
 	  passing island 9537-9565 units (15 units of margin below, 13 above),
 	  found with --sweep, so a one-unit build or clock error cannot tip it
 	  into a failing phase the way 9401 (5876 ms) could have. At 5970 ms it

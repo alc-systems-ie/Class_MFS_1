@@ -406,6 +406,12 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 - [ ] 4. **Low battery.** With a cell that cannot hold 3.2 V boosted (or the pass-through diagnostic build): Arm → red 10 s → orange steady 3 s → orange **slow flash** (1 Hz) that stays; RTT `Low battery - arming refused.` A Disarm from the app clears it to green.
 - [ ] 5. A rapid flash while the slow flash is latched: the rapid flash plays, then the slow flash resumes.
 
+## 5k. Scan period 7245 ms, FEM power model 5 s (2026-11-14)
+
+- [ ] 1. RTT at boot: `Passive scan started: 100 ms window every 7245 ms.`
+- [ ] 2. PPK2 (ammeter, CR123A), armed, settled, 60 s: scan bursts ~7.25 s apart, the small power-model spikes 5 s apart (were 2 s); average ~106 µA (was 126.7 µA). Record in `docs/power-budget.md`.
+- [ ] 3. Command reliability from each phone (iPhone, Mac, the production Android once available): 20 Sends each, Arm/Disarm alternating, all heard within one 30 s Send. Re-run `tools/scan_phase_check.py` with the Android's measured interval.
+
 ## 9. Bench log
 
 ### 2026-09-14 — first bench session (J-Link 853003346, nRF54L05, device 0xFBACBE88)

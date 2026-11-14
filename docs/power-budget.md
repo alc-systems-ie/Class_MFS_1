@@ -12,8 +12,8 @@ them.
 | Decision | Value | Rationale |
 |----------|-------|-----------|
 | Sleep architecture | **System ON idle + RTC wake** | Not nPM2100 Hibernate — see §4 |
-| Scan period | **5970 ms** (5.970 s since 2026-09-14, see scan-reliability amendment) | `CONFIG_MFS_SCAN_PERIOD_MS=5970` |
-| Scan window | **100 ms** passive | 1.675% RX duty cycle (5970 ms period); detection margin per §6 |
+| Scan period | **7245 ms** since 2026-11-14 (was 5970 ms from 2026-09-14; see the 2026-11-14 measured section) | `CONFIG_MFS_SCAN_PERIOD_MS=7245` |
+| Scan window | **100 ms** passive | 1.38% RX duty cycle (7245 ms period; 1.675% at 5970 ms); detection margin per §6 |
 | ADXL367 | Continuous measurement mode | Always-on motion detect, 100 Hz ODR |
 | nRF21540 FEM | **Fitted; LNA on for every scan** (corrected 2026-11-12) | No bypass mode — without the LNA the device hears commands at ~5 m. Costs ~49 µA — see §5 |
 | Battery | CR123A (3.0 V Li-MnO2) | ~1450 mAh usable behind the nPM2100 |
@@ -194,6 +194,11 @@ armed, debugger detached, 60 s window ≈ 10 scan periods): **7.60 mC / 60 s =
 smaller pulses every ~2 s are most likely the MPSL FEM power model's temperature
 read (`CONFIG_MPSL_FEM_BUILTIN_POWER_MODEL_UPDATE_PERIOD=2000`) — a few µA; a
 longer period is a possible small saving.
+
+**Changed 2026-11-14 (owner):** scan period 5970 → **7245 ms** and the FEM power-model
+update 2000 → **5000 ms**. Scan charge ≈ 0.70 mC per wake (from the 126.7 µA reading),
+so ≈ 0.70 / 7.245 + ~10 µA idle ≈ **~106 µA → ~1.55 years** — an estimate, to be
+measured. 7245 ms is the centre of a 44-unit passing island at N = 4 (Kconfig help).
 
 ### MEASURED 2026-09-16 — 23 µA (UNRECONCILED — do not yet trust as the life figure)
 
