@@ -310,7 +310,9 @@ stolen phone can therefore do nothing to an armed device except disarm it.
 **Failures emit nothing** — no advert, no LED. Silence denies an attacker any signal,
 including whether a device is present. The counter mismatch (an *authentic, fresh*
 command ahead of the window, look-ahead 64) shows the orange rapid flash but is never
-consumed or acted on: it needs the day key, so it tells an outsider nothing
+consumed or acted on: it needs the day key, so it tells an outsider nothing. It is
+shown once per sequence number and never while armed, and look-ahead tag failures never
+count towards the lockout
 (`docs/superpowers/specs/2026-11-14-arming-failure-codes-amendment.md`).
 
 **Accepted commands are acknowledged on LED A** (design spec §6.7), because without

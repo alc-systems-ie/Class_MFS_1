@@ -322,7 +322,10 @@ next 04:00 UTC only — `docs/power-budget.md` §8.1):
   command ahead of the 16-number window (`AccessControl::Verdict::AheadOfWindow`, look-ahead
   64), which is **never consumed or acted on** — the acceptance rules are unchanged
   (`docs/superpowers/specs/2026-11-14-arming-failure-codes-amendment.md`). Never show it for
-  anything that did not authenticate, or for a command behind the window.
+  anything that did not authenticate, or for a command behind the window; show it **once
+  per sequence number** and **never while Arming or Active** (a replayed capture must not
+  reveal an armed device). Look-ahead tag failures **never count towards the lockout** —
+  a slot's 16 window IDs are fewer than the 20-failure threshold, and that must hold.
 - **Arming refused for a low battery** (the fire-supply battery test) shows the orange
   **slow flash**, latched until the next accepted command, after the 3 s warning.
 - **The device never advertises to solicit contact.** It scans. Report modes are
@@ -432,16 +435,16 @@ west flash --recover
 `tools/flash_device.sh <serial>` (add `--build` to build only). It loads
 `secrets/<serial>.conf` (gitignored, from `tools/gen_fleet_credentials.py`, with the
 spreadsheet `secrets/MFS1-1126-credentials.xlsx`), checks the image carries that
-serial, then flashes to J-Link 853003346 (`MFS_DEV_ID` overrides), **keeping NVS** —
-the engineer slots' sequence counters and the day floor. `--wipe` flashes `--recover`
-and erases them: the device restarts at sequence 0 while the app's counters carry on,
-so any slot with more than 16 Sends today then sees the counter mismatch (orange rapid
-flash) until 04:00 UTC. Use `--wipe` for a new device, a corrupt access record, or a
-board taking a different serial. A power cycle never resets the counters.
+serial, then flashes `--recover` to J-Link 853003346 (`MFS_DEV_ID` overrides). That
+**erases NVS** — the engineer slots' sequence counters and the day floor — so the device
+restarts at sequence 0 while the app's counters carry on: a slot with more than 16 Sends
+today then gets the counter mismatch (orange rapid flash on a disarmed device) until
+04:00 UTC. Use a fresh serial or slot, or wait. A power cycle never resets the counters.
 
-**Re-check plain `west flash` on this board** — it once reported success while the old
-image kept running, which is why `--recover` used to be mandatory (bench checklist
-§5j.1). If it recurs, use `--wipe` and expect the counter mismatch.
+**Always flash this board with `--recover`.** Plain `west flash` (the script's
+`--keep-nvs`) programmed and verified the image on 2026-11-14 while the old firmware
+kept running, and the new image did not boot even after a J-Link reset — the same
+failure that first made `--recover` mandatory. Unresolved (bench checklist §5j.1).
 
 Useful variations used in this workspace:
 

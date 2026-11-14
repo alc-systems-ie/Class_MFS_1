@@ -63,7 +63,7 @@ namespace alc
         Stale,         ///< Authentic, but the minute is outside the freshness window. Not consumed.
         PersistFailed, ///< Authentic and fresh, but the sequence number could not be saved. NOT acted on.
         CryptoError,   ///< Backend fault. Not counted.
-        AheadOfWindow, ///< Authentic and fresh, but past the window: a counter mismatch. NOT consumed, NOT acted on.
+        AheadOfWindow, ///< Authentic and fresh, but past the window: a counter mismatch. NOT consumed, NOT acted on. Once per n.
       };
 
       struct Evaluation
@@ -146,6 +146,12 @@ namespace alc
       // corrupted adverts must not lock out an engineer — a lockout now needs 20 distinct
       // expected IDs to fail, not 20 copies of one.
       uint64_t m_failed_ids[access::M_SLOT_COUNT];
+
+      // Bit k = 1 if the ahead ID expected_ids[slot][k] has already been reported
+      // as AheadOfWindow. Reported once per sequence number, then skipped like a
+      // burned ID, so a captured command replayed within its freshness window
+      // cannot make the device flash repeatedly. Cleared by rebuildSlot().
+      uint64_t m_mismatch_shown[access::M_SLOT_COUNT];
 
       // Per-expected-ID wrong-tag count, independent of the one-shot bit above.
       // Reaching M_MAX_ID_FAILURES burns the ID: the candidate filter then skips

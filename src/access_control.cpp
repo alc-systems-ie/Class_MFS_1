@@ -36,6 +36,7 @@ namespace alc
       , m_expected_ids {}
       , m_window_size {}
       , m_failed_ids {}
+      , m_mismatch_shown {}
       , m_id_failures {}
       , m_failures(0)
       , m_locked(false)
@@ -69,8 +70,9 @@ namespace alc
       result = access::DeriveRotatingId(m_day_keys[slot], base + offset, m_expected_ids[slot][offset]);
       if (result < 0) { return result; }
     }
-    m_window_size[slot] = size;
-    m_failed_ids[slot]  = 0;
+    m_window_size[slot]    = size;
+    m_failed_ids[slot]     = 0;
+    m_mismatch_shown[slot] = 0;
     memset(m_id_failures[slot], 0, sizeof(m_id_failures[slot]));
     return 0;
   }
@@ -171,6 +173,11 @@ namespace alc
         // so an attacker who captured it cannot keep guessing its tag.
         if (m_id_failures[slot][offset] >= M_MAX_ID_FAILURES) { continue; }
 
+        // An ahead ID already reported as a counter mismatch is skipped like a
+        // burned one, so a replay of it shows nothing more (security review,
+        // 2026-11-14).
+        if (offset >= M_WINDOW && (m_mismatch_shown[slot] & (static_cast<uint64_t>(1) << offset)) != 0) { continue; }
+
         if (candidateCount < M_MAX_CANDIDATES) { candidates[candidateCount++] = Candidate { slot, offset, m_state.next[slot] + offset }; }
       }
     }
@@ -214,7 +221,13 @@ namespace alc
       bool newFailure { false };
       for (uint8_t index = 0; index < candidateCount; index++) {
         uint64_t bit { static_cast<uint64_t>(1) << candidates[index].offset };
-        if ((m_failed_ids[candidates[index].slot] & bit) == 0) {
+
+        // AHEAD IDs NEVER COUNT TOWARDS THE LOCKOUT (security review, 2026-11-14).
+        // A slot exposes only M_WINDOW (16) acceptable IDs, fewer than the 20 the
+        // lockout needs, so an eavesdropper replaying a phone's unheard Sends with
+        // forged tags cannot lock the engineer out. The look-ahead must not widen
+        // that: an ahead ID only burns itself (below).
+        if (candidates[index].offset < M_WINDOW && (m_failed_ids[candidates[index].slot] & bit) == 0) {
           m_failed_ids[candidates[index].slot] |= bit;
           newFailure = true;
         }
@@ -253,6 +266,9 @@ namespace alc
     // the caller can show it, and NEVER consumed or acted on - the acceptance
     // rules are exactly as before (owner, 2026-11-14).
     if (ahead) {
+      // Once per sequence number: recorded only now, for an authentic, fresh,
+      // well-formed command, so a stale copy cannot use up the report.
+      m_mismatch_shown[evaluation.slot] |= static_cast<uint64_t>(1) << (evaluation.n - m_state.next[evaluation.slot]);
       evaluation.verdict = Verdict::AheadOfWindow;
       return evaluation;
     }

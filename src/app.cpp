@@ -1493,10 +1493,19 @@ namespace alc
     // more than 16 Sends went unheard today. Not consumed, not acted on; shown
     // as the orange rapid flash so the engineer knows to use another device or
     // wait for the 04:00 UTC day boundary.
+    //
+    // NEVER while Arming or Active (security review, 2026-11-14): a captured
+    // command replayed within its freshness window must not make an armed device
+    // visible. Armed, the device stays silent as it always has; the mismatch is
+    // shown on a disarmed device. AccessControl reports each n only once.
     if (evaluation.verdict == AccessControl::Verdict::AheadOfWindow) {
       LOG_WRN("Counter mismatch: slot %u n %u is ahead of the window (next %u) - not acted on. Use another device or wait for 04:00 UTC.",
               evaluation.slot, evaluation.n, m_access.State().next[evaluation.slot]);
-      playLedPattern(LedPattern::OrangeRapid);
+      if (m_arming.State() == ArmState::Inactive) {
+        playLedPattern(LedPattern::OrangeRapid);
+      } else {
+        LOG_WRN("Counter mismatch not shown: the device is %s.", armStateName(m_arming.State()));
+      }
       return;
     }
 

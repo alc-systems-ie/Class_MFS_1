@@ -481,29 +481,73 @@ void run_access_control_tests()
     buildCommand(256, 3, 40, protocol::CommandType::Arm, M_MINUTE_0500 - 11, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Stale);
 
-    // Ahead with a forged tag: AuthFailed and counted, exactly as in the window.
+    // Ahead with a forged tag: AuthFailed, but not counted towards the lockout
+    // (see the lockout test below).
     buildCommand(256, 3, 41, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     onAir[protocol::M_UUID_BYTES - 1] ^= 0x01;
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AuthFailed);
-    assert(access.ConsecutiveFailures() == 1);
+    assert(access.ConsecutiveFailures() == 0);
 
     // Behind the window (a replay of an accepted command) stays silent.
     buildCommand(256, 3, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
   }
 
-  // Ahead IDs count towards the lockout like window IDs: one count per distinct ID.
+  // Ahead IDs NEVER count towards the lockout (security review, 2026-11-14). A
+  // slot exposes only 16 window IDs - fewer than the 20-failure threshold - so an
+  // eavesdropper replaying a phone's unheard Sends with forged tags could never
+  // lock the slot out; the look-ahead must not change that. A forged tag on an
+  // ahead ID still burns that ID after M_MAX_ID_FAILURES.
   {
     PersistSpy spy;
     AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
 
-    for (uint32_t n = AccessControl::M_WINDOW; n < AccessControl::M_WINDOW + AccessControl::M_LOCKOUT_THRESHOLD; n++) {
+    for (uint32_t n = AccessControl::M_WINDOW; n < AccessControl::M_LOOKAHEAD; n++) {
       buildCommand(256, 4, n, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
       onAir[protocol::M_UUID_BYTES - 1] ^= 0x01;
       assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AuthFailed);
     }
-    assert(access.IsLockedOut(0));
+    assert(!access.IsLockedOut(0));
+    assert(access.ConsecutiveFailures() == 0);
+
+    // The window still works for the engineer.
+    buildCommand(256, 4, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted);
+
+    // Per-ID burn: after M_MAX_ID_FAILURES forged tags on one ahead ID, even the
+    // authentic command with that ID is no longer recognised.
+    buildCommand(256, 4, 30, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    onAir[protocol::M_UUID_BYTES - 1] ^= 0x01;
+    for (uint8_t attempt = 0; attempt < AccessControl::M_MAX_ID_FAILURES; attempt++) {
+      assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AuthFailed);
+    }
+    onAir[protocol::M_UUID_BYTES - 1] ^= 0x01;
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
+  }
+
+  // A counter mismatch is reported ONCE per sequence number (security review,
+  // 2026-11-14): a captured ahead command replayed within its freshness window
+  // must not make the device flash again and again.
+  {
+    PersistSpy spy;
+    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+
+    buildCommand(256, 5, 20, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AheadOfWindow);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::NotForUs);
+    assert(access.ConsecutiveFailures() == 0);
+
+    // A different ahead number is reported in its own right.
+    buildCommand(256, 5, 21, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AheadOfWindow);
+
+    // A stale ahead command does not use up the report.
+    buildCommand(256, 5, 22, protocol::CommandType::Arm, M_MINUTE_0500 - 11, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Stale);
+    buildCommand(256, 5, 22, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AheadOfWindow);
   }
 
   printf("access control: OK\n");

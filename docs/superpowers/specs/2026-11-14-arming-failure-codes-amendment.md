@@ -17,7 +17,7 @@ day's Sends past the window, so every Arm was "not for us" until 04:00 UTC.
 | Code | Meaning | Duration |
 |---|---|---|
 | **Slow flash**, 500 ms on / 500 ms off | Arming refused: **low battery** — the fire-supply battery test could not hold 3.2 V | Latched until the next accepted command or time sync (as the device-disarmed latch) |
-| **Rapid flash**, 100 ms on / 100 ms off | **Counter mismatch** — an authentic command arrived ahead of the 16-number window. Use another device, or wait for 04:00 UTC | 5 s per such command (nothing was accepted, so nothing to latch) |
+| **Rapid flash**, 100 ms on / 100 ms off | **Counter mismatch** — an authentic command arrived ahead of the 16-number window. Use another device, or wait for 04:00 UTC | 5 s, **once per sequence number**, and **only while Inactive** (§4) |
 
 The low-battery failure still raises the warning (orange steady 3 s) first, then
 the slow flash. In the base level the low-battery latch outranks the
@@ -34,8 +34,13 @@ fresh** (minute within 10 min) the verdict is `AheadOfWindow`:
 - **never consumed and never acted on** — nothing is persisted, the window does
   not move. The acceptance rules are unchanged (owner chose "flash only", not
   resync);
-- a forged tag is `AuthFailed`, counted towards the lockout per distinct ID and
-  per-ID guess cap exactly like a window ID;
+- a forged tag is `AuthFailed` and burns that ID after 8 attempts (per-ID guess
+  cap), but **never counts towards the 20-failure lockout** (security review,
+  2026-11-14): a slot exposes only 16 acceptable IDs, fewer than 20, so an
+  eavesdropper replaying a phone's unheard Sends with forged tags could never
+  lock a slot out, and the look-ahead must not change that;
+- each ahead number is reported **once**: afterwards its ID is skipped like a
+  burned one (`m_mismatch_shown`, cleared when the window moves);
 - stale or malformed ahead commands get their usual silent verdicts;
 - a command **behind** the window (a replay of an accepted one) is still
   `NotForUs` — silent.
@@ -53,19 +58,28 @@ input. The rapid flash is shown only for a command that **authenticated under
 the day key** and is fresh, so it tells nothing to anyone without that key — the
 same reasoning as the orange triple for an accepted command. A captured,
 unheard ahead command replayed within its 10-minute freshness window can make
-the device flash; it cannot make it act.
+the device flash; it cannot make it act. So (security review, owner 2026-11-14):
+
+- **once per sequence number** — a replay of the same capture shows nothing more;
+- **never while Arming or Active** — an armed device stays silent, as it always
+  has; the mismatch is logged over RTT only. An engineer finds a mismatch on a
+  disarmed device (Arm or Disarm attempt) or by its silence.
 
 ## 5. Counters across power cycles and reflashes
 
 A power cycle does **not** reset the counters: `next[]` and the day are in NVS
 (`access/v1`), persisted before every accepted command and reloaded at boot.
-Only an erase of the settings partition resets them. `tools/flash_device.sh` now
-**keeps NVS by default** (plain `west flash`, which erases only the pages the
-image touches) and wipes only with `--wipe` (`--recover`). Use `--wipe` when a
-board takes a different serial — another device's NVS does not belong to its
-keys. The earlier note that `west flash` without `--recover` once reported
-success while the old image kept running is to be re-checked on the bench
-(checklist §5j.1).
+Only an erase of the settings partition resets them — which every
+`tools/flash_device.sh` flash does, because it flashes `--recover`.
+
+**Keeping NVS across a reflash does not work yet on this board** (bench,
+2026-11-14): plain `west flash` (which erases only the pages the image touches)
+programmed and verified the image, but the old firmware kept running and the
+new one did not boot even after a J-Link reset. `--recover` therefore stays the
+default; `--keep-nvs` is an explicit, unverified option until the cause is found
+(checklist §5j.1). After a `--recover` flash, expect the counter mismatch on any
+slot already used more than 16 times that day: use a fresh serial or slot, or
+wait for 04:00 UTC.
 
 ## 6. Verification
 

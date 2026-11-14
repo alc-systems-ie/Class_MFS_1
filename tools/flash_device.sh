@@ -1,16 +1,20 @@
 #!/bin/sh
 # Builds MFS_1 with one device's credentials and flashes it.
 #
-#   tools/flash_device.sh MFS1-1126-00003            build + flash, KEEPING NVS
-#   tools/flash_device.sh MFS1-1126-00003 --wipe     build + flash --recover (erases NVS)
-#   tools/flash_device.sh MFS1-1126-00003 --build    build only
+#   tools/flash_device.sh MFS1-1126-00003              build + flash --recover (ERASES NVS)
+#   tools/flash_device.sh MFS1-1126-00003 --keep-nvs   build + plain flash, keeping NVS - UNVERIFIED, see below
+#   tools/flash_device.sh MFS1-1126-00003 --build      build only
 #
-# KEEP NVS by default (owner, 2026-11-14). NVS holds each engineer slot's next
-# sequence number and the day floor. Erasing it restarts the device at 0 while
-# the app's counters carry on, so after more than 16 of today's Sends the
-# device ignores that slot until 04:00 UTC. Use --wipe only for a new device,
-# a corrupt access record, or a deliberately fresh start - and expect the
-# counter mismatch (orange rapid flash) for slots already used today.
+# NVS holds each engineer slot's next sequence number and the day floor.
+# Erasing it restarts the device at 0 while the app's counters carry on, so a
+# slot with more than 16 Sends today then sees the counter mismatch (orange
+# rapid flash on a disarmed device) until 04:00 UTC: use a fresh serial or slot,
+# or wait.
+#
+# --keep-nvs DOES NOT WORK YET on the CLASS MFS board (bench, 2026-11-14): plain
+# west flash programmed and verified the image, but the old firmware kept
+# running and the new one did not boot even after a J-Link reset. So --recover
+# stays the default until that is understood (bench checklist section 5j.1).
 #
 # Credentials come from secrets/<serial>.conf (tools/gen_fleet_credentials.py).
 # The J-Link defaults to the MFS bench probe; override with MFS_DEV_ID=<serial>.
@@ -52,19 +56,19 @@ case "$mode" in
   --build)
     exit 0
     ;;
-  --wipe)
+  flash)
     echo "Flashing $serial to J-Link $dev_id with --recover (ERASES NVS: sequence counters and day floor)..."
     $ncs west flash --recover --dev-id "$dev_id"
     ;;
-  flash)
+  --keep-nvs)
     # Erases only the pages the image touches, so the settings partition (NVS)
-    # survives. Another serial's NVS does not belong to this device's keys:
-    # use --wipe when changing a board's serial.
-    echo "Flashing $serial to J-Link $dev_id, keeping NVS..."
+    # survives. UNVERIFIED - see the header. Never across a change of serial:
+    # another device's NVS does not belong to this device's keys.
+    echo "Flashing $serial to J-Link $dev_id, keeping NVS (UNVERIFIED on this board - check it boots)..."
     $ncs west flash --dev-id "$dev_id"
     ;;
   *)
-    echo "Unknown option $mode (use --build or --wipe)." >&2
+    echo "Unknown option $mode (use --build or --keep-nvs)." >&2
     exit 2
     ;;
 esac
