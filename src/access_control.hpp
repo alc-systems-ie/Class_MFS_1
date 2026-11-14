@@ -22,8 +22,10 @@ namespace alc
    * Pure logic apart from the persistence hook, so the whole rule set is
    * host-tested. See docs/tan-scheme.md section 6.
    *
-   * **Silence is the default.** Every verdict other than Accepted results in no
-   * radio emission and no LED - the caller logs over RTT and does nothing else.
+   * **Silence is the default.** Every verdict other than Accepted and
+   * AheadOfWindow results in no radio emission and no LED - the caller logs over
+   * RTT and does nothing else. AheadOfWindow is authentic (it needs the day key)
+   * and fresh, so showing it tells nothing to anyone without the key.
    */
   class AccessControl
   {
@@ -31,6 +33,13 @@ namespace alc
       // Look-ahead per slot. The phone never learns whether a command landed, so
       // the device accepts any of the next 16 sequence numbers and skips past it.
       static constexpr uint8_t M_WINDOW { 16 };
+
+      // Recognition reach (owner, 2026-11-14): IDs are derived for this many
+      // sequence numbers from next, the first M_WINDOW acceptable and the rest
+      // only RECOGNISED, so an authentic, fresh command ahead of the window - the
+      // device lost its counters, or more than 16 Sends went unheard - can be
+      // shown as a counter mismatch instead of vanishing. Never accepted.
+      static constexpr uint8_t M_LOOKAHEAD { 64 };
 
       // Consecutive authentication failures that trigger a lockout.
       static constexpr uint8_t M_LOCKOUT_THRESHOLD { 20 };
@@ -54,6 +63,7 @@ namespace alc
         Stale,         ///< Authentic, but the minute is outside the freshness window. Not consumed.
         PersistFailed, ///< Authentic and fresh, but the sequence number could not be saved. NOT acted on.
         CryptoError,   ///< Backend fault. Not counted.
+        AheadOfWindow, ///< Authentic and fresh, but past the window: a counter mismatch. NOT consumed, NOT acted on.
       };
 
       struct Evaluation
@@ -129,12 +139,13 @@ namespace alc
       AccessState m_state;
       bool m_tables_ready;
       uint8_t m_day_keys[access::M_SLOT_COUNT][access::M_DAY_KEY_BYTES];
-      uint8_t m_expected_ids[access::M_SLOT_COUNT][M_WINDOW][protocol::M_ROTATING_ID_BYTES];
+      uint8_t m_expected_ids[access::M_SLOT_COUNT][M_LOOKAHEAD][protocol::M_ROTATING_ID_BYTES];
+      // IDs derived per slot: M_LOOKAHEAD, fewer near the (unreachable) sequence limit, 0 past it.
       uint8_t m_window_size[access::M_SLOT_COUNT];
       // Bit k = 1 if expected_ids[slot][k] has already counted a failure. Copied and
       // corrupted adverts must not lock out an engineer — a lockout now needs 20 distinct
       // expected IDs to fail, not 20 copies of one.
-      uint16_t m_failed_ids[access::M_SLOT_COUNT];
+      uint64_t m_failed_ids[access::M_SLOT_COUNT];
 
       // Per-expected-ID wrong-tag count, independent of the one-shot bit above.
       // Reaching M_MAX_ID_FAILURES burns the ID: the candidate filter then skips
@@ -142,7 +153,7 @@ namespace alc
       // so an attacker cannot keep guessing tags against one captured ID.
       // Cleared per slot by rebuildSlot() along with everything else in the
       // window.
-      uint8_t m_id_failures[access::M_SLOT_COUNT][M_WINDOW];
+      uint8_t m_id_failures[access::M_SLOT_COUNT][M_LOOKAHEAD];
 
       uint8_t m_failures;
       bool m_locked;

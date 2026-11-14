@@ -81,7 +81,9 @@ disable the pull-up, and re-check periodically for the case closing again.
 
 - **Orange reason codes.** After the 3 s orange steady, a flash code naming why
   arming was refused or what faulted (scanner down, fire supply, pin check,
-  switch fault...). Today every fault shows the same orange.
+  switch fault...). **Partly done 2026-11-14:** low battery (slow flash) and counter
+  mismatch (rapid flash) — `docs/superpowers/specs/2026-11-14-arming-failure-codes-amendment.md`.
+  Scanner down, pin check and switch fault still show the same steady orange.
 - **Variable exit delay.** Make the 10 s pre-arming delay
   (`ArmingSequence::M_EXIT_DELAY_MS`) configurable. The steady red follows it.
 - **Display-status option in the app.** Bound the green battery cost (steady

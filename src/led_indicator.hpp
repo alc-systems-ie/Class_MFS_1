@@ -28,11 +28,16 @@ namespace alc
       bool clockValid;      ///< DeviceClock::IsValid() - set by the provisioner time sync.
       bool faultLatched;    ///< The device disarmed itself and no command has been accepted since.
       bool simulatedFiring; ///< The output would be asserted if armed: detection met, or a rehearsal FIRE firing.
+      bool lowBattery;      ///< Arming was refused by the fire-supply battery test and no command has been accepted since.
   };
 
   // Disarmed with the clock set: green 500 ms on, 2500 ms off (owner, 2026-11-12).
   constexpr uint32_t M_GREEN_FLASH_ON_MS { 500 };
   constexpr uint32_t M_GREEN_FLASH_PERIOD_MS { 3000 };
+
+  // Arming refused for a low battery: orange 500 ms on, 500 ms off (owner, 2026-11-14).
+  constexpr uint32_t M_LOW_BATTERY_FLASH_ON_MS { 500 };
+  constexpr uint32_t M_LOW_BATTERY_FLASH_PERIOD_MS { 1000 };
 
   /**
    * @brief The LED levels the device state calls for when no overlay plays.
@@ -41,6 +46,7 @@ namespace alc
    * sections 3.1 and 3.3):
    * - Active: all dark - nothing visible while armed.
    * - Arming: red steady. Simulated firing is masked.
+   * - Inactive, low battery latched: orange slow flash (1 Hz).
    * - Inactive, fault latched: orange steady.
    * - Inactive, clock not set: green steady - simulated firing is not shown
    *   until the time sync.

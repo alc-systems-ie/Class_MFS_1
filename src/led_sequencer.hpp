@@ -18,6 +18,7 @@ namespace alc
     RedFlash,     ///< Rapid flash ~8 Hz, 3 s, red - arming completed, or an armed device replaying its state.
     OrangeTriple, ///< Three 150 ms flashes in 1 s, orange - an accepted command or time set confirmed.
     OrangeSteady, ///< On for 3 s, orange - arming refused, or any fault (App::signalWarning()).
+    OrangeRapid,  ///< 100 ms on / 100 ms off for 5 s, orange - an authentic command ahead of the window: counter mismatch.
   };
 
   /** @brief The three LEDs, by colour. */
@@ -52,7 +53,7 @@ namespace alc
       /**
        * @brief Start a pattern, replacing the one playing unless that one outranks it.
        *
-       * Priority, highest first: OrangeSteady, RedFlash, OrangeTriple. A pattern of
+       * Priority, highest first: OrangeSteady, RedFlash, OrangeRapid, OrangeTriple. A pattern of
        * equal or higher priority replaces the one playing and restarts from its
        * lead-in; a lower one is refused while the current pattern is still active,
        * so a confirmation never cuts short a warning (spec section 3.3).

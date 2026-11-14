@@ -20,7 +20,7 @@ namespace alc
         uint32_t n;
     };
 
-    // A rotating-ID collision needs several candidates, but 128 in 2^32 per
+    // A rotating-ID collision needs several candidates, but 512 in 2^32 per
     // advert means more than a handful is never going to happen.
     constexpr uint8_t M_MAX_CANDIDATES { 4 };
   }
@@ -58,8 +58,12 @@ namespace alc
   int AccessControl::rebuildSlot(uint8_t slot)
   {
     uint32_t base { m_state.next[slot] };
-    uint8_t size { base > M_SEQUENCE_LIMIT ? static_cast<uint8_t>(0) : M_WINDOW };
+    uint8_t size { 0 };
     int result { 0 };
+
+    // The acceptance window stops exactly where it always did. Only the
+    // recognise-only look-ahead shrinks near the limit, so no derived n wraps.
+    if (base <= M_SEQUENCE_LIMIT) { size = (UINT32_MAX - base < M_LOOKAHEAD) ? static_cast<uint8_t>(UINT32_MAX - base) : M_LOOKAHEAD; }
 
     for (uint8_t offset = 0; offset < size; offset++) {
       result = access::DeriveRotatingId(m_day_keys[slot], base + offset, m_expected_ids[slot][offset]);
@@ -131,6 +135,7 @@ namespace alc
     uint32_t previousNext { 0 };
     int result { 0 };
     bool authentic { false };
+    bool ahead { false };
 
     if (onAir == nullptr || length < protocol::M_UUID_BYTES) { return evaluation; }
 
@@ -178,11 +183,22 @@ namespace alc
     }
     m_locked = false;
 
+    // In-window candidates first, so a (vanishingly unlikely) ID collision with
+    // an ahead ID can never displace a command the device should accept.
+    for (uint8_t index = 1; index < candidateCount; index++) {
+      for (uint8_t back = index; back > 0 && candidates[back].offset < M_WINDOW && candidates[back - 1].offset >= M_WINDOW; back--) {
+        Candidate swap { candidates[back - 1] };
+        candidates[back - 1] = candidates[back];
+        candidates[back]     = swap;
+      }
+    }
+
     for (uint8_t index = 0; index < candidateCount && !authentic; index++) {
       result = access::OpenCommand(m_day_keys[candidates[index].slot], m_device_id, m_state.day, candidates[index].slot, candidates[index].n, onAir,
                                    plaintext);
       if (result == 0) {
         authentic       = true;
+        ahead           = candidates[index].offset >= M_WINDOW;
         evaluation.slot = candidates[index].slot;
         evaluation.n    = candidates[index].n;
       } else if (result != -EBADMSG) {
@@ -197,7 +213,7 @@ namespace alc
       // ID (not every copy) counts, so a lockout requires 20 distinct IDs.
       bool newFailure { false };
       for (uint8_t index = 0; index < candidateCount; index++) {
-        uint16_t bit { static_cast<uint16_t>(1U << candidates[index].offset) };
+        uint64_t bit { static_cast<uint64_t>(1) << candidates[index].offset };
         if ((m_failed_ids[candidates[index].slot] & bit) == 0) {
           m_failed_ids[candidates[index].slot] |= bit;
           newFailure = true;
@@ -230,6 +246,14 @@ namespace alc
     // minute will never be fresh again and its key dies at 04:00.
     if (!clock.IsFresh(evaluation.command.minuteOfDay, uptimeSecs)) {
       evaluation.verdict = Verdict::Stale;
+      return evaluation;
+    }
+
+    // COUNTER MISMATCH. Authentic and fresh, but past the window: recognised so
+    // the caller can show it, and NEVER consumed or acted on - the acceptance
+    // rules are exactly as before (owner, 2026-11-14).
+    if (ahead) {
+      evaluation.verdict = Verdict::AheadOfWindow;
       return evaluation;
     }
 

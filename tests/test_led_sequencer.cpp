@@ -117,5 +117,34 @@ void run_led_sequencer_tests()
   assert(leds.Current() == LedPattern::OrangeSteady);
   assert(leds.IsActive(M_START + 300));
 
+  // Orange rapid flash (counter mismatch, owner 2026-11-14): 100 ms on / 100 ms
+  // off for 5 s, framed, on orange.
+  assert(ColourOf(LedPattern::OrangeRapid) == LedColour::Orange);
+  leds.Stop();
+  assert(leds.Start(LedPattern::OrangeRapid, M_START));
+  assert(!leds.Level(M_START + M_GAP - 1));
+  assert(leds.Level(M_START + M_GAP));
+  assert(leds.Level(M_START + M_GAP + 99));
+  assert(!leds.Level(M_START + M_GAP + 100));
+  assert(!leds.Level(M_START + M_GAP + 199));
+  assert(leds.Level(M_START + M_GAP + 200));
+  assert(leds.Level(M_START + M_GAP + 4800));
+  assert(!leds.Level(M_START + M_GAP + 5000));
+  assert(leds.IsActive(M_START + M_GAP + 5000 + M_GAP - 1));
+  assert(!leds.IsActive(M_START + M_GAP + 5000 + M_GAP));
+
+  // Priority: above a confirmation, below the red flash and the warning.
+  leds.Stop();
+  assert(leds.Start(LedPattern::OrangeRapid, M_START));
+  assert(!leds.Start(LedPattern::OrangeTriple, M_START + 100));
+  assert(leds.Current() == LedPattern::OrangeRapid);
+  assert(leds.Start(LedPattern::RedFlash, M_START + 200));
+  assert(!leds.Start(LedPattern::OrangeRapid, M_START + 300));
+  assert(leds.Start(LedPattern::OrangeSteady, M_START + 400));
+  assert(!leds.Start(LedPattern::OrangeRapid, M_START + 500));
+  leds.Stop();
+  assert(leds.Start(LedPattern::OrangeTriple, M_START));
+  assert(leds.Start(LedPattern::OrangeRapid, M_START + 100));
+
   printf("led sequencer: OK\n");
 }

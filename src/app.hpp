@@ -345,6 +345,11 @@ namespace alc
       // steady orange. Never affects the arm state or the output.
       bool m_fault_display_latched;
 
+      // Display only: arming was refused by the fire-supply battery test and no
+      // authenticated command has been accepted since. Shows the orange slow
+      // flash, outranking m_fault_display_latched. Set in logArmingFailure().
+      bool m_low_battery_latched;
+
       // False until initLeds() has configured the three LED pins. A warning raised
       // before then (the boot pin check) starts its sequencer at once but its
       // timer only after initLeds() - see Run().

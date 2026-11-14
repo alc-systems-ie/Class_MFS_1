@@ -1,12 +1,20 @@
 #!/bin/sh
 # Builds MFS_1 with one device's credentials and flashes it.
 #
-#   tools/flash_device.sh MFS1-1126-00003            build + flash (--recover: erases NVS)
+#   tools/flash_device.sh MFS1-1126-00003            build + flash, KEEPING NVS
+#   tools/flash_device.sh MFS1-1126-00003 --wipe     build + flash --recover (erases NVS)
 #   tools/flash_device.sh MFS1-1126-00003 --build    build only
+#
+# KEEP NVS by default (owner, 2026-11-14). NVS holds each engineer slot's next
+# sequence number and the day floor. Erasing it restarts the device at 0 while
+# the app's counters carry on, so after more than 16 of today's Sends the
+# device ignores that slot until 04:00 UTC. Use --wipe only for a new device,
+# a corrupt access record, or a deliberately fresh start - and expect the
+# counter mismatch (orange rapid flash) for slots already used today.
 #
 # Credentials come from secrets/<serial>.conf (tools/gen_fleet_credentials.py).
 # The J-Link defaults to the MFS bench probe; override with MFS_DEV_ID=<serial>.
-# After flashing, provision the clock - --recover erased the stored state.
+# After flashing, provision the clock - it is invalid after every boot.
 
 set -eu
 
@@ -40,8 +48,24 @@ if ! grep -qx "CONFIG_ALC_DEVICE_SERIAL=\"$serial\"" build/class_mfs_1/zephyr/.c
 fi
 echo "Image built for $serial."
 
-if [ "$mode" = "--build" ]; then exit 0; fi
-
-echo "Flashing $serial to J-Link $dev_id (--recover erases NVS)..."
-$ncs west flash --recover --dev-id "$dev_id"
+case "$mode" in
+  --build)
+    exit 0
+    ;;
+  --wipe)
+    echo "Flashing $serial to J-Link $dev_id with --recover (ERASES NVS: sequence counters and day floor)..."
+    $ncs west flash --recover --dev-id "$dev_id"
+    ;;
+  flash)
+    # Erases only the pages the image touches, so the settings partition (NVS)
+    # survives. Another serial's NVS does not belong to this device's keys:
+    # use --wipe when changing a board's serial.
+    echo "Flashing $serial to J-Link $dev_id, keeping NVS..."
+    $ncs west flash --dev-id "$dev_id"
+    ;;
+  *)
+    echo "Unknown option $mode (use --build or --wipe)." >&2
+    exit 2
+    ;;
+esac
 echo "Flashed $serial. Provision the clock next."

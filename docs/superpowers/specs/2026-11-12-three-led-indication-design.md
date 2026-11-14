@@ -203,6 +203,8 @@ wants green to stay on beneath it.
 
 - **Reason codes for orange.** A flash code after the steady orange naming why arming
   was refused or what faulted (scanner down, fire supply, pin check, switch fault...).
+  **Started 2026-11-14:** low battery (slow flash) and counter mismatch (rapid flash),
+  `2026-11-14-arming-failure-codes-amendment.md`. The other reasons remain to do.
 - **Variable exit delay.** Make the 10 s pre-arming delay configurable (owner, 2026-11-12).
   The steady red follows whatever the delay is.
 - **Display-status option in the app.** Bound the steady-green battery cost — e.g. LEDs

@@ -308,7 +308,10 @@ stolen phone can therefore do nothing to an armed device except disarm it.
 ### 6.6 Silence, and the one exception
 
 **Failures emit nothing** — no advert, no LED. Silence denies an attacker any signal,
-including whether a device is present.
+including whether a device is present. The counter mismatch (an *authentic, fresh*
+command ahead of the window, look-ahead 64) shows the orange rapid flash but is never
+consumed or acted on: it needs the day key, so it tells an outsider nothing
+(`docs/superpowers/specs/2026-11-14-arming-failure-codes-amendment.md`).
 
 **Accepted commands are acknowledged on LED A** (design spec §6.7), because without
 it a jammed arm is invisible: the app says "sent", and the device sits disarmed all
@@ -465,5 +468,5 @@ other days.
 | Report modes | Still blocked on the report payload (design spec §6.5.2). Rotating IDs derived from a slot-0 key are a candidate for the device identifier |
 | Serial prefix and device type | `MFS-` provisional |
 | Network Manager | Real implementation, HSM, attestation, slot assignment, reinstall policy (§3.1) |
-| **DECISION NEEDED: unheard Sends exhaust the window** | Each Send reserves a new `n` whether or not the device hears it; more than 16 unheard Sends to one device in one day lock that slot out until 04:00 UTC. Options (app throttle, app counting with a refusal at 16, wider window) in the bench log, `docs/superpowers/plans/2026-09-13-bench-checklist.md` §9 |
+| **DECISION NEEDED: unheard Sends exhaust the window** | Each Send reserves a new `n` whether or not the device hears it; more than 16 unheard Sends to one device in one day lock that slot out until 04:00 UTC. Since 2026-11-14 the device at least shows it (orange rapid flash, counter mismatch) instead of staying silent; the owner chose flash-only over resync. Options (app throttle, app counting with a refusal at 16, wider window) in the bench log, `docs/superpowers/plans/2026-09-13-bench-checklist.md` §9 |
 | **DECIDED: device settings are never stored in the app** (Option A, 2026-09-14) | Useful to the engineer, but a lost phone would become a map of every sensor's sensitivity, activations, cooldown and delay, with no expiry. Options (do not store; back office returns them with the day key; phone-side under the day key) in `docs/superpowers/specs/2026-09-14-command-types-amendment.md` §4. Recorded for a future review only |

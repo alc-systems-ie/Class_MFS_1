@@ -398,6 +398,14 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 - [ ] 7. Optional, with a depleted cell that cannot hold 3.2 V boosted: arming is refused at the battery test (orange stays on, as §5h.9). Fire-anyway at fire time is a code path only: not bench-forced.
 - [ ] 8. PPK2 (ammeter, CR123A), armed, settled, one full scan period: ~0.8 mC per scan with a flat ~7.6 mA plateau (not pulses), average ~140 µA. Record in `docs/power-budget.md`.
 
+## 5j. Arming failure codes (2026-11-14, spec `docs/superpowers/specs/2026-11-14-arming-failure-codes-amendment.md`)
+
+- [ ] 1. **Plain flash keeps NVS and takes.** `tools/flash_device.sh <serial>` (no `--wipe`) on a device that has accepted commands today: RTT shows the NEW build running (check a changed log line or the build time) and **no** "No access state stored - first boot"; the next Arm from the same phone is accepted. If the old image keeps running, record it and fall back to `--wipe`.
+- [ ] 2. **Counter mismatch.** `--wipe` a device whose slot has >16 Sends today, sync the clock, send Arm: orange **rapid flash** ~5 s, RTT `Counter mismatch: slot ... ahead of the window ... not acted on.`; the device stays Inactive. Repeat Sends repeat the flash.
+- [ ] 3. Arm from a fresh slot or device right after: accepted as normal (the mismatch changed nothing).
+- [ ] 4. **Low battery.** With a cell that cannot hold 3.2 V boosted (or the pass-through diagnostic build): Arm → red 10 s → orange steady 3 s → orange **slow flash** (1 Hz) that stays; RTT `Low battery - arming refused.` A Disarm from the app clears it to green.
+- [ ] 5. A rapid flash while the slow flash is latched: the rapid flash plays, then the slow flash resumes.
+
 ## 9. Bench log
 
 ### 2026-09-14 — first bench session (J-Link 853003346, nRF54L05, device 0xFBACBE88)

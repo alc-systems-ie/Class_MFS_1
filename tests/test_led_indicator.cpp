@@ -19,13 +19,13 @@ void run_led_indicator_tests()
   constexpr LedLevels M_GREEN { false, false, true };
 
   // Disarmed, clock not set: steady green (every boot until the time sync).
-  LedInputs bootInputs { ArmState::Inactive, false, false, false };
+  LedInputs bootInputs { ArmState::Inactive, false, false, false, false };
   assert(BaseLevels(bootInputs, 0) == M_GREEN);
   assert(BaseLevels(bootInputs, 1000) == M_GREEN);
   assert(BaseLevels(bootInputs, 2999) == M_GREEN);
 
   // Disarmed, clock set: green 500 ms on, 2500 ms off.
-  LedInputs readyInputs { ArmState::Inactive, true, false, false };
+  LedInputs readyInputs { ArmState::Inactive, true, false, false, false };
   assert(BaseLevels(readyInputs, 0) == M_GREEN);
   assert(BaseLevels(readyInputs, 499) == M_GREEN);
   assert(BaseLevels(readyInputs, 500) == M_DARK);
@@ -37,34 +37,34 @@ void run_led_indicator_tests()
   // Disarmed by the device itself: steady orange, whatever else is true.
   for (bool clockValid : { false, true }) {
     for (bool simulated : { false, true }) {
-      LedInputs latched { ArmState::Inactive, clockValid, true, simulated };
+      LedInputs latched { ArmState::Inactive, clockValid, true, simulated, false };
       assert(BaseLevels(latched, 0) == M_ORANGE);
       assert(BaseLevels(latched, 1000) == M_ORANGE);
     }
   }
 
   // Simulated firing while disarmed, clock set: red, green off.
-  LedInputs simulatedReady { ArmState::Inactive, true, false, true };
+  LedInputs simulatedReady { ArmState::Inactive, true, false, true, false };
   assert(BaseLevels(simulatedReady, 0) == M_RED);
   assert(BaseLevels(simulatedReady, 1000) == M_RED);
 
   // Not before the clock is set (owner, 2026-11-12): a device waiting for its
   // time sync shows only steady green, whatever the accelerometer does.
-  LedInputs simulatedBeforeSync { ArmState::Inactive, false, false, true };
+  LedInputs simulatedBeforeSync { ArmState::Inactive, false, false, true, false };
   assert(BaseLevels(simulatedBeforeSync, 0) == M_GREEN);
   assert(BaseLevels(simulatedBeforeSync, 1000) == M_GREEN);
 
   // Arming: steady red, simulated firing masked.
   for (bool simulated : { false, true }) {
-    LedInputs arming { ArmState::Arming, true, false, simulated };
+    LedInputs arming { ArmState::Arming, true, false, simulated, false };
     assert(BaseLevels(arming, 0) == M_RED);
     assert(BaseLevels(arming, 1000) == M_RED);
   }
 
   // Armed: nothing visible, whatever else is true.
-  LedInputs armed { ArmState::Active, true, true, true };
+  LedInputs armed { ArmState::Active, true, true, true, false };
   assert(BaseLevels(armed, 0) == M_DARK);
-  LedInputs armedQuiet { ArmState::Active, false, false, false };
+  LedInputs armedQuiet { ArmState::Active, false, false, false, false };
   assert(BaseLevels(armedQuiet, 0) == M_DARK);
 
   // An overlay lights only its own LED; the others, green included, are off.
@@ -102,6 +102,32 @@ void run_led_indicator_tests()
   for (uint32_t tick = 0; tick < 10; tick++) {
     assert(!never.Tick());
   }
+
+  // Arming refused by the battery test: orange SLOW flash, 500 ms on / 500 ms off
+  // (owner, 2026-11-14), latched until the next accepted command. It outranks
+  // the device-disarmed latch and everything else while Inactive.
+  for (bool clockValid : { false, true }) {
+    for (bool simulated : { false, true }) {
+      for (bool faultLatched : { false, true }) {
+        LedInputs lowBattery { ArmState::Inactive, clockValid, faultLatched, simulated, true };
+        assert(BaseLevels(lowBattery, 0) == M_ORANGE);
+        assert(BaseLevels(lowBattery, 499) == M_ORANGE);
+        assert(BaseLevels(lowBattery, 500) == M_DARK);
+        assert(BaseLevels(lowBattery, 999) == M_DARK);
+        assert(BaseLevels(lowBattery, 1000) == M_ORANGE);
+      }
+    }
+  }
+
+  // Armed or arming, the low-battery latch shows nothing of its own.
+  LedInputs armedLowBattery { ArmState::Active, true, false, false, true };
+  assert(BaseLevels(armedLowBattery, 0) == M_DARK);
+  LedInputs armingLowBattery { ArmState::Arming, true, false, false, true };
+  assert(BaseLevels(armingLowBattery, 0) == M_RED);
+
+  // The counter-mismatch overlay plays on orange.
+  assert(OverlayLevels(LedPattern::OrangeRapid, true) == M_ORANGE);
+  assert(OverlayLevels(LedPattern::OrangeRapid, false) == M_DARK);
 
   printf("led indicator: OK\n");
 }

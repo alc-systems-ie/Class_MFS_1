@@ -60,7 +60,7 @@ specific numeric constraint recorded there.
 | ANTI_TAMP | P1.02, button pulled high, **active low** | Unused in v1 (proven by `tools/tamper_test`). An NFC pin: needs `&uicr { nfct-pins-as-gpios; }` |
 | FIRE_1 / FIRE_2 | P2.05 / P2.09 | Fire output — FIRE_1, then FIRE_2 **10 ms later**; cleared together |
 | LED1 red (`zephyr,user` `led-red-gpios`) | P2.02 | Arming (steady), arming completed (flash), simulated firing while disarmed. Active-high **assumed** — bench polarity check |
-| LED2 orange (`led1`) | P2.03 | Warning / fault (3 s steady), confirmation (triple), device-disarmed latch |
+| LED2 orange (`led1`) | P2.03 | Warning / fault (3 s steady), confirmation (triple), device-disarmed latch (steady), low battery at arming (slow flash, latched), counter mismatch (rapid flash, 5 s) |
 | LED3 green (`led0`) | P2.04 | Disarmed: steady until the time sync, then 500 ms on / 2500 ms off |
 | nPM2100 GPIO0 / GPIO1 | P1.06 / P2.01 | Unused |
 | nPM2100 RESET | P2.00, active low | Unused |
@@ -317,7 +317,14 @@ next 04:00 UTC only — `docs/power-budget.md` §8.1):
   detection test running. Checked in the host-tested `ArmingSequence` via
   `ArmingActions::ScannerRunning()` — never a second check in `App`.
 - **Persist before acting**, and **failures emit nothing** — no advert, no LED. The orange
-  triple confirms only *accepted* commands, never a failed authentication.
+  triple confirms only *accepted* commands, never a failed authentication. The one
+  further LED is the **counter mismatch** (orange rapid flash, 5 s): an *authentic, fresh*
+  command ahead of the 16-number window (`AccessControl::Verdict::AheadOfWindow`, look-ahead
+  64), which is **never consumed or acted on** — the acceptance rules are unchanged
+  (`docs/superpowers/specs/2026-11-14-arming-failure-codes-amendment.md`). Never show it for
+  anything that did not authenticate, or for a command behind the window.
+- **Arming refused for a low battery** (the fire-supply battery test) shows the orange
+  **slow flash**, latched until the next accepted command, after the 3 s warning.
 - **The device never advertises to solicit contact.** It scans. Report modes are
   documented exceptions (design spec §4.3). Advertising forfeits covertness.
   **FIRE's confirmId burst is a further, bounded exception**: an authenticated,
@@ -425,11 +432,16 @@ west flash --recover
 `tools/flash_device.sh <serial>` (add `--build` to build only). It loads
 `secrets/<serial>.conf` (gitignored, from `tools/gen_fleet_credentials.py`, with the
 spreadsheet `secrets/MFS1-1126-credentials.xlsx`), checks the image carries that
-serial, then flashes `--recover` to J-Link 853003346 (`MFS_DEV_ID` overrides).
+serial, then flashes to J-Link 853003346 (`MFS_DEV_ID` overrides), **keeping NVS** —
+the engineer slots' sequence counters and the day floor. `--wipe` flashes `--recover`
+and erases them: the device restarts at sequence 0 while the app's counters carry on,
+so any slot with more than 16 Sends today then sees the counter mismatch (orange rapid
+flash) until 04:00 UTC. Use `--wipe` for a new device, a corrupt access record, or a
+board taking a different serial. A power cycle never resets the counters.
 
-**Always flash this board with `--recover`** — `west flash` alone has reported
-success while the old image kept running (see **West flash needs `--recover`** in
-session memory).
+**Re-check plain `west flash` on this board** — it once reported success while the old
+image kept running, which is why `--recover` used to be mandatory (bench checklist
+§5j.1). If it recurs, use `--wipe` and expect the counter mismatch.
 
 Useful variations used in this workspace:
 

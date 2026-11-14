@@ -167,6 +167,8 @@ namespace alc
           return "PersistFailed";
         case AccessControl::Verdict::CryptoError:
           return "CryptoError";
+        case AccessControl::Verdict::AheadOfWindow:
+          return "AheadOfWindow";
       }
       return "Unknown"; // Unreachable while every Verdict is handled above - -Wswitch warns if a new one is added.
     }
@@ -270,6 +272,7 @@ namespace alc
       , m_led_sequencer()
       , m_led_timer {}
       , m_fault_display_latched(false)
+      , m_low_battery_latched(false)
       , m_leds_initialised(false)
       , m_initialised(false)
   {}
@@ -520,7 +523,8 @@ namespace alc
       if (overlayActive) {
         leds = OverlayLevels(m_led_sequencer.Current(), m_led_sequencer.Level(ledNowMs));
       } else {
-        leds = BaseLevels(LedInputs { m_arming.State(), m_clock.IsValid(), m_fault_display_latched, simulatedFiring }, ledNowMs);
+        leds =
+            BaseLevels(LedInputs { m_arming.State(), m_clock.IsValid(), m_fault_display_latched, simulatedFiring, m_low_battery_latched }, ledNowMs);
 #if defined(CONFIG_MFS_BATTERY_TEST)
         // The liveness blink replaces green, steady or flashing: a lit LED would
         // swamp the measurement. Dark throughout with CONFIG_MFS_BLINK_MS=0.
@@ -887,6 +891,11 @@ namespace alc
 
       case ArmingStep::FireSupply:
         LOG_ERR("Arming failed at the fire supply raise (%d) - device Inactive, fire pins disabled, no acknowledgement!", result);
+        // LOW BATTERY: the cell cannot hold the firing level. Orange slow flash
+        // until the next accepted command (owner, 2026-11-14), so the engineer
+        // learns why, not only that, the arming failed.
+        m_low_battery_latched = true;
+        LOG_WRN("Low battery - arming refused. Orange slow flash until the next accepted command.");
         break;
     }
   }
@@ -1464,6 +1473,7 @@ namespace alc
     // device-disarmed latch and is confirmed by the orange triple. Green then
     // turns from steady (clock not set) to its slow flash.
     m_fault_display_latched = false;
+    m_low_battery_latched   = false;
     playLedPattern(LedPattern::OrangeTriple);
   }
 
@@ -1478,6 +1488,18 @@ namespace alc
       return;
     }
 
+    // COUNTER MISMATCH (owner, 2026-11-14). Authentic and fresh - so from a day-key
+    // holder - but past the 16-number window: the device lost its counters, or
+    // more than 16 Sends went unheard today. Not consumed, not acted on; shown
+    // as the orange rapid flash so the engineer knows to use another device or
+    // wait for the 04:00 UTC day boundary.
+    if (evaluation.verdict == AccessControl::Verdict::AheadOfWindow) {
+      LOG_WRN("Counter mismatch: slot %u n %u is ahead of the window (next %u) - not acted on. Use another device or wait for 04:00 UTC.",
+              evaluation.slot, evaluation.n, m_access.State().next[evaluation.slot]);
+      playLedPattern(LedPattern::OrangeRapid);
+      return;
+    }
+
     if (evaluation.verdict != AccessControl::Verdict::Accepted) {
       // RTT only. Nothing on the radio, nothing on the LEDs.
       LOG_WRN("Command rejected: %s (failures %u).", verdictName(evaluation.verdict), m_access.ConsecutiveFailures());
@@ -1488,7 +1510,9 @@ namespace alc
     // replayed one - clears the device-disarmed latch. A rejected one never
     // reaches here, so it shows nothing and leaves the latch set.
     if (m_fault_display_latched) { LOG_INF("Accepted command - device-disarmed indication cleared."); }
+    if (m_low_battery_latched) { LOG_INF("Accepted command - low-battery indication cleared."); }
     m_fault_display_latched = false;
+    m_low_battery_latched   = false;
 
     // Decoded field by field on purpose: when a slider produces the wrong byte
     // this is where you see it, rather than inferring it from an LED. Arm and

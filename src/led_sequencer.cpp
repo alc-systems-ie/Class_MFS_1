@@ -20,10 +20,12 @@ namespace alc
 
     constexpr uint16_t M_LONG_PATTERN_MS { 3000 };
     constexpr uint16_t M_TRIPLE_PATTERN_MS { 1000 };
+    constexpr uint16_t M_MISMATCH_PATTERN_MS { 5000 };
 
     constexpr Step M_RED_FLASH[] { { 60, 65 } };
     constexpr Step M_ORANGE_TRIPLE[] { { 150, 200 } };
     constexpr Step M_ORANGE_STEADY[] { { M_LONG_PATTERN_MS, 0 } };
+    constexpr Step M_ORANGE_RAPID[] { { 100, 100 } };
 
     Definition definitionOf(LedPattern pattern)
     {
@@ -34,6 +36,8 @@ namespace alc
           return { M_ORANGE_TRIPLE, 1, M_TRIPLE_PATTERN_MS };
         case LedPattern::OrangeSteady:
           return { M_ORANGE_STEADY, 1, M_LONG_PATTERN_MS };
+        case LedPattern::OrangeRapid:
+          return { M_ORANGE_RAPID, 1, M_MISMATCH_PATTERN_MS };
         default:
           return { nullptr, 0, 0 };
       }
@@ -42,8 +46,9 @@ namespace alc
     // Higher wins (spec section 3.3). None is lowest so it never blocks anything.
     constexpr uint8_t M_PRIORITY_NONE { 0 };
     constexpr uint8_t M_PRIORITY_CONFIRMATION { 1 };
-    constexpr uint8_t M_PRIORITY_RED_FLASH { 2 };
-    constexpr uint8_t M_PRIORITY_WARNING { 3 };
+    constexpr uint8_t M_PRIORITY_MISMATCH { 2 };
+    constexpr uint8_t M_PRIORITY_RED_FLASH { 3 };
+    constexpr uint8_t M_PRIORITY_WARNING { 4 };
 
     uint8_t priorityOf(LedPattern pattern)
     {
@@ -52,6 +57,8 @@ namespace alc
           return M_PRIORITY_WARNING;
         case LedPattern::RedFlash:
           return M_PRIORITY_RED_FLASH;
+        case LedPattern::OrangeRapid:
+          return M_PRIORITY_MISMATCH;
         case LedPattern::OrangeTriple:
           return M_PRIORITY_CONFIRMATION;
         default:
@@ -67,6 +74,7 @@ namespace alc
         return LedColour::Red;
       case LedPattern::OrangeTriple:
       case LedPattern::OrangeSteady:
+      case LedPattern::OrangeRapid:
         return LedColour::Orange;
       default:
         return LedColour::None;

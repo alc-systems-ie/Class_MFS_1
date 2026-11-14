@@ -21,7 +21,9 @@ namespace alc
 
     // Before the time sync the device only waits for its clock: simulated firing
     // starts once the clock is set (owner, 2026-11-12).
-    if (inputs.faultLatched) {
+    if (inputs.lowBattery) {
+      levels.orange = static_cast<uint64_t>(nowMs) % M_LOW_BATTERY_FLASH_PERIOD_MS < M_LOW_BATTERY_FLASH_ON_MS;
+    } else if (inputs.faultLatched) {
       levels.orange = true;
     } else if (!inputs.clockValid) {
       levels.green = true;
