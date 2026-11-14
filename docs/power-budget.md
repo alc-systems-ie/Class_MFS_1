@@ -188,6 +188,13 @@ firing (`docs/superpowers/specs/2026-11-14-fire-supply-on-demand-amendment.md`
 1450 mAh. To be confirmed by measurement on the normal build (bench checklist
 §5i.8).
 
+**Confirmed 2026-11-14** (MFS1-1126-00006, firmware 63eafef, CR123A, PPK2 ammeter,
+armed, debugger detached, 60 s window ≈ 10 scan periods): **7.60 mC / 60 s =
+126.7 µA → ~1.3 years** on 1450 mAh (11,400 h). Scans are clean single bursts. The
+smaller pulses every ~2 s are most likely the MPSL FEM power model's temperature
+read (`CONFIG_MPSL_FEM_BUILTIN_POWER_MODEL_UPDATE_PERIOD=2000`) — a few µA; a
+longer period is a possible small saving.
+
 ### MEASURED 2026-09-16 — 23 µA (UNRECONCILED — do not yet trust as the life figure)
 
 PPK II reading of **23 µA average** on the merged post-FIRE build (`main`, LEDs

@@ -396,7 +396,7 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 - [ ] 5. Live FIRE: VOUT rises at the top of the 10 s countdown, fires at its end, then returns to battery voltage. Rehearsal FIRE (disarmed): VOUT never rises.
 - [ ] 6. Disarm during an armed delay: VOUT returns to battery voltage with the pins disabled.
 - [ ] 7. Optional, with a depleted cell that cannot hold 3.2 V boosted: arming is refused at the battery test (orange stays on, as §5h.9). Fire-anyway at fire time is a code path only: not bench-forced.
-- [ ] 8. PPK2 (ammeter, CR123A), armed, settled, one full scan period: ~0.8 mC per scan with a flat ~7.6 mA plateau (not pulses), average ~140 µA. Record in `docs/power-budget.md`.
+- [x] 8. **126.7 µA, 2026-11-14** (MFS1-1126-00006, 60 s window, armed; `docs/power-budget.md`). PPK2 (ammeter, CR123A), armed, settled, one full scan period: ~0.8 mC per scan with a flat ~7.6 mA plateau (not pulses), average ~140 µA. Record in `docs/power-budget.md`.
 
 ## 5j. Arming failure codes (2026-11-14, spec `docs/superpowers/specs/2026-11-14-arming-failure-codes-amendment.md`)
 
