@@ -1414,6 +1414,14 @@ namespace alc
     uint32_t dropped { 0 };
 
     while (m_scanner.TakeCandidate(candidate)) {
+#if defined(CONFIG_MFS_SCAN_DIAG)
+      // One line per distinct advert (the scanner drops repeats of the same UUID
+      // for a short time), with the RSSI of the first copy heard. Comparing the
+      // phone's RSSI at known distances measures the link margin and shows
+      // whether the nRF21540 LNA is in the path (+13 dB when it is).
+      LOG_INF("Scan diag: UUID %02X%02X%02X%02X... RSSI %d dBm.", candidate.bytes[0], candidate.bytes[1], candidate.bytes[2], candidate.bytes[3],
+              candidate.rssiDbm);
+#endif
       if (!m_access_ready) { continue; }
 
       if (!m_clock.IsValid()) {

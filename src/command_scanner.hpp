@@ -29,6 +29,7 @@ namespace alc
       struct Candidate
       {
           uint8_t bytes[protocol::M_UUID_BYTES];
+          int8_t rssiDbm; ///< RSSI of the first copy received. Logged only under CONFIG_MFS_SCAN_DIAG.
       };
 
       CommandScanner();

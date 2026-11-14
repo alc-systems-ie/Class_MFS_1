@@ -177,7 +177,10 @@ config MFS_SCAN_DIAG
 	  and how many single 128-bit service UUIDs the scanner delivered; and for
 	  every UUID the access check discards as not for this device, logs its
 	  first four on-air bytes. Tells "not received" apart from "received and
-	  silently discarded". Leave off in production - it reveals reception.
+	  silently discarded". Also logs every distinct single-UUID128 advert with
+	  the RSSI of its first copy (2026-11-14), to measure link margin at known
+	  distances and to show whether the nRF21540 LNA is in the path. Leave off
+	  in production - it reveals reception.
 
 config MFS_DIAG_BOOST_PASSTHROUGH
 	bool "Force the nPM2100 boost into pass-through (bench measurement only)"

@@ -84,8 +84,6 @@ namespace alc
       CommandScanner::Candidate candidate {};
       int64_t nowMs { 0 };
 
-      ARG_UNUSED(userData);
-
       // Exactly one 128-bit UUID. A list of several is not our phone, which never
       // advertises anything else.
       if (data->type != M_AD_UUID128_ALL || data->data_len != protocol::M_UUID_BYTES) { return true; }
@@ -96,6 +94,7 @@ namespace alc
       if (seenRecently(data->data, nowMs)) { return false; }
 
       memcpy(candidate.bytes, data->data, protocol::M_UUID_BYTES);
+      candidate.rssiDbm = *static_cast<const int8_t*>(userData);
       if (k_msgq_put(&s_candidates, &candidate, K_NO_WAIT) != 0) {
         // Dropped, not remembered - so a later copy of the same advert can still
         // get in once the loop has drained the queue.
@@ -110,11 +109,12 @@ namespace alc
     void scanRecvCallback(const bt_addr_le_t* addr, int8_t rssi, uint8_t advType, struct net_buf_simple* buf)
     {
       ARG_UNUSED(addr);
-      ARG_UNUSED(rssi);
       ARG_UNUSED(advType);
 
+      // The RSSI rides along with the candidate to the main loop: this thread
+      // never logs (see s_dropped).
       atomic_inc(&s_adverts_received);
-      bt_data_parse(buf, &parseAdStructure, nullptr);
+      bt_data_parse(buf, &parseAdStructure, &rssi);
     }
 
     // One place that builds the scan parameters and starts the scan, so
@@ -184,14 +184,10 @@ namespace alc
   }
 
   bool CommandScanner::TakeCandidate(Candidate& out)
-  {
-    return k_msgq_get(&s_candidates, &out, K_NO_WAIT) == 0;
-  }
+  { return k_msgq_get(&s_candidates, &out, K_NO_WAIT) == 0; }
 
   uint32_t CommandScanner::TakeDroppedCount()
-  {
-    return static_cast<uint32_t>(atomic_set(&s_dropped, 0));
-  }
+  { return static_cast<uint32_t>(atomic_set(&s_dropped, 0)); }
 
   void CommandScanner::TakeReceptionCounts(uint32_t& adverts, uint32_t& uuids)
   {
