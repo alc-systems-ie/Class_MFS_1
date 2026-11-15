@@ -22,6 +22,16 @@ namespace alc::crypto
 
     bool s_initialised { false };
 
+    // Clears a stack copy of a MAC on every exit. Volatile, so the compiler cannot
+    // drop the stores to a buffer that is about to go out of scope.
+    void wipe(uint8_t* buffer, size_t length)
+    {
+      volatile uint8_t* bytes { buffer };
+      for (size_t index = 0; index < length; index++) {
+        bytes[index] = 0;
+      }
+    }
+
     // Keys are imported, used once and destroyed. This phase holds raw key bytes
     // in RAM from Kconfig; production moves the device secret into the KMU and
     // derives there, at which point this seam is where that change lands.
@@ -88,25 +98,31 @@ namespace alc::crypto
     uint8_t mac[M_HMAC_SHA256_BYTES] {};
     size_t outLength { 0 };
     psa_status_t status { PSA_SUCCESS };
+    int result { 0 };
 
-    if (!key.IsKmu()) { return HmacSha256(key.bytes, key.length, message, messageLength, out); }
+    if (!key.IsKmu()) {
+      // Through the same stack buffer as the KMU path, so both wipe it alike.
+      result = HmacSha256(key.bytes, key.length, message, messageLength, mac);
+    } else {
+      // The key stays in the KMU: the handle names the slot and nothing is imported.
+      status = psa_mac_compute(PSA_KEY_HANDLE_FROM_CRACEN_KMU_SLOT(CRACEN_KMU_KEY_USAGE_SCHEME_RAW, key.slot), PSA_ALG_HMAC(PSA_ALG_SHA_256), message,
+                               messageLength, mac, sizeof(mac), &outLength);
+      if (status == PSA_ERROR_INVALID_HANDLE || status == PSA_ERROR_DOES_NOT_EXIST) {
+        LOG_ERR("KMU slot %u holds no key: %d!", key.slot, status);
+        result = -ENOKEY;
+      } else if (status != PSA_SUCCESS || outLength != M_HMAC_SHA256_BYTES) {
+        LOG_ERR("KMU HMAC failed: %d!", status);
+        result = -EIO;
+      }
+    }
 
-    // The key stays in the KMU: the handle names the slot and nothing is imported.
-    status = psa_mac_compute(PSA_KEY_HANDLE_FROM_CRACEN_KMU_SLOT(CRACEN_KMU_KEY_USAGE_SCHEME_RAW, key.slot), PSA_ALG_HMAC(PSA_ALG_SHA_256), message,
-                             messageLength, mac, sizeof(mac), &outLength);
-    if (status == PSA_ERROR_INVALID_HANDLE || status == PSA_ERROR_DOES_NOT_EXIST) {
-      LOG_ERR("KMU slot %u holds no key: %d!", key.slot, status);
-      return -ENOKEY;
+    if (result == 0) {
+      for (size_t index = 0; index < M_HMAC_SHA256_BYTES; index++) {
+        out[index] = mac[index];
+      }
     }
-    if (status != PSA_SUCCESS || outLength != M_HMAC_SHA256_BYTES) {
-      LOG_ERR("KMU HMAC failed: %d!", status);
-      return -EIO;
-    }
-
-    for (size_t index = 0; index < M_HMAC_SHA256_BYTES; index++) {
-      out[index] = mac[index];
-    }
-    return 0;
+    wipe(mac, sizeof(mac));
+    return result;
   }
 
   int AesCcmEncrypt(const uint8_t* key, const uint8_t* nonce, size_t nonceLength, const uint8_t* aad, size_t aadLength, const uint8_t* plaintext,
