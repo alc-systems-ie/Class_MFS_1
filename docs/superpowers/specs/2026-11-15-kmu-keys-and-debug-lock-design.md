@@ -43,8 +43,10 @@ as they are.
 
 ## 3. Constraints and facts
 
-- **KMU:** 256 slots × 128 bits; application slots **0–179**; 180–255 reserved (IKG seed,
-  bootloader keys). A 256-bit key takes two consecutive slots. HMAC keys are **Raw scheme
+- **KMU:** **250 slots** (0–249) × 128 bits on the nRF54L05 (`KMU_KEYSLOTNUM 250`,
+  `nrf54l05_application_peripherals.h`; Nordic's KMU overview numbers a 256-slot map, whose
+  250–255 are reserved and absent here); application slots **0–179**; 180–249 reserved
+  (IKG seed, bootloader keys, protected-RAM invalidation data at 248–249). A 256-bit key takes two consecutive slots. HMAC keys are **Raw scheme
   only**: copied to CPU RAM while in use — so the lock is what protects them from a debugger.
 - **KMU slots are write-only:** a key can only be checked by using it.
 - **ERASEALL** (`nrfutil device recover`, `erase --all`, `west flash --recover`) wipes RRAM, UICR

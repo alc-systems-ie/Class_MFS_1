@@ -9,10 +9,14 @@ each item, and fix before moving on if an item marked **STOP** fails.
 `nrfutil device device-info --serial-number 853003346` must report an nRF54L.
 
 ```bash
-cd /Users/andy/nordic/ncs/v3.2.4/class_mfs_1
-west build -b nrf54l15dk/nrf54l05/cpuapp -p always -- -DEXTRA_CONF_FILE=credentials.conf
-west flash --dev-id 853003346 --recover
+cd /Users/andi/nordic/ncs/v3.2.4/class_mfs_1
+tools/flash_device.sh MFS1-0926-00001 --unlocked   # bench unit: build, recover, provision the KMU, program
 ```
+
+Since 2026-11-15 (§5l) every device is built, keyed and flashed only through
+`tools/flash_device.sh`; `credentials.conf` no longer reaches a firmware build. Any item
+here that reads RTT needs `--unlocked` (a locked device has no RTT); never deploy an
+unlocked device. The bench unit needs `secrets/MFS1-0926-00001.conf` first (§5l item 13).
 
 RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run -d macos`
 (the Mac clock must be network-synced).
@@ -414,17 +418,22 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 
 ## 5l. Keys in the KMU and the fleet debug lock (2026-11-15, design `docs/superpowers/specs/2026-11-15-kmu-keys-and-debug-lock-design.md`)
 
-- [ ] 1. **Key-test DK (1057755043) end to end.** `MFS_DEV_ID=1057755043 tools/flash_device.sh <dk serial>` with the DK's own `secrets/<serial>.conf`. `nrfutil device protection-get --serial-number 1057755043` shows protected; RTT is unavailable.
-- [ ] 2. `nrfutil device recover --serial-number 1057755043` unlocks it (keys gone).
-- [ ] 3. Re-run with `--unlocked`: RTT shows `DEBUG PORT UNLOCKED - not for the field!` and the boot key check passing. Then erase the KMU (recover) without re-provisioning and boot an unlocked image: commands refused, `Device keys missing or unusable in the KMU`.
-- [ ] 4. Does `protection-set All` also need `SecureRegions` on this SoC? (TODO in `tools/flash_device.sh`; confirm `protection-get` covers Secure AP-Protect.)
-- [ ] 5. Does `nrfutil device reset` work on a just-locked chip, or must the script power-cycle? (TODO in `tools/flash_device.sh`.)
-- [ ] 6. mbedTLS heap 2048 B with KMU keys: the boot key check passes (a heap failure reads as -ENOKEY).
-- [ ] 7. **First fleet device (not 00007; real nRF54L05 silicon):** run the script; sync the clock from the app and send one Disarm; green LED behaviour and the orange triple as before.
-- [ ] 8. The rest of the fleet, one at a time, the same sync and Disarm check.
-- [ ] 9. Delete old `build/` directories that held Kconfig keys.
-- [ ] 10. Owner: copy the bench identity from `credentials.conf` into `secrets/MFS1-0926-00001.conf` (agents never read either file), then flash the bench unit through the script.
-- [ ] 11. MFS1-1126-00007 stays on tag `trial-00007-2026-11-14` until the trial ends, then is reflashed through the script.
+- [ ] 1. **First key-test DK run is `--unlocked` — STOP if it fails.** `MFS_DEV_ID=1057755043 tools/flash_device.sh <dk serial> --unlocked` with the DK's own `secrets/<serial>.conf` (throwaway keys). RTT: `DEBUG PORT UNLOCKED - not for the field!`, then the boot key check passing — `Device 0x... ready. Clock INVALID until a provisioner time sync.` and no `Device keys missing or unusable`; no orange 3 s warning at boot.
+- [ ] 2. **Logs hold no key — STOP if any count is non-zero; before any fleet key is provisioned.** Straight after item 1 (the first real provisioning), count both key hex strings in nrfutil's and J-Link's logs, never printing them (the owner runs this; agents never read `secrets/`):
+  `grep -r -c -i -F -f <(sed -nE 's/^CONFIG_MFS_(DEVICE_SECRET|PROVISION_KEY)="(.*)"$/\2/p' secrets/<dk serial>.conf) ~/.nrfutil/logs /opt/nordic/ncs/toolchains/*/nrfutil/home ~/Library/Application\ Support/SEGGER ~/Library/Logs 2>/dev/null | grep -v ':0$'`
+  prints nothing. Record the directories searched (add any J-Link log file configured in J-Link settings).
+- [ ] 3. **The key-check failure — STOP if it fails.** `nrfutil device recover --serial-number 1057755043` (erases the KMU), then program the same unlocked image without provisioning: `nrfutil device program --firmware build/merged.hex --serial-number 1057755043 --options chip_erase_mode=ERASE_RANGES_TOUCHED_BY_FIRMWARE,verify=VERIFY_READ`, then `nrfutil device reset --serial-number 1057755043`. RTT: `Device keys missing or unusable in the KMU (...)` and `WARNING (light TBC): device keys missing or unusable - commands refused (...)`; the orange LED steady for 3 s at boot; a Disarm from the app gives no orange triple.
+- [ ] 4. **Only then the locked run.** `MFS_DEV_ID=1057755043 tools/flash_device.sh <dk serial>`. The script ends `Debug port verified locked (protection-get: All).`; RTT is unavailable. Record `protection-get`'s actual output line (the script matches the word `All`, `Secure` or `None` in it — fix the match if the real output differs).
+- [ ] 5. **If protect fails, check `protection-get` before re-running.** The script now runs `nrfutil device protection-get` itself and says which case it is: `All` means the firmware already locked the port and the device is fine (a re-run would only recover and erase it); anything else is unlocked — re-run.
+- [ ] 6. `nrfutil device recover --serial-number 1057755043` unlocks it (keys gone).
+- [ ] 7. Does `protection-set All` also need `SecureRegions` on this SoC? (TODO in `tools/flash_device.sh`; confirm `protection-get` covers Secure AP-Protect.)
+- [ ] 8. Does `nrfutil device reset` work on a just-locked chip, or must the script power-cycle? (TODO in `tools/flash_device.sh`.)
+- [ ] 9. mbedTLS heap 2048 B with KMU keys: the boot key check passes (a heap failure reads as -ENOKEY).
+- [ ] 10. **First fleet device (not 00007; real nRF54L05 silicon):** run the script; sync the clock from the app and send one Disarm: after the sync the green LED changes from steady to 500 ms on / 2500 ms off, and the Disarm gives the orange triple. An orange 3 s warning at boot, or no confirmation, means re-run the script.
+- [ ] 11. The rest of the fleet, one at a time, the same sync and Disarm check.
+- [ ] 12. Delete old `build/` directories that held Kconfig keys.
+- [ ] 13. Owner: copy the bench identity from `credentials.conf` into `secrets/MFS1-0926-00001.conf` (agents never read either file), then flash the bench unit through the script.
+- [ ] 14. MFS1-1126-00007 stays on tag `trial-00007-2026-11-14` until the trial ends, then is reflashed through the script.
 
 ## 9. Bench log
 
