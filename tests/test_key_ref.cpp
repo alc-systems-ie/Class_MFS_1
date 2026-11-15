@@ -50,6 +50,25 @@ void run_key_ref_tests()
   crypto::host_kmu::Clear();
   assert(crypto::HmacSha256(crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), M_MESSAGE, sizeof(M_MESSAGE), mac) == -ENOKEY);
 
+  // A raw reference with no bytes, or no length, is a bug: both overloads refuse
+  // it with -EINVAL and leave the output alone, rather than MAC under an empty key.
+  {
+    constexpr uint8_t M_ONE_KEY_BYTE[] { 0x01 };
+
+    for (uint8_t& byte : mac) {
+      byte = M_UNTOUCHED;
+    }
+    assert(crypto::HmacSha256(crypto::KeyRef::Raw(nullptr, 0), M_MESSAGE, sizeof(M_MESSAGE), mac) == -EINVAL);
+    assert(crypto::HmacSha256(crypto::KeyRef::Raw(nullptr, sizeof(access::vectors::M_SECRET)), M_MESSAGE, sizeof(M_MESSAGE), mac) == -EINVAL);
+    assert(crypto::HmacSha256(crypto::KeyRef::Raw(M_ONE_KEY_BYTE, 0), M_MESSAGE, sizeof(M_MESSAGE), mac) == -EINVAL);
+    assert(crypto::HmacSha256(nullptr, 0, M_MESSAGE, sizeof(M_MESSAGE), mac) == -EINVAL);
+    assert(crypto::HmacSha256(nullptr, sizeof(access::vectors::M_SECRET), M_MESSAGE, sizeof(M_MESSAGE), mac) == -EINVAL);
+    assert(crypto::HmacSha256(M_ONE_KEY_BYTE, 0, M_MESSAGE, sizeof(M_MESSAGE), mac) == -EINVAL);
+    for (const uint8_t byte : mac) {
+      assert(byte == M_UNTOUCHED);
+    }
+  }
+
   // A 256-bit key takes two slots.
   assert(kmu::M_SECRET_SLOT + 2 == kmu::M_PROVISION_SLOT);
 

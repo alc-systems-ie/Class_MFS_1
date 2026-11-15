@@ -26,4 +26,5 @@ target_sources(app PRIVATE
   src/detection_engine.cpp
   src/arming_sequence.cpp
   src/fire_sequence.cpp
+  src/key_check.cpp
 )

@@ -16,6 +16,7 @@ void run_fire_sequence_tests();
 void run_detection_engine_tests();
 void run_scan_policy_tests();
 void run_key_ref_tests();
+void run_key_check_tests();
 
 int main()
 {
@@ -35,6 +36,7 @@ int main()
   run_detection_engine_tests();
   run_scan_policy_tests();
   run_key_ref_tests();
+  run_key_check_tests();
   printf("ALL TESTS PASSED\n");
   return 0;
 }

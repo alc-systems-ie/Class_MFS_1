@@ -16,6 +16,8 @@ namespace alc::crypto
   {
     using namespace alc::access;
 
+    const KeyRef secret { KeyRef::Raw(vectors::M_SECRET, sizeof(vectors::M_SECRET)) };
+    const KeyRef provisionKey { KeyRef::Raw(vectors::M_PROVISION_KEY, sizeof(vectors::M_PROVISION_KEY)) };
     uint8_t dayKey[M_DAY_KEY_BYTES] {};
     uint8_t onAir[protocol::M_UUID_BYTES] {};
     uint8_t plaintext[protocol::M_PLAINTEXT_BYTES] {};
@@ -23,8 +25,7 @@ namespace alc::crypto
     uint8_t index { 0 };
 
     for (const vectors::CommandVector& vector : vectors::M_COMMANDS) {
-      if (DeriveDayKey(vectors::M_SECRET, vectors::M_DEVICE_ID, vector.day, vector.slot, dayKey) != 0 ||
-          memcmp(dayKey, vector.dayKey, sizeof(dayKey)) != 0) {
+      if (DeriveDayKey(secret, vectors::M_DEVICE_ID, vector.day, vector.slot, dayKey) != 0 || memcmp(dayKey, vector.dayKey, sizeof(dayKey)) != 0) {
         LOG_ERR("Self-test vector %u: day key mismatch!", index);
         return -EBADMSG;
       }
@@ -50,8 +51,7 @@ namespace alc::crypto
       index++;
     }
 
-    if (!OpenTimeSync(vectors::M_PROVISION_KEY, vectors::M_DEVICE_ID, vectors::M_TIME_SYNC_ON_AIR, unixSeconds) ||
-        unixSeconds != vectors::M_TIME_SYNC_UNIX) {
+    if (!OpenTimeSync(provisionKey, vectors::M_DEVICE_ID, vectors::M_TIME_SYNC_ON_AIR, unixSeconds) || unixSeconds != vectors::M_TIME_SYNC_UNIX) {
       LOG_ERR("Self-test: time sync vector failed!");
       return -EBADMSG;
     }

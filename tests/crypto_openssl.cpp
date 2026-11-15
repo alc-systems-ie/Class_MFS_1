@@ -39,6 +39,8 @@ namespace alc::crypto
   {
     unsigned int outLength { 0 };
 
+    // A missing or empty key is a bug, never "HMAC under the empty key".
+    if (key == nullptr || keyLength == 0) { return -EINVAL; }
     if (HMAC(EVP_sha256(), key, static_cast<int>(keyLength), message, messageLength, out, &outLength) == nullptr) { return -EIO; }
     return outLength == M_HMAC_SHA256_BYTES ? 0 : -EIO;
   }

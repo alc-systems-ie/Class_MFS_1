@@ -31,7 +31,7 @@ namespace alc::access
     }
   }
 
-  int DeriveDayKey(const uint8_t* secret, uint32_t deviceId, uint16_t day, uint8_t slot, uint8_t* dayKey)
+  int DeriveDayKey(const crypto::KeyRef& secret, uint32_t deviceId, uint16_t day, uint8_t slot, uint8_t* dayKey)
   {
     constexpr uint8_t M_MESSAGE_BYTES { 8 };
     uint8_t message[M_MESSAGE_BYTES] {};
@@ -40,7 +40,7 @@ namespace alc::access
     putBe16(&message[4], day);
     message[6] = slot;
     message[7] = M_LABEL_DAY_KEY;
-    return crypto::HmacSha256(secret, M_SECRET_BYTES, message, sizeof(message), dayKey);
+    return crypto::HmacSha256(secret, message, sizeof(message), dayKey);
   }
 
   int DeriveEncKey(const uint8_t* dayKey, uint8_t* encKey)
@@ -127,7 +127,7 @@ namespace alc::access
 
   namespace
   {
-    int timeSyncTag(const uint8_t* provisionKey, uint32_t deviceId, uint32_t unixSeconds, uint8_t* tag)
+    int timeSyncTag(const crypto::KeyRef& provisionKey, uint32_t deviceId, uint32_t unixSeconds, uint8_t* tag)
     {
       constexpr uint8_t M_MESSAGE_BYTES { 9 };
       uint8_t message[M_MESSAGE_BYTES] {};
@@ -137,7 +137,7 @@ namespace alc::access
       putBe32(&message[0], deviceId);
       putBe32(&message[4], unixSeconds);
       message[8] = M_LABEL_TIME_SYNC;
-      result     = crypto::HmacSha256(provisionKey, M_SECRET_BYTES, message, sizeof(message), mac);
+      result     = crypto::HmacSha256(provisionKey, message, sizeof(message), mac);
       if (result < 0) { return result; }
       memcpy(tag, mac, M_TIME_SYNC_TAG_BYTES);
       return 0;
@@ -150,10 +150,10 @@ namespace alc::access
     onAir[1] = static_cast<uint8_t>(unixSeconds >> 8);
     onAir[2] = static_cast<uint8_t>(unixSeconds >> 16);
     onAir[3] = static_cast<uint8_t>(unixSeconds >> 24);
-    return timeSyncTag(provisionKey, deviceId, unixSeconds, &onAir[4]);
+    return timeSyncTag(crypto::KeyRef::Raw(provisionKey, M_SECRET_BYTES), deviceId, unixSeconds, &onAir[4]);
   }
 
-  bool OpenTimeSync(const uint8_t* provisionKey, uint32_t deviceId, const uint8_t* onAir, uint32_t& unixSeconds)
+  bool OpenTimeSync(const crypto::KeyRef& provisionKey, uint32_t deviceId, const uint8_t* onAir, uint32_t& unixSeconds)
   {
     uint8_t expected[M_TIME_SYNC_TAG_BYTES] {};
     uint32_t presented { static_cast<uint32_t>(onAir[0]) | (static_cast<uint32_t>(onAir[1]) << 8) | (static_cast<uint32_t>(onAir[2]) << 16) |

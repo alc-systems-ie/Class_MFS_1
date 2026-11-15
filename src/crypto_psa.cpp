@@ -64,6 +64,7 @@ namespace alc::crypto
     psa_status_t status { PSA_SUCCESS };
 
     // Every key in the scheme is exactly 256 bits. Anything else is a bug.
+    if (key == nullptr) { return -EINVAL; }
     if (keyLength * M_BITS_PER_BYTE != M_HMAC_KEY_BITS) { return -EINVAL; }
 
     status = importKey(PSA_KEY_TYPE_HMAC, M_HMAC_KEY_BITS, PSA_KEY_USAGE_SIGN_MESSAGE, PSA_ALG_HMAC(PSA_ALG_SHA_256), key, id);

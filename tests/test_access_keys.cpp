@@ -5,11 +5,16 @@
 
 #include "access_keys.hpp"
 #include "access_vectors.hpp"
+#include "host_kmu.hpp"
+#include "kmu_slots.hpp"
 
 void run_access_key_tests()
 {
   using namespace alc;
   using namespace alc::access;
+
+  const crypto::KeyRef secret { crypto::KeyRef::Raw(vectors::M_SECRET, sizeof(vectors::M_SECRET)) };
+  const crypto::KeyRef provisionKey { crypto::KeyRef::Raw(vectors::M_PROVISION_KEY, sizeof(vectors::M_PROVISION_KEY)) };
 
   // Every vector was produced by tools/gen_access_vectors.py using Python's
   // `cryptography` package - an implementation that is neither this one nor the
@@ -22,7 +27,7 @@ void run_access_key_tests()
     uint8_t onAir[protocol::M_UUID_BYTES] {};
     uint8_t plaintext[protocol::M_PLAINTEXT_BYTES] {};
 
-    assert(DeriveDayKey(vectors::M_SECRET, vectors::M_DEVICE_ID, vector.day, vector.slot, dayKey) == 0);
+    assert(DeriveDayKey(secret, vectors::M_DEVICE_ID, vector.day, vector.slot, dayKey) == 0);
     assert(memcmp(dayKey, vector.dayKey, sizeof(dayKey)) == 0);
 
     assert(DeriveEncKey(dayKey, encKey) == 0);
@@ -77,8 +82,8 @@ void run_access_key_tests()
   {
     uint8_t slotZero[M_DAY_KEY_BYTES] {};
     uint8_t slotOne[M_DAY_KEY_BYTES] {};
-    assert(DeriveDayKey(vectors::M_SECRET, vectors::M_DEVICE_ID, 256, 0, slotZero) == 0);
-    assert(DeriveDayKey(vectors::M_SECRET, vectors::M_DEVICE_ID, 256, 1, slotOne) == 0);
+    assert(DeriveDayKey(secret, vectors::M_DEVICE_ID, 256, 0, slotZero) == 0);
+    assert(DeriveDayKey(secret, vectors::M_DEVICE_ID, 256, 1, slotOne) == 0);
     assert(memcmp(slotZero, slotOne, sizeof(slotZero)) != 0);
   }
 
@@ -90,22 +95,50 @@ void run_access_key_tests()
     assert(BuildTimeSync(vectors::M_PROVISION_KEY, vectors::M_DEVICE_ID, vectors::M_TIME_SYNC_UNIX, onAir) == 0);
     assert(memcmp(onAir, vectors::M_TIME_SYNC_ON_AIR, sizeof(onAir)) == 0);
 
-    assert(OpenTimeSync(vectors::M_PROVISION_KEY, vectors::M_DEVICE_ID, vectors::M_TIME_SYNC_ON_AIR, unixSeconds));
+    assert(OpenTimeSync(provisionKey, vectors::M_DEVICE_ID, vectors::M_TIME_SYNC_ON_AIR, unixSeconds));
     assert(unixSeconds == vectors::M_TIME_SYNC_UNIX);
 
     // Changing the time without the key must fail - this is the whole point.
     memcpy(onAir, vectors::M_TIME_SYNC_ON_AIR, sizeof(onAir));
     onAir[0] ^= 0x01;
     unixSeconds = 0;
-    assert(!OpenTimeSync(vectors::M_PROVISION_KEY, vectors::M_DEVICE_ID, onAir, unixSeconds));
+    assert(!OpenTimeSync(provisionKey, vectors::M_DEVICE_ID, onAir, unixSeconds));
     assert(unixSeconds == 0);
 
     // The DEVICE SECRET must not authorise a time sync. The two keys are
     // deliberately separate: a provisioner can set the clock and nothing else.
-    assert(!OpenTimeSync(vectors::M_SECRET, vectors::M_DEVICE_ID, vectors::M_TIME_SYNC_ON_AIR, unixSeconds));
+    assert(!OpenTimeSync(secret, vectors::M_DEVICE_ID, vectors::M_TIME_SYNC_ON_AIR, unixSeconds));
 
     // Nor may a sync for one device work on another.
-    assert(!OpenTimeSync(vectors::M_PROVISION_KEY, vectors::M_DEVICE_ID + 1, vectors::M_TIME_SYNC_ON_AIR, unixSeconds));
+    assert(!OpenTimeSync(provisionKey, vectors::M_DEVICE_ID + 1, vectors::M_TIME_SYNC_ON_AIR, unixSeconds));
+  }
+
+  // Time sync and day keys under KMU slot references give the same results as raw keys.
+  {
+    constexpr uint32_t M_UNTOUCHED_SECONDS { 0xA5A5A5A5 };
+    uint8_t dayKey[M_DAY_KEY_BYTES] {};
+    uint32_t unixSeconds { 0 };
+
+    crypto::host_kmu::Clear();
+    crypto::host_kmu::Provision(kmu::M_SECRET_SLOT, vectors::M_SECRET, sizeof(vectors::M_SECRET));
+    crypto::host_kmu::Provision(kmu::M_PROVISION_SLOT, vectors::M_PROVISION_KEY, sizeof(vectors::M_PROVISION_KEY));
+
+    const vectors::CommandVector& vector { vectors::M_COMMANDS[0] };
+    assert(DeriveDayKey(crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), vectors::M_DEVICE_ID, vector.day, vector.slot, dayKey) == 0);
+    assert(memcmp(dayKey, vector.dayKey, sizeof(dayKey)) == 0);
+
+    assert(OpenTimeSync(crypto::KeyRef::Kmu(kmu::M_PROVISION_SLOT), vectors::M_DEVICE_ID, vectors::M_TIME_SYNC_ON_AIR, unixSeconds));
+    assert(unixSeconds == vectors::M_TIME_SYNC_UNIX);
+
+    // The secret's slot must not authorise a time sync either.
+    assert(!OpenTimeSync(crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), vectors::M_DEVICE_ID, vectors::M_TIME_SYNC_ON_AIR, unixSeconds));
+
+    // An empty slot refuses the sync and leaves the output alone.
+    crypto::host_kmu::Clear();
+    unixSeconds = M_UNTOUCHED_SECONDS;
+    assert(!OpenTimeSync(crypto::KeyRef::Kmu(kmu::M_PROVISION_SLOT), vectors::M_DEVICE_ID, vectors::M_TIME_SYNC_ON_AIR, unixSeconds));
+    assert(unixSeconds == M_UNTOUCHED_SECONDS);
+    assert(DeriveDayKey(crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), vectors::M_DEVICE_ID, vector.day, vector.slot, dayKey) == -ENOKEY);
   }
 
   printf("access keys: OK\n");

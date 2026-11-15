@@ -25,7 +25,7 @@ namespace alc
     constexpr uint8_t M_MAX_CANDIDATES { 4 };
   }
 
-  AccessControl::AccessControl(uint32_t deviceId, const uint8_t* secret, PersistFn persist, void* context)
+  AccessControl::AccessControl(uint32_t deviceId, const crypto::KeyRef& secret, PersistFn persist, void* context)
       : m_device_id(deviceId)
       , m_secret(secret)
       , m_persist(persist)
