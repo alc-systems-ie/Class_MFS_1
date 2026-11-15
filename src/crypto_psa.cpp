@@ -3,6 +3,7 @@
 
 #include <cerrno>
 
+#include <cracen_psa_kmu.h>
 #include <psa/crypto.h>
 #include <zephyr/logging/log.h>
 
@@ -37,9 +38,7 @@ namespace alc::crypto
     }
 
     psa_algorithm_t ccmAlgorithm(size_t tagLength)
-    {
-      return PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, tagLength);
-    }
+    { return PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, tagLength); }
   }
 
   int Init()
@@ -79,6 +78,32 @@ namespace alc::crypto
     if (status != PSA_SUCCESS || outLength != M_HMAC_SHA256_BYTES) {
       LOG_ERR("psa_mac_compute failed: %d!", status);
       return -EIO;
+    }
+    return 0;
+  }
+
+  int HmacSha256(const KeyRef& key, const uint8_t* message, size_t messageLength, uint8_t* out)
+  {
+    uint8_t mac[M_HMAC_SHA256_BYTES] {};
+    size_t outLength { 0 };
+    psa_status_t status { PSA_SUCCESS };
+
+    if (!key.IsKmu()) { return HmacSha256(key.bytes, key.length, message, messageLength, out); }
+
+    // The key stays in the KMU: the handle names the slot and nothing is imported.
+    status = psa_mac_compute(PSA_KEY_HANDLE_FROM_CRACEN_KMU_SLOT(CRACEN_KMU_KEY_USAGE_SCHEME_RAW, key.slot), PSA_ALG_HMAC(PSA_ALG_SHA_256), message,
+                             messageLength, mac, sizeof(mac), &outLength);
+    if (status == PSA_ERROR_INVALID_HANDLE || status == PSA_ERROR_DOES_NOT_EXIST) {
+      LOG_ERR("KMU slot %u holds no key: %d!", key.slot, status);
+      return -ENOKEY;
+    }
+    if (status != PSA_SUCCESS || outLength != M_HMAC_SHA256_BYTES) {
+      LOG_ERR("KMU HMAC failed: %d!", status);
+      return -EIO;
+    }
+
+    for (size_t index = 0; index < M_HMAC_SHA256_BYTES; index++) {
+      out[index] = mac[index];
     }
     return 0;
   }

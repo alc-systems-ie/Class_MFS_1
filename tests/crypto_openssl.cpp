@@ -1,20 +1,39 @@
 // HOST-ONLY crypto backend for the unit tests. Never linked into firmware.
 
 #include <cerrno>
+#include <map>
 #include <memory>
+#include <vector>
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 
 #include "crypto.hpp"
+#include "host_kmu.hpp"
 
 namespace alc::crypto
 {
 
-  int Init()
+  namespace
   {
-    return 0;
+    std::map<uint8_t, std::vector<uint8_t>>& kmuTable()
+    {
+      static std::map<uint8_t, std::vector<uint8_t>> table;
+      return table;
+    }
   }
+
+  namespace host_kmu
+  {
+    void Provision(uint8_t slot, const uint8_t* key, size_t length)
+    { kmuTable()[slot] = std::vector<uint8_t>(key, key + length); }
+
+    void Clear()
+    { kmuTable().clear(); }
+  }
+
+  int Init()
+  { return 0; }
 
   int HmacSha256(const uint8_t* key, size_t keyLength, const uint8_t* message, size_t messageLength, uint8_t* out)
   {
@@ -22,6 +41,16 @@ namespace alc::crypto
 
     if (HMAC(EVP_sha256(), key, static_cast<int>(keyLength), message, messageLength, out, &outLength) == nullptr) { return -EIO; }
     return outLength == M_HMAC_SHA256_BYTES ? 0 : -EIO;
+  }
+
+  int HmacSha256(const KeyRef& key, const uint8_t* message, size_t messageLength, uint8_t* out)
+  {
+    if (!key.IsKmu()) { return HmacSha256(key.bytes, key.length, message, messageLength, out); }
+
+    const auto found { kmuTable().find(key.slot) };
+
+    if (found == kmuTable().end()) { return -ENOKEY; }
+    return HmacSha256(found->second.data(), found->second.size(), message, messageLength, out);
   }
 
   namespace
@@ -56,9 +85,7 @@ namespace alc::crypto
 
   int AesCcmEncrypt(const uint8_t* key, const uint8_t* nonce, size_t nonceLength, const uint8_t* aad, size_t aadLength, const uint8_t* plaintext,
                     size_t length, uint8_t* ciphertext, uint8_t* tag, size_t tagLength)
-  {
-    return ccm(true, key, nonce, nonceLength, aad, aadLength, plaintext, length, ciphertext, tag, tagLength);
-  }
+  { return ccm(true, key, nonce, nonceLength, aad, aadLength, plaintext, length, ciphertext, tag, tagLength); }
 
   int AesCcmDecrypt(const uint8_t* key, const uint8_t* nonce, size_t nonceLength, const uint8_t* aad, size_t aadLength, const uint8_t* ciphertext,
                     size_t length, const uint8_t* tag, size_t tagLength, uint8_t* plaintext)

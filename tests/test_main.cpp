@@ -15,6 +15,7 @@ void run_arming_sequence_tests();
 void run_fire_sequence_tests();
 void run_detection_engine_tests();
 void run_scan_policy_tests();
+void run_key_ref_tests();
 
 int main()
 {
@@ -33,6 +34,7 @@ int main()
   run_fire_sequence_tests();
   run_detection_engine_tests();
   run_scan_policy_tests();
+  run_key_ref_tests();
   printf("ALL TESTS PASSED\n");
   return 0;
 }

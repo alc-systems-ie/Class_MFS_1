@@ -1,7 +1,13 @@
 #pragma once
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
+
+// Not every libc defines it (macOS does not); the Linux value is used.
+#ifndef ENOKEY
+#define ENOKEY 126
+#endif
 
 namespace alc::crypto
 {
@@ -17,8 +23,30 @@ namespace alc::crypto
   /** @brief Initialise the backend. Idempotent. @return 0 or negative errno. */
   int Init();
 
+  /**
+   * @brief A key for HMAC: either raw bytes in RAM or a slot of the KMU key store.
+   *        A KMU key is never read by firmware; the crypto engine uses it in place.
+   */
+  struct KeyRef
+  {
+      static KeyRef Raw(const uint8_t* bytes, size_t length) { return KeyRef { bytes, length, 0, false }; }
+      static KeyRef Kmu(uint8_t slot) { return KeyRef { nullptr, 0, slot, true }; }
+      bool IsKmu() const { return kmu; }
+
+      const uint8_t* bytes;
+      size_t length;
+      uint8_t slot;
+      bool kmu;
+  };
+
   /** @brief HMAC-SHA256. @param out M_HMAC_SHA256_BYTES bytes. @return 0 or negative errno. */
   int HmacSha256(const uint8_t* key, size_t keyLength, const uint8_t* message, size_t messageLength, uint8_t* out);
+
+  /**
+   * @brief HMAC-SHA256 under a raw or KMU key.
+   * @return 0; -ENOKEY if a KMU slot is not provisioned; other negative errno on a backend fault. `out` is untouched on failure.
+   */
+  int HmacSha256(const KeyRef& key, const uint8_t* message, size_t messageLength, uint8_t* out);
 
   /**
    * @brief AES-128-CCM encrypt with a shortened tag.
