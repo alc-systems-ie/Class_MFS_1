@@ -37,6 +37,22 @@ namespace
   crypto::KeyRef secretRef()
   { return crypto::KeyRef::Raw(access::vectors::M_SECRET, sizeof(access::vectors::M_SECRET)); }
 
+  // A command sealed under one day's key but carrying another day in its nonce:
+  // what a holder of yesterday's key could build for today.
+  void buildCrossDayCommand(uint16_t keyDay, uint16_t nonceDay, uint8_t slot, uint32_t n, uint8_t* onAir)
+  {
+    uint8_t dayKey[access::M_DAY_KEY_BYTES] {};
+    uint8_t plaintext[protocol::M_PLAINTEXT_BYTES] {};
+    protocol::Command command;
+
+    command.type        = protocol::CommandType::Arm;
+    command.activations = 3;
+    command.minuteOfDay = 300;
+    protocol::EncodeCommand(command, plaintext);
+    assert(access::DeriveDayKey(secretRef(), access::vectors::M_DEVICE_ID, keyDay, slot, dayKey) == 0);
+    assert(access::SealCommand(dayKey, access::vectors::M_DEVICE_ID, nonceDay, slot, n, plaintext, onAir) == 0);
+  }
+
   // Builds what the engineer's app would send.
   void buildCommand(uint16_t day, uint8_t slot, uint32_t n, protocol::CommandType type, uint16_t minute, uint8_t* onAir)
   {
@@ -91,7 +107,8 @@ void run_access_control_tests()
     crypto::host_kmu::Clear();
   }
 
-  // An empty KMU slot accepts nothing: no day key can be derived.
+  // An empty KMU slot accepts nothing: no day key can be derived. That is a
+  // crypto fault, not a persistence one, and is reported as such.
   {
     PersistSpy spy;
     crypto::host_kmu::Clear();
@@ -99,8 +116,92 @@ void run_access_control_tests()
     DeviceClock clock { syncedClock() };
 
     buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
-    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict != Verdict::Accepted);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::CryptoError);
     assert(access.State().next[1] == 0);
+  }
+
+  // SECURITY: a key failure at the day rollover must not leave the previous
+  // day's tables live. Every code expires at the day boundary.
+  {
+    constexpr int64_t M_NEXT_DAY_UPTIME_SECS { DeviceClock::M_SECONDS_PER_DAY };
+    PersistSpy spy;
+    crypto::host_kmu::Clear();
+    crypto::host_kmu::Provision(kmu::M_SECRET_SLOT, access::vectors::M_SECRET, sizeof(access::vectors::M_SECRET));
+    AccessControl access(access::vectors::M_DEVICE_ID, crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+
+    // Tables built for day 256.
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted);
+
+    // The key vanishes across the rollover: the rollover persists, the tables cannot be built.
+    crypto::host_kmu::Clear();
+    assert(access.Advance(clock, M_NEXT_DAY_UPTIME_SECS) == -ENOKEY);
+    assert(access.State().day == 257);
+
+    // Day 256's key with day 257 in the nonce is NOT accepted.
+    buildCrossDayCommand(256, 257, 1, 1, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict == Verdict::CryptoError);
+    assert(access.State().next[1] == 0);
+
+    // The key comes back: the device recovers, still refuses day 256's key, and
+    // accepts a correct day-257 command.
+    crypto::host_kmu::Provision(kmu::M_SECRET_SLOT, access::vectors::M_SECRET, sizeof(access::vectors::M_SECRET));
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict != Verdict::Accepted);
+    buildCommand(257, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    AccessControl::Evaluation evaluation { access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS) };
+    assert(evaluation.verdict == Verdict::Accepted && evaluation.slot == 1 && evaluation.n == 0);
+    crypto::host_kmu::Clear();
+  }
+
+  // SECURITY: a fault part-way through the day-257 rebuild leaves no day-256 key
+  // material in the slots not yet rebuilt, and accepts no day-256 key anywhere.
+  {
+    constexpr int64_t M_NEXT_DAY_UPTIME_SECS { DeviceClock::M_SECONDS_PER_DAY };
+    // One day key plus M_LOOKAHEAD rotating IDs per slot; fail inside slot 3.
+    constexpr int32_t M_HMACS_PER_SLOT { 1 + AccessControl::M_LOOKAHEAD };
+    constexpr uint8_t M_FAULT_SLOT { 3 };
+    constexpr int32_t M_CALLS_BEFORE_FAULT { M_HMACS_PER_SLOT * M_FAULT_SLOT + 10 };
+    constexpr uint8_t M_ZERO_DAY_KEY[access::M_DAY_KEY_BYTES] {};
+    uint8_t oldDayKeys[access::M_SLOT_COUNT][access::M_DAY_KEY_BYTES] {};
+    PersistSpy spy;
+
+    crypto::host_kmu::Clear();
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted);
+    for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
+      memcpy(oldDayKeys[slot], access.DayKey(slot), access::M_DAY_KEY_BYTES);
+    }
+
+    crypto::host_kmu::FailHmacAfter(M_CALLS_BEFORE_FAULT);
+    assert(access.Advance(clock, M_NEXT_DAY_UPTIME_SECS) == -EIO);
+    assert(access.State().day == 257);
+
+    // No slot holds day 256's key; those not yet rebuilt hold nothing at all.
+    for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
+      assert(memcmp(access.DayKey(slot), oldDayKeys[slot], access::M_DAY_KEY_BYTES) != 0);
+      if (slot > M_FAULT_SLOT) { assert(memcmp(access.DayKey(slot), M_ZERO_DAY_KEY, access::M_DAY_KEY_BYTES) == 0); }
+    }
+
+    // While the fault persists, no day-256 key is accepted in any slot.
+    for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
+      crypto::host_kmu::FailHmacAfter(-1);
+      buildCrossDayCommand(256, 257, slot, 1, onAir);
+      crypto::host_kmu::FailHmacAfter(0);
+      assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict == Verdict::CryptoError);
+    }
+
+    // Fault cleared: still no day-256 key, and day 257 works.
+    crypto::host_kmu::Clear();
+    for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
+      buildCrossDayCommand(256, 257, slot, 1, onAir);
+      assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict != Verdict::Accepted);
+    }
+    buildCommand(257, 5, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict == Verdict::Accepted);
   }
 
   // Happy path, sequence handling and replay.

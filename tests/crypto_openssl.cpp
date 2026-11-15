@@ -21,6 +21,9 @@ namespace alc::crypto
       static std::map<uint8_t, std::vector<uint8_t>> table;
       return table;
     }
+
+    // Raw-key HMACs still allowed before the injected fault; negative = no fault.
+    int32_t s_hmac_calls_before_fault { -1 };
   }
 
   namespace host_kmu
@@ -29,7 +32,13 @@ namespace alc::crypto
     { kmuTable()[slot] = std::vector<uint8_t>(key, key + length); }
 
     void Clear()
-    { kmuTable().clear(); }
+    {
+      kmuTable().clear();
+      s_hmac_calls_before_fault = -1;
+    }
+
+    void FailHmacAfter(int32_t calls)
+    { s_hmac_calls_before_fault = calls; }
   }
 
   int Init()
@@ -41,6 +50,8 @@ namespace alc::crypto
 
     // A missing or empty key is a bug, never "HMAC under the empty key".
     if (key == nullptr || keyLength == 0) { return -EINVAL; }
+    if (s_hmac_calls_before_fault == 0) { return -EIO; }
+    if (s_hmac_calls_before_fault > 0) { s_hmac_calls_before_fault--; }
     if (HMAC(EVP_sha256(), key, static_cast<int>(keyLength), message, messageLength, out, &outLength) == nullptr) { return -EIO; }
     return outLength == M_HMAC_SHA256_BYTES ? 0 : -EIO;
   }

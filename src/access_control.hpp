@@ -128,7 +128,7 @@ namespace alc
       int Advance(DeviceClock& clock, int64_t uptimeSecs);
 
     private:
-      int prepareDay(uint16_t today, DeviceClock& clock);
+      int prepareDay(uint16_t today, DeviceClock& clock, bool& persistFailed);
       int rebuildSlot(uint8_t slot);
       void recordFailure(int64_t uptimeSecs);
 
