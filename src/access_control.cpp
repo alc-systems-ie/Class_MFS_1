@@ -77,12 +77,24 @@ namespace alc
     return 0;
   }
 
-  int AccessControl::prepareDay(uint16_t today, DeviceClock& clock)
+  int AccessControl::prepareDay(uint16_t today, DeviceClock& clock, bool& persistFailed)
   {
     AccessState previous { m_state };
     int result { 0 };
 
+    persistFailed = false;
     if (m_tables_ready && today == m_state.day) { return 0; }
+
+    // FAIL CLOSED before anything that can fail. The tables still hold the
+    // previous day's keys and IDs; were a persist, derivation or rebuild below
+    // to fail with them marked ready, the next call would take the early exit
+    // above and authenticate yesterday's commands under today's nonce - a code
+    // outliving its day boundary. Empty tables match nothing, and only a
+    // complete rebuild marks them ready again.
+    m_tables_ready = false;
+    memset(m_day_keys, 0, sizeof(m_day_keys));
+    memset(m_expected_ids, 0, sizeof(m_expected_ids));
+    memset(m_window_size, 0, sizeof(m_window_size));
 
     // A new day: every slot starts again at zero, because the day keys are new.
     // Nothing about previous days is kept - their keys can no longer be derived
@@ -95,7 +107,8 @@ namespace alc
       // day is not adopted, so no command can be accepted against unsaved state.
       result = m_persist(m_state, m_persist_context);
       if (result < 0) {
-        m_state = previous;
+        m_state       = previous;
+        persistFailed = true;
         return result;
       }
     }
@@ -138,6 +151,7 @@ namespace alc
     int result { 0 };
     bool authentic { false };
     bool ahead { false };
+    bool persistFailed { false };
 
     if (onAir == nullptr || length < protocol::M_UUID_BYTES) { return evaluation; }
 
@@ -155,9 +169,11 @@ namespace alc
       return evaluation;
     }
 
-    result = prepareDay(today, clock);
+    result = prepareDay(today, clock, persistFailed);
     if (result < 0) {
-      evaluation.verdict = Verdict::PersistFailed;
+      // Either way nothing is accepted. Only a failed save is PersistFailed; a
+      // key derivation or rebuild fault is the backend's.
+      evaluation.verdict = persistFailed ? Verdict::PersistFailed : Verdict::CryptoError;
       return evaluation;
     }
 
@@ -294,13 +310,14 @@ namespace alc
   int AccessControl::Advance(DeviceClock& clock, int64_t uptimeSecs)
   {
     uint16_t today { 0 };
+    bool persistFailed { false };
 
     if (!clock.IsValid()) { return 0; }
 
     today = clock.DayIndex(uptimeSecs);
     if (today < m_state.day) { return -EINVAL; }
 
-    return prepareDay(today, clock);
+    return prepareDay(today, clock, persistFailed);
   }
 
 }

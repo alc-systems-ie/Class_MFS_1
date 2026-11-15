@@ -7,18 +7,35 @@
 #include <openssl/hmac.h>
 
 #include "crypto.hpp"
+#include "crypto_fault.hpp"
 
 namespace alc::crypto
 {
 
-  int Init()
+  namespace
   {
-    return 0;
+    // Remaining successful HmacSha256() calls before the injected fault; negative means disarmed.
+    int s_hmac_calls_before_failure { -1 };
   }
+
+  namespace host_fault
+  {
+    void FailHmacAfter(int callsBeforeFailure)
+    { s_hmac_calls_before_failure = callsBeforeFailure; }
+
+    void Clear()
+    { s_hmac_calls_before_failure = -1; }
+  }
+
+  int Init()
+  { return 0; }
 
   int HmacSha256(const uint8_t* key, size_t keyLength, const uint8_t* message, size_t messageLength, uint8_t* out)
   {
     unsigned int outLength { 0 };
+
+    if (s_hmac_calls_before_failure == 0) { return -EIO; }
+    if (s_hmac_calls_before_failure > 0) { s_hmac_calls_before_failure--; }
 
     if (HMAC(EVP_sha256(), key, static_cast<int>(keyLength), message, messageLength, out, &outLength) == nullptr) { return -EIO; }
     return outLength == M_HMAC_SHA256_BYTES ? 0 : -EIO;
@@ -56,9 +73,7 @@ namespace alc::crypto
 
   int AesCcmEncrypt(const uint8_t* key, const uint8_t* nonce, size_t nonceLength, const uint8_t* aad, size_t aadLength, const uint8_t* plaintext,
                     size_t length, uint8_t* ciphertext, uint8_t* tag, size_t tagLength)
-  {
-    return ccm(true, key, nonce, nonceLength, aad, aadLength, plaintext, length, ciphertext, tag, tagLength);
-  }
+  { return ccm(true, key, nonce, nonceLength, aad, aadLength, plaintext, length, ciphertext, tag, tagLength); }
 
   int AesCcmDecrypt(const uint8_t* key, const uint8_t* nonce, size_t nonceLength, const uint8_t* aad, size_t aadLength, const uint8_t* ciphertext,
                     size_t length, const uint8_t* tag, size_t tagLength, uint8_t* plaintext)

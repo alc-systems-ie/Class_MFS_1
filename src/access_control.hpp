@@ -122,12 +122,17 @@ namespace alc
        * power cut, accept an old captured provisioner sync that revives that day's
        * keys. Call after a sync and periodically.
        *
-       * @return 0, or negative errno if the rollover could not be persisted (state unchanged).
+       * @return 0, or negative errno if the rollover could not be persisted (state unchanged) or
+       *         the day keys could not be derived (no command is then accepted until a later call succeeds).
        */
       int Advance(DeviceClock& clock, int64_t uptimeSecs);
 
     private:
-      int prepareDay(uint16_t today, DeviceClock& clock);
+      /**
+       * @brief Adopt today and build its tables, or leave the tables empty and not ready.
+       * @param persistFailed Set true only when the rollover could not be saved.
+       */
+      int prepareDay(uint16_t today, DeviceClock& clock, bool& persistFailed);
       int rebuildSlot(uint8_t slot);
       void recordFailure(int64_t uptimeSecs);
 
