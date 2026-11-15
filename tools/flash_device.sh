@@ -27,6 +27,10 @@
 #      KMU is in the configuration regions at 0x00FFxxxx (UICR, SICR/KMU),
 #      which the image never touches).
 #   7. nrfutil device protection-set All (skipped with --unlocked), then reset.
+#      If protection-set fails, protection-get decides: All means the firmware
+#      already locked the port (fine); anything else stops the run.
+#   8. nrfutil device protection-get (skipped with --unlocked): the run fails
+#      loudly unless it reports All.
 #
 # Every run erases NVS: the engineer slots' sequence counters and the day floor
 # restart at 0 while the app's counters carry on, so a slot with more than 16
@@ -39,8 +43,10 @@
 # (leading zeros, as nrfutil device list shows them, are stripped). J-Link
 # 1057733814 (the live hub DK) is always refused.
 # --dry-run exists for tools/test_flash_device.sh and requires MFS_SECRETS_DIR,
-# so a dry run never handles real keys. MFS_DRY_RUN_FAIL_AT=<step> (build,
-# keyfile, recover, provision, program, protect, reset) fails that step;
+# so a dry run never handles real keys. MFS_DRY_RUN_FAIL_AT=<steps> (any of
+# build, keyfile, recover, provision, program, protect, reset, protection-get,
+# space-separated) fails those steps; MFS_DRY_RUN_PROTECTION=<status> is what a
+# dry-run protection-get reports (default All);
 # MFS_DRY_RUN_PAUSE_AT=<device step> waits there so a signal can be sent.
 #
 # Never add set -x: it would trace the key file step's printf arguments, which are the keys.
@@ -150,12 +156,16 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-# In a dry run, fails the named step when MFS_DRY_RUN_FAIL_AT asks for it.
+# In a dry run, fails the named step when MFS_DRY_RUN_FAIL_AT names it.
 dryRunFailAt()
 {
-  if [ "$dry_run" -eq 1 ] && [ "${MFS_DRY_RUN_FAIL_AT:-}" = "$1" ]; then
-    echo "DRY-RUN: forced failure at $1." >&2
-    return 1
+  if [ "$dry_run" -eq 1 ]; then
+    case " ${MFS_DRY_RUN_FAIL_AT:-} " in
+      *" $1 "*)
+        echo "DRY-RUN: forced failure at $1." >&2
+        return 1
+        ;;
+    esac
   fi
   return 0
 }
@@ -361,7 +371,8 @@ echo "Key file written: 2 keys, slots $secret_slot and $provision_slot."
 # ---- 4-7. Device -------------------------------------------------------------------
 
 echo "Recovering J-Link $dev_id: unlocks and ERASES the chip (KMU, NVS, image)..."
-device recover recover --serial-number "$dev_id"
+device recover recover --serial-number "$dev_id" ||
+  die "Recover failed. Nothing is provisioned or programmed, and the chip may still hold its old image, keys and lock; check the J-Link connection and re-run this script."
 
 echo "Provisioning the KMU..."
 if device provision x-provision-keys --serial-number "$dev_id" --key-file "$keyfile"; then
@@ -379,14 +390,49 @@ device program program --firmware "$merged_hex" --serial-number "$dev_id" \
   --options chip_erase_mode=ERASE_RANGES_TOUCHED_BY_FIRMWARE,verify=VERIFY_READ,reset=RESET_NONE ||
   die "Programming failed. The KMU is provisioned but the image is not; re-run this script."
 
+# Reads the access-port state into $work/protection.txt and prints it; returns
+# non-zero if protection-get itself fails. On nRF54L it reports what the port
+# allows now (All, Secure or None), not what protection-set asked for.
+protection_file="$work/protection.txt"
+protectionGet()
+{
+  if [ "$dry_run" -eq 1 ]; then
+    echo "DRY-RUN: nrfutil device protection-get --serial-number $dev_id"
+    dryRunFailAt protection-get || return 1
+    printf 'protection status: %s\n' "${MFS_DRY_RUN_PROTECTION:-All}" > "$protection_file"
+  else
+    nrfutil device protection-get --serial-number "$dev_id" > "$protection_file" 2>&1 || {
+      sed 's/^/  protection-get: /' "$protection_file" >&2
+      return 1
+    }
+  fi
+  sed 's/^/  protection-get: /' "$protection_file"
+}
+
+# The reported status word (All, Secure, None), or the whole output if none is found.
+protectionStatus()
+{
+  word="$(grep -o -w -E 'All|Secure|None' "$protection_file" | head -n 1)"
+  if [ -n "$word" ]; then echo "$word"; else tr '\n' ' ' < "$protection_file" | sed 's/ *$//'; fi
+}
+
+verified=0
 if [ "$unlocked" -eq 1 ]; then
   echo "WARNING: --unlocked - protection-set skipped. DEBUG PORT LEFT UNLOCKED. Never deploy this device." >&2
 else
   echo "Locking the debug port..."
   # TODO(Task 6): verify on the key-test DK (1057755043) whether protection-set All
   # also enables Secure AP-Protect on nRF54L, or SecureRegions must be set too.
-  device protect protection-set All --serial-number "$dev_id" ||
-    die "protection-set failed. The device is programmed but may be unlocked; re-run this script."
+  if ! device protect protection-set All --serial-number "$dev_id"; then
+    # Not a blind re-run: a re-run recovers and erases a device that may be fine.
+    echo "protection-set failed. Checking the lock state with protection-get..." >&2
+    protectionGet || die "protection-set failed and protection-get could not read the lock state: the device is programmed but may be UNLOCKED. Check the J-Link connection, run 'nrfutil device protection-get --serial-number $dev_id', and re-run this script only if it does not report All."
+    status="$(protectionStatus)"
+    [ "$status" = "All" ] ||
+      die "protection-set failed and protection-get reports '$status': the device is programmed but its debug port is UNLOCKED. Re-run this script."
+    echo "protection-get reports All: the firmware already locked the debug port (CONFIG_NRF_APPROTECT_LOCK), so protection-set could not reach it. The device is programmed and locked - fine."
+    verified=1
+  fi
 fi
 
 # TODO(Task 6): confirm reset works on a locked nRF54L; otherwise power-cycle.
@@ -394,5 +440,17 @@ if ! device reset reset --serial-number "$dev_id"; then
   echo "Reset failed - power-cycle the device to start it." >&2
 fi
 
+if [ "$unlocked" -eq 0 ] && [ "$verified" -eq 0 ]; then
+  echo "Verifying the lock..."
+  protectionGet || die "DEBUG PORT NOT LOCKED? protection-get failed after protection-set, so the lock is unverified. Run 'nrfutil device protection-get --serial-number $dev_id'; if it does not report All, re-run this script. Never deploy an unverified device."
+  status="$(protectionStatus)"
+  [ "$status" = "All" ] ||
+    die "DEBUG PORT NOT LOCKED: protection-get reports '$status' after protection-set All. Never deploy this device; re-run this script."
+  echo "Debug port verified locked (protection-get: All)."
+fi
+
 echo "Flashed $serial (J-Link $dev_id)."
-echo "Sync the clock from the app, then send one Disarm; if either fails, re-run this script."
+echo "Sync the clock from the app, then send one Disarm:"
+echo "  - after the clock sync the green LED changes from steady to 500 ms on / 2500 ms off;"
+echo "  - the Disarm gives the orange triple."
+echo "An orange 3 s warning at boot (device keys missing or unusable), or no confirmation, means re-run this script."

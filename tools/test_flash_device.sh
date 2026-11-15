@@ -23,6 +23,14 @@ randomKey() { od -An -N32 -tx1 /dev/urandom | tr -d ' \n'; }
 fake_secret="$(randomKey)"
 fake_provision="$(randomKey)"
 zero_key="0000000000000000000000000000000000000000000000000000000000000000"
+# Slots from src/kmu_slots.hpp, the one definition flash_device.sh also reads.
+slotOf() { sed -n "s/^[[:space:]]*constexpr uint8_t $1 { \\([0-9][0-9]*\\) };.*/\\1/p" "$root/src/kmu_slots.hpp"; }
+secret_slot="$(slotOf M_SECRET_SLOT)"
+provision_slot="$(slotOf M_PROVISION_SLOT)"
+if [ -z "$secret_slot" ] || [ -z "$provision_slot" ]; then
+  echo "Cannot read the KMU slots from src/kmu_slots.hpp."
+  exit 1
+fi
 
 passed=0
 failed=0
@@ -92,18 +100,29 @@ recover=$(line_of recover)
 provision=$(line_of x-provision-keys)
 program=$(line_of program)
 protect=$(line_of "protection-set All")
+reset=$(line_of reset)
+verify=$(line_of protection-get)
+last="$(grep '^DRY-RUN: nrfutil device' "$out" | tail -n 1)"
 if [ "$status" -eq 0 ]; then pass "exits 0"; else fail "exits 0 (got $status)"; fi
-if [ "$recover" -gt 0 ] && [ "$provision" -gt "$recover" ] && [ "$program" -gt "$provision" ] && [ "$protect" -gt "$program" ]; then
-  pass "order recover -> x-provision-keys -> program -> protection-set All"
+if [ "$recover" -gt 0 ] && [ "$provision" -gt "$recover" ] && [ "$program" -gt "$provision" ] && [ "$protect" -gt "$program" ] &&
+  [ "$reset" -gt "$protect" ] && [ "$verify" -gt "$reset" ]; then
+  pass "order recover -> x-provision-keys -> program -> protection-set All -> reset -> protection-get"
 else
-  fail "order recover -> x-provision-keys -> program -> protection-set All ($recover $provision $program $protect)"
+  fail "order recover -> x-provision-keys -> program -> protection-set All -> reset -> protection-get ($recover $provision $program $protect $reset $verify)"
 fi
+if [ "$last" = "DRY-RUN: nrfutil device protection-get --serial-number 853003346" ]; then pass "ends with protection-get"; else fail "ends with protection-get ($last)"; fi
+if grep -q 'Debug port verified locked (protection-get: All)' "$out"; then pass "lock verified"; else fail "lock verified"; fi
 if grep -q '^DRY-RUN: nrfutil device program .*chip_erase_mode=ERASE_RANGES_TOUCHED_BY_FIRMWARE,' "$out"; then pass "program erases only the image ranges"; else fail "program erases only the image ranges"; fi
 if grep -q '^DRY-RUN: nrfutil device .*--serial-number 853003346' "$out"; then pass "default J-Link 853003346"; else fail "default J-Link 853003346"; fi
-if grep -q 'Key file written: 2 keys, slots 100 and 102' "$out"; then pass "key file holds both keys at the slots from kmu_slots.hpp"; else fail "key file holds both keys"; fi
+if grep -q "Key file written: 2 keys, slots $secret_slot and $provision_slot" "$out"; then pass "key file holds both keys at the slots from kmu_slots.hpp"; else fail "key file holds both keys"; fi
 if grep -q 'Derived conf: CONFIG_ALC_DEVICE_SERIAL CONFIG_MFS_DEVICE_ID$' "$out"; then pass "derived conf holds only serial and ID"; else fail "derived conf holds only serial and ID"; fi
 if grep -q 'debug-unlocked.conf' "$out"; then fail "locked build must not use debug-unlocked.conf"; else pass "locked build omits debug-unlocked.conf"; fi
-if grep -q 'Sync the clock from the app, then send one Disarm' "$out"; then pass "final end-to-end message"; else fail "final end-to-end message"; fi
+if grep -q 'Sync the clock from the app, then send one Disarm' "$out" && grep -q '500 ms on / 2500 ms off' "$out" && grep -q 'orange triple' "$out" &&
+  grep -q 'orange 3 s warning at boot' "$out"; then
+  pass "final end-to-end message says what success looks like"
+else
+  fail "final end-to-end message says what success looks like"
+fi
 if leaks_secret; then fail "output never shows a key"; else pass "output never shows a key"; fi
 if [ "$(leftovers)" -eq 0 ]; then pass "temp files removed"; else fail "temp files removed ($(leftovers) left)"; fi
 logged="$(grep -r -l -i -F -e "$fake_secret" -e "$fake_provision" "$HOME/.nrfutil" /opt/nordic/ncs/toolchains/*/nrfutil/home 2>/dev/null | wc -l | tr -d ' ')"
@@ -113,22 +132,22 @@ echo "KMU key file matches generate_psa_key_attributes.py"
 toolchain_bin="$(nrfutil toolchain-manager env --ncs-version v3.2.4 --as-script sh | sed -n 's/^export PATH=\([^:]*\):.*/\1/p')"
 generator="/opt/nordic/ncs/v3.2.4/nrf/scripts/generate_psa_key_attributes.py"
 rm -f "$work/generated.json" "$work/written.json"
-for pair in "100 $fake_secret" "102 $fake_provision"; do
+for pair in "$secret_slot $fake_secret" "$provision_slot $fake_provision"; do
   set -- $pair
   "$toolchain_bin/python3" "$generator" --usage SIGN --id "$1" --type HMAC --key-bits 256 --algorithm HMAC_SHA256 --location LOCATION_CRACEN_KMU \
     --persistence PERSISTENCE_DEFAULT --cracen-usage RAW --key "0x$2" --file "$work/generated.json" > /dev/null 2>&1
 done
-printf '%s\n%s\n' "$fake_secret" "$fake_provision" | sh "$root/tools/kmu_key_file.sh" "$work/written.json" 100 102 > "$out" 2>&1
+printf '%s\n%s\n' "$fake_secret" "$fake_provision" | sh "$root/tools/kmu_key_file.sh" "$work/written.json" "$secret_slot" "$provision_slot" > "$out" 2>&1
 if [ -s "$work/generated.json" ] && [ "$(tr -d ' \n' < "$work/written.json")" = "$(tr -d ' \n' < "$work/generated.json")" ]; then
-  pass "slots 100 and 102 identical to the generator's output"
+  pass "slots $secret_slot and $provision_slot identical to the generator's output"
 else
-  fail "slots 100 and 102 identical to the generator's output"
+  fail "slots $secret_slot and $provision_slot identical to the generator's output"
 fi
 if [ "$(ls -l "$work/written.json" | cut -c1-10)" = "-rw-------" ]; then pass "key file mode 600"; else fail "key file mode 600"; fi
 if leaks_secret; then fail "key file writer prints no key"; else pass "key file writer prints no key"; fi
-printf '%s\n' "$fake_secret" | sh "$root/tools/kmu_key_file.sh" "$work/short.json" 100 102 > "$out" 2>&1
+printf '%s\n' "$fake_secret" | sh "$root/tools/kmu_key_file.sh" "$work/short.json" "$secret_slot" "$provision_slot" > "$out" 2>&1
 if [ $? -ne 0 ] && [ ! -e "$work/short.json" ]; then pass "missing key refused, nothing written"; else fail "missing key refused, nothing written"; fi
-printf '%s\n%s\n' "$fake_secret" "xyz" | sh "$root/tools/kmu_key_file.sh" "$work/bad.json" 100 102 > "$out" 2>&1
+printf '%s\n%s\n' "$fake_secret" "xyz" | sh "$root/tools/kmu_key_file.sh" "$work/bad.json" "$secret_slot" "$provision_slot" > "$out" 2>&1
 if [ $? -ne 0 ] && [ ! -e "$work/bad.json" ] && ! leaks_secret; then pass "malformed key refused, nothing written or shown"; else fail "malformed key refused"; fi
 rm -f "$work/generated.json" "$work/written.json"
 
@@ -188,16 +207,55 @@ if [ "$status" -ne 0 ]; then pass "exits non-zero"; else fail "exits non-zero"; 
 if [ "$(line_of program)" -eq 0 ] && [ "$(line_of protection-set)" -eq 0 ]; then pass "nothing programmed or locked"; else fail "nothing programmed or locked"; fi
 if [ "$(leftovers)" -eq 0 ]; then pass "key file gone"; else fail "key file gone ($(leftovers) left)"; fi
 
+echo "Forced failure at recover"
+run env MFS_DRY_RUN_FAIL_AT=recover sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && [ "$(line_of x-provision-keys)" -eq 0 ] && grep -q 'Recover failed' "$out" && [ "$(leftovers)" -eq 0 ]; then
+  pass "stops with its own message, temp files gone"
+else
+  fail "stops with its own message, temp files gone"
+fi
+
 echo "Forced failure at program"
 run env MFS_DRY_RUN_FAIL_AT=program sh "$script" "$serial" --dry-run
 if [ "$status" -ne 0 ] && [ "$(line_of protection-set)" -eq 0 ] && [ "$(leftovers)" -eq 0 ]; then pass "stops, temp files gone"; else fail "stops, temp files gone"; fi
 
-echo "Forced failure at protect"
+echo "Forced failure at protect, protection-get reports All"
 run env MFS_DRY_RUN_FAIL_AT=protect sh "$script" "$serial" --dry-run
-if [ "$status" -ne 0 ] && [ "$(line_of reset)" -eq 0 ] && ! grep -q 'Sync the clock' "$out" && [ "$(leftovers)" -eq 0 ]; then
-  pass "stops before reset and the final message"
+if [ "$(line_of protection-get)" -gt "$(line_of "protection-set All")" ] && [ "$(line_of "protection-set All")" -gt 0 ]; then
+  pass "protection-get runs after the failed protection-set"
 else
-  fail "stops before reset and the final message"
+  fail "protection-get runs after the failed protection-set"
+fi
+if grep -q 'protection-get reports All: the firmware already locked the debug port' "$out" && [ "$status" -eq 0 ] && grep -q 'Sync the clock' "$out"; then
+  pass "diagnosed as already locked by the firmware, device fine"
+else
+  fail "diagnosed as already locked by the firmware, device fine (exit $status)"
+fi
+if [ "$(leftovers)" -eq 0 ]; then pass "temp files gone"; else fail "temp files gone"; fi
+
+echo "Forced failure at protect, protection-get reports None"
+run env MFS_DRY_RUN_FAIL_AT=protect MFS_DRY_RUN_PROTECTION=None sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && [ "$(line_of reset)" -eq 0 ] && ! grep -q 'Sync the clock' "$out" && grep -q "protection-get reports 'None'" "$out" &&
+  grep -q 'UNLOCKED' "$out" && [ "$(leftovers)" -eq 0 ]; then
+  pass "stops before reset, reports the device unlocked"
+else
+  fail "stops before reset, reports the device unlocked"
+fi
+
+echo "Forced failure at protect, protection-get fails too"
+run env MFS_DRY_RUN_FAIL_AT="protect protection-get" sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && [ "$(line_of reset)" -eq 0 ] && grep -q 'could not read the lock state' "$out"; then
+  pass "stops, says the lock state is unknown"
+else
+  fail "stops, says the lock state is unknown"
+fi
+
+echo "protection-set succeeds but protection-get does not report All"
+run env MFS_DRY_RUN_PROTECTION=Secure sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && grep -q 'DEBUG PORT NOT LOCKED' "$out" && ! grep -q 'Sync the clock' "$out"; then
+  pass "fails loudly"
+else
+  fail "fails loudly (exit $status)"
 fi
 
 echo "Signals clean up"
@@ -217,6 +275,7 @@ if [ "$status" -ne 0 ] && grep -q 'MFS_SECRETS_DIR' "$out"; then pass "dry run w
 echo "--unlocked"
 run sh "$script" "$serial" --unlocked --dry-run
 if [ "$status" -eq 0 ] && [ "$(line_of protection-set)" -eq 0 ] && [ "$(line_of program)" -gt 0 ]; then pass "programs, no protection-set"; else fail "programs, no protection-set"; fi
+if [ "$(line_of protection-get)" -eq 0 ]; then pass "no lock verification"; else fail "no lock verification"; fi
 if grep -q 'debug-unlocked.conf' "$out" && grep -q 'DEBUG PORT LEFT UNLOCKED' "$out"; then pass "adds debug-unlocked.conf and warns"; else fail "adds debug-unlocked.conf and warns"; fi
 
 echo "--extra-conf"
