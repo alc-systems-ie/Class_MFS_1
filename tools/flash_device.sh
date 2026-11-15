@@ -43,7 +43,7 @@
 # keyfile, recover, provision, program, protect, reset) fails that step;
 # MFS_DRY_RUN_PAUSE_AT=<device step> waits there so a signal can be sent.
 #
-# Never add set -x: the key file step passes each key to the generator.
+# Never add set -x: it would trace the key file step's printf arguments, which are the keys.
 
 set -eu
 umask 077

@@ -396,10 +396,26 @@ shows the crystal needs trimming.
 At manufacture: 256-bit `deviceSecret`, 256-bit `provisionKey`, 32-bit `id`,
 recorded against the serial.
 
-**On the device both keys belong in the nRF54L05 KMU**, not in a Kconfig string. This
-phase carries them as `CONFIG_MFS_DEVICE_SECRET` / `CONFIG_MFS_PROVISION_KEY` via the
-gitignored `credentials.conf` — bench only, and the keys are then readable in the
-image.
+**On the device both keys are in the nRF54L05 KMU** (done 2026-11-15, design
+`docs/superpowers/specs/2026-11-15-kmu-keys-and-debug-lock-design.md`), not in a
+Kconfig string or the image:
+
+| Key | Slots | Type |
+|---|---|---|
+| `deviceSecret` | 100–101 | 256-bit HMAC-SHA256, usage SIGN |
+| `provisionKey` | 102–103 | 256-bit HMAC-SHA256, usage SIGN |
+
+Both use the **RAW** scheme with no export or copy flags. **RAW caveat:** the KMU copies
+the key into CPU RAM while it is in use, so a debugger or any code running on the
+device can read it — the debug lock, not the KMU, is what protects the keys.
+Provisioning is by `tools/flash_device.sh`, which recovers the chip (wiping the KMU),
+loads the keys from a temporary file, programs the image and then locks the debug port
+(`CONFIG_NRF_APPROTECT_LOCK` and `CONFIG_NRF_SECURE_APPROTECT_LOCK` in every build; a
+bench image built with `debug-unlocked.conf` is the only exception and warns at boot).
+A spike showed a 256-bit HMAC key in the KMU works on NCS v3.2.4 although Nordic's
+slot table lists 128-bit. At boot the firmware checks the keys by what they compute
+(missing, equal or zero keys refuse commands). Erase protection is never set, so a
+re-run of the script always recovers a device.
 
 **The whole scheme rests on the secret staying secret:**
 

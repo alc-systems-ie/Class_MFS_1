@@ -143,7 +143,11 @@ logged.
 4. `nrfutil device recover --serial-number <J-Link>` (unlocks if locked; wipes KMU and NVS).
 5. `nrfutil device x-provision-keys --serial-number <J-Link> --key-file <temp>`; delete the
    temp file whether it succeeds or not (`trap`).
-6. Program the image onto the erased chip (plain program, no further erase).
+6. Program the image with `chip_erase_mode=ERASE_RANGES_TOUCHED_BY_FIRMWARE` — not "no
+   further erase": `recover` may leave recovery firmware in the application region, which
+   a program with no erase would not clear. The KMU sits in the configuration regions at
+   `0x00FFxxxx` and the script refuses any image that reaches them, so the ranges erased
+   are never the KMU's.
 7. `nrfutil device protection-set All` (UICR; the firmware locks at boot as well).
 8. Print the end-to-end check: "Sync the clock from the app, then send one Disarm; if either
    fails, re-run this script."

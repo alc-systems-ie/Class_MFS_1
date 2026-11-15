@@ -412,6 +412,20 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 - [x] 2. **103.4 µA, 2026-11-14** (MFS1-1126-00007, 60 s, armed, debugger unplugged and power-cycled; `docs/power-budget.md`). PPK2 (ammeter, CR123A), armed, settled, 60 s: scan bursts ~7.25 s apart, the small power-model spikes 5 s apart (were 2 s); average ~106 µA (was 126.7 µA). Record in `docs/power-budget.md`.
 - [ ] 3. Command reliability from each phone (iPhone, Mac, the production Android once available): 20 Sends each, Arm/Disarm alternating, all heard within one 30 s Send. Re-run `tools/scan_phase_check.py` with the Android's measured interval.
 
+## 5l. Keys in the KMU and the fleet debug lock (2026-11-15, design `docs/superpowers/specs/2026-11-15-kmu-keys-and-debug-lock-design.md`)
+
+- [ ] 1. **Key-test DK (1057755043) end to end.** `MFS_DEV_ID=1057755043 tools/flash_device.sh <dk serial>` with the DK's own `secrets/<serial>.conf`. `nrfutil device protection-get --serial-number 1057755043` shows protected; RTT is unavailable.
+- [ ] 2. `nrfutil device recover --serial-number 1057755043` unlocks it (keys gone).
+- [ ] 3. Re-run with `--unlocked`: RTT shows `DEBUG PORT UNLOCKED - not for the field!` and the boot key check passing. Then erase the KMU (recover) without re-provisioning and boot an unlocked image: commands refused, `Device keys missing or unusable in the KMU`.
+- [ ] 4. Does `protection-set All` also need `SecureRegions` on this SoC? (TODO in `tools/flash_device.sh`; confirm `protection-get` covers Secure AP-Protect.)
+- [ ] 5. Does `nrfutil device reset` work on a just-locked chip, or must the script power-cycle? (TODO in `tools/flash_device.sh`.)
+- [ ] 6. mbedTLS heap 2048 B with KMU keys: the boot key check passes (a heap failure reads as -ENOKEY).
+- [ ] 7. **First fleet device (not 00007; real nRF54L05 silicon):** run the script; sync the clock from the app and send one Disarm; green LED behaviour and the orange triple as before.
+- [ ] 8. The rest of the fleet, one at a time, the same sync and Disarm check.
+- [ ] 9. Delete old `build/` directories that held Kconfig keys.
+- [ ] 10. Owner: copy the bench identity from `credentials.conf` into `secrets/MFS1-0926-00001.conf` (agents never read either file), then flash the bench unit through the script.
+- [ ] 11. MFS1-1126-00007 stays on tag `trial-00007-2026-11-14` until the trial ends, then is reflashed through the script.
+
 ## 9. Bench log
 
 ### 2026-09-14 — first bench session (J-Link 853003346, nRF54L05, device 0xFBACBE88)
