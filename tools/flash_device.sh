@@ -2,7 +2,7 @@
 # Builds MFS_1 for one device, provisions its two long-term keys into the
 # nRF54L05 KMU, programs it and locks the debug port.
 #
-#   tools/flash_device.sh <serial>                         erase, provision, program, lock
+#   tools/flash_device.sh <serial>                         erase, program, provision, lock
 #   tools/flash_device.sh <serial> --unlocked              same, debug port left open (BENCH ONLY)
 #   tools/flash_device.sh <serial> --unlocked --extra-conf <file>   bench/diagnostic build
 #   tools/flash_device.sh <serial> --build                 build and check only, no device
@@ -21,16 +21,19 @@
 #   3. Write the KMU key file (tools/kmu_key_file.sh, keys on stdin, slots from
 #      src/kmu_slots.hpp). No key is ever in the argv of anything, least of all
 #      of nrfutil, which logs its argv to ~/.nrfutil/logs.
-#   4. nrfutil device recover - unlocks and ERASES EVERYTHING: KMU, NVS, image.
-#   5. nrfutil device x-provision-keys; the key file is deleted straight after.
-#   6. nrfutil device program, erasing only the ranges the image touches (the
-#      KMU is in the configuration regions at 0x00FFxxxx (UICR, SICR/KMU),
-#      which the image never touches).
-#   7. nrfutil device protection-set All (skipped with --unlocked), then reset.
-#      If protection-set fails, protection-get decides: All means the firmware
-#      already locked the port (fine); anything else stops the run.
+#   4-7. ONE nrfutil batch (--x-append-batch, then a single x-execute-batch on
+#      the J-Link), as Zephyr's west nrfutil runner builds it: recover (unlocks
+#      and ERASES EVERYTHING: KMU, NVS, image) -> program merged.hex
+#      (chip_erase_mode=ERASE_NONE, as west uses for nRF54L - recover has just
+#      erased it; verify=VERIFY_READ) -> x-provision-keys -> protection-set All
+#      (left out with --unlocked) -> reset RESET_PIN. The key file and the batch
+#      file (which names the key file by path, never a key) are deleted straight
+#      after. One batch because separate calls fail on the MFS board: with the app
+#      erased nothing stops the nPM2100 boot monitor, so the board power-cycles
+#      every ~11 s, and each nRF54L cold boot re-locks the debug port (2026-11-15).
+#      A failed batch may leave the chip erased and power-cycling: re-run.
 #   8. nrfutil device protection-get (skipped with --unlocked): the run fails
-#      loudly unless it reports All.
+#      loudly unless its "access status" line says "status value: All".
 #
 # Every run erases NVS: the engineer slots' sequence counters and the day floor
 # restart at 0 while the app's counters carry on, so a slot with more than 16
@@ -43,11 +46,14 @@
 # (leading zeros, as nrfutil device list shows them, are stripped). J-Link
 # 1057733814 (the live hub DK) is always refused.
 # --dry-run exists for tools/test_flash_device.sh and requires MFS_SECRETS_DIR,
-# so a dry run never handles real keys. MFS_DRY_RUN_FAIL_AT=<steps> (any of
-# build, keyfile, recover, provision, program, protect, reset, protection-get,
-# space-separated) fails those steps; MFS_DRY_RUN_PROTECTION=<status> is what a
-# dry-run protection-get reports (default All);
-# MFS_DRY_RUN_PAUSE_AT=<device step> waits there so a signal can be sent.
+# so a dry run never handles real keys, and runs no nrfutil at all: it prints
+# every batch append and the x-execute-batch, and records the appends in the
+# batch file as text. MFS_DRY_RUN_FAIL_AT=<steps> (any of build, keyfile,
+# append, batch, protection-get, space-separated) fails those steps;
+# MFS_DRY_RUN_PROTECTION=<status> is the status value a dry-run protection-get
+# reports (default All), MFS_DRY_RUN_PROTECTION_FILE=<file> its whole output;
+# MFS_DRY_RUN_PAUSE_AT=<device step> (append, batch) waits there so a signal
+# can be sent.
 #
 # Never add set -x: it would trace the key file step's printf arguments, which are the keys.
 
@@ -344,10 +350,10 @@ else
   [ -z "$found" ] || die "A key was found in:$found - not flashing. Delete $build_dir."
 
   # The image must not reach the configuration regions at 0x00FFxxxx (UICR,
-  # SICR/KMU): step 6 erases every range the image touches.
+  # SICR/KMU): programming there could overwrite the KMU or the lock.
   # RRAM ends below 0x00200000, so every extended address must be 0x0000-0x001F.
   if [ -n "$(grep -i '^:02000004' "$merged_hex" | grep -v -i '^:0200000400[01]' || true)" ]; then
-    die "$merged_hex reaches beyond RRAM (towards UICR, SICR/KMU) - programming it could erase the KMU. Not flashing."
+    die "$merged_hex reaches beyond RRAM (towards UICR, SICR/KMU) - programming it could overwrite the KMU or UICR. Not flashing."
   fi
   echo "Image built for $serial: serial, ID and lock settings checked; neither key in .config, autoconf.h, zephyr.hex or merged.hex."
 fi
@@ -368,38 +374,79 @@ key_count="$(grep -c '"metadata"' "$keyfile" || true)"
 dryRunFailAt keyfile
 echo "Key file written: 2 keys, slots $secret_slot and $provision_slot."
 
-# ---- 4-7. Device -------------------------------------------------------------------
+# ---- 4-7. Device: one batch -------------------------------------------------------
+#
+# Recover, program, provision, lock and reset run as ONE nrfutil batch, built the
+# way Zephyr's west nrfutil runner builds it (runners/nrfutil.py _append_batch,
+# _exec_batch). Separate calls fail on the MFS board: once recover has erased the
+# app nothing stops the nPM2100 boot monitor, so the board power-cycles every
+# ~10.5-11 s, and every nRF54L cold boot re-locks the debug port unless running
+# firmware opens it; a step that straddles a power cycle fails (2026-11-15). The
+# batch holds one J-Link session from recover to reset, and the new app stops the
+# boot monitor as soon as it boots. The batch file names the key file by PATH only
+# (checked 2026-11-15 with a fake key); no key is ever in it.
+#
+# protection-set All is in the batch, before the reset, so the UICR lock is
+# written before the new firmware ever runs. Appending names no probe: nrfutil
+# records the operation and exits without touching a device.
+batch="$work/batch.json"
 
-echo "Recovering J-Link $dev_id: unlocks and ERASES the chip (KMU, NVS, image)..."
-device recover recover --serial-number "$dev_id" ||
-  die "Recover failed. Nothing is provisioned or programmed, and the chip may still hold its old image, keys and lock; check the J-Link connection and re-run this script."
+# appendOp <nrfutil device arguments...>: appends one operation to the batch, or
+# prints it (and records it in the batch file, as text) in a dry run.
+appendOp()
+{
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'nrfutil device %s --x-family nrf54l --x-append-batch %s\n' "$*" "$batch" >> "$batch"
+  fi
+  device append "$@" --x-family nrf54l --x-append-batch "$batch"
+}
 
-echo "Provisioning the KMU..."
-if device provision x-provision-keys --serial-number "$dev_id" --key-file "$keyfile"; then
-  provisioned=1
-else
-  provisioned=0
+# Removes the key file and the batch file (the EXIT trap also covers both).
+removeBatchFiles()
+{
+  rm -f "$keyfile" "$batch"
+}
+
+# ERASE_NONE (west's choice for nRF54L, nrf_common.py program_hex): recover has
+# just erased the chip and RRAM needs no page erase. The image check in step 2
+# keeps the image out of the configuration regions (UICR, SICR/KMU).
+if ! { appendOp recover &&
+  appendOp program --firmware "$merged_hex" --options chip_erase_mode=ERASE_NONE,verify=VERIFY_READ &&
+  appendOp x-provision-keys --key-file "$keyfile" &&
+  { [ "$unlocked" -eq 1 ] || appendOp protection-set All; } &&
+  appendOp reset --reset-kind RESET_PIN; }; then
+  removeBatchFiles
+  die "Building the device batch failed. Nothing has been done to the device; re-run this script."
 fi
-rm -f "$keyfile"
-[ "$provisioned" -eq 1 ] || die "KMU provisioning failed. The chip is erased and unlocked; re-run this script."
 
-# Erases only the ranges the image touches (as plain west flash does), so the
-# KMU (0x00FFxxxx) survives and nothing of recover's own firmware is left in those ranges.
-echo "Programming $serial..."
-device program program --firmware "$merged_hex" --serial-number "$dev_id" \
-  --options chip_erase_mode=ERASE_RANGES_TOUCHED_BY_FIRMWARE,verify=VERIFY_READ,reset=RESET_NONE ||
-  die "Programming failed. The KMU is provisioned but the image is not; re-run this script."
+if [ "$unlocked" -eq 1 ]; then
+  echo "WARNING: --unlocked - protection-set left out of the batch. DEBUG PORT LEFT UNLOCKED. Never deploy this device." >&2
+fi
+
+echo "Running the device batch on J-Link $dev_id: recover (ERASES the chip: KMU, NVS, image), program, provision the KMU$([ "$unlocked" -eq 1 ] || echo ', lock the debug port'), reset..."
+if device batch x-execute-batch --batch-path "$batch" --serial-number "$dev_id"; then
+  batch_ok=1
+else
+  batch_ok=0
+fi
+removeBatchFiles
+[ "$batch_ok" -eq 1 ] ||
+  die "The device batch failed. The chip may be erased and power-cycling every ~11 s (the nPM2100 boot monitor, with no app to stop it), and its debug port re-locks on every cold boot. Re-run this script: the batch starts with recover."
 
 # Reads the access-port state into $work/protection.txt and prints it; returns
 # non-zero if protection-get itself fails. On nRF54L it reports what the port
-# allows now (All, Secure or None), not what protection-set asked for.
+# allows now, not what protection-set asked for.
 protection_file="$work/protection.txt"
 protectionGet()
 {
   if [ "$dry_run" -eq 1 ]; then
     echo "DRY-RUN: nrfutil device protection-get --serial-number $dev_id"
     dryRunFailAt protection-get || return 1
-    printf 'protection status: %s\n' "${MFS_DRY_RUN_PROTECTION:-All}" > "$protection_file"
+    if [ -n "${MFS_DRY_RUN_PROTECTION_FILE:-}" ]; then
+      cat "$MFS_DRY_RUN_PROTECTION_FILE" > "$protection_file"
+    else
+      printf 'access status: Debug access (dry run) (status value: %s)\n' "${MFS_DRY_RUN_PROTECTION:-All}" > "$protection_file"
+    fi
   else
     nrfutil device protection-get --serial-number "$dev_id" > "$protection_file" 2>&1 || {
       sed 's/^/  protection-get: /' "$protection_file" >&2
@@ -409,43 +456,30 @@ protectionGet()
   sed 's/^/  protection-get: /' "$protection_file"
 }
 
-# The reported status word (All, Secure, None), or the whole output if none is found.
+# The status value (None, Secure or All) from the one "access status" line, e.g.
+#   access status: Debug access is enabled (status value: None)
+# (real unlocked output, 2026-11-15). Prints "unparsed" unless exactly one such
+# line is found, and "unknown" for any other value: both fail closed. Only that
+# line counts, so a stray "All" elsewhere in the merged output never does.
 protectionStatus()
 {
-  word="$(grep -o -w -E 'All|Secure|None' "$protection_file" | head -n 1)"
-  if [ -n "$word" ]; then echo "$word"; else tr '\n' ' ' < "$protection_file" | sed 's/ *$//'; fi
+  values="$(sed -n 's/^.*access status:.*(status value: \([^)]*\)).*$/\1/p' "$protection_file")"
+  if [ -z "$values" ] || [ "$(printf '%s\n' "$values" | wc -l | tr -d ' ')" -ne 1 ]; then
+    echo "unparsed"
+    return
+  fi
+  case "$values" in
+    None | Secure | All) echo "$values" ;;
+    *) echo "unknown" ;;
+  esac
 }
 
-verified=0
-if [ "$unlocked" -eq 1 ]; then
-  echo "WARNING: --unlocked - protection-set skipped. DEBUG PORT LEFT UNLOCKED. Never deploy this device." >&2
-else
-  echo "Locking the debug port..."
-  # TODO(Task 6): verify on the key-test DK (1057755043) whether protection-set All
-  # also enables Secure AP-Protect on nRF54L, or SecureRegions must be set too.
-  if ! device protect protection-set All --serial-number "$dev_id"; then
-    # Not a blind re-run: a re-run recovers and erases a device that may be fine.
-    echo "protection-set failed. Checking the lock state with protection-get..." >&2
-    protectionGet || die "protection-set failed and protection-get could not read the lock state: the device is programmed but may be UNLOCKED. Check the J-Link connection, run 'nrfutil device protection-get --serial-number $dev_id', and re-run this script only if it does not report All."
-    status="$(protectionStatus)"
-    [ "$status" = "All" ] ||
-      die "protection-set failed and protection-get reports '$status': the device is programmed but its debug port is UNLOCKED. Re-run this script."
-    echo "protection-get reports All: the firmware already locked the debug port (CONFIG_NRF_APPROTECT_LOCK), so protection-set could not reach it. The device is programmed and locked - fine."
-    verified=1
-  fi
-fi
-
-# TODO(Task 6): confirm reset works on a locked nRF54L; otherwise power-cycle.
-if ! device reset reset --serial-number "$dev_id"; then
-  echo "Reset failed - power-cycle the device to start it." >&2
-fi
-
-if [ "$unlocked" -eq 0 ] && [ "$verified" -eq 0 ]; then
+if [ "$unlocked" -eq 0 ]; then
   echo "Verifying the lock..."
-  protectionGet || die "DEBUG PORT NOT LOCKED? protection-get failed after protection-set, so the lock is unverified. Run 'nrfutil device protection-get --serial-number $dev_id'; if it does not report All, re-run this script. Never deploy an unverified device."
+  protectionGet || die "DEBUG PORT NOT LOCKED? protection-get failed after the batch, so the lock is unverified. Run 'nrfutil device protection-get --serial-number $dev_id'; if it does not report 'status value: All', re-run this script. Never deploy an unverified device."
   status="$(protectionStatus)"
   [ "$status" = "All" ] ||
-    die "DEBUG PORT NOT LOCKED: protection-get reports '$status' after protection-set All. Never deploy this device; re-run this script."
+    die "DEBUG PORT NOT LOCKED: protection-get reports '$status' after the batch's protection-set All. Never deploy this device; re-run this script."
   echo "Debug port verified locked (protection-get: All)."
 fi
 

@@ -438,10 +438,16 @@ tools/flash_device.sh <serial> [--unlocked] [--extra-conf <file>] [--build] [--d
 It loads `secrets/<serial>.conf` (gitignored, from `tools/gen_fleet_credentials.py`,
 with the spreadsheet `secrets/MFS1-1126-credentials.xlsx`), refuses all-zero or equal
 keys, builds with a derived conf holding only the serial and device ID, checks the
-image carries that serial and neither key, then does **recover → provision the KMU →
-program → lock the debug port → reset** against J-Link 853003346 (`MFS_DEV_ID`
-overrides). `--build` stops after the build checks; `--dry-run` prints every device
-command instead of running it; `--unlocked` leaves the debug port open for RTT
+image carries that serial and neither key, then runs **one nrfutil batch — recover →
+program (`ERASE_NONE`) → provision the KMU → lock the debug port → pin reset** — with a
+single `x-execute-batch` on J-Link 853003346 (`MFS_DEV_ID` overrides), and finally checks
+`protection-get` reports `status value: All`. **It must be one batch**: once `recover`
+erases the app nothing stops the nPM2100 boot monitor, so the MFS board power-cycles
+every ~11 s and each nRF54L cold boot re-locks the debug port; separate nrfutil calls
+straddled a power cycle and failed (2026-11-15; the bare DK, with no PMIC, hid it). A
+failed batch can leave the chip erased and power-cycling — re-run the script. The batch
+file names the key file by path only. `--build` stops after the build checks;
+`--dry-run` prints every batch append and the execute instead of running anything; `--unlocked` leaves the debug port open for RTT
 (bench only, below); `--extra-conf` adds a diagnostic conf (`MFS_SCAN_DIAG` and the
 like). The J-Link of the live hub DK (**1057733814**) is always refused; the key-test
 DK is **1057755043**. `sh tools/test_flash_device.sh` is the host test of the script
@@ -456,7 +462,8 @@ or slot, or wait. A power cycle never resets the counters.
 **Always flash this board through the script, which always recovers.** Plain `west
 flash` programmed and verified the image on 2026-11-14 while the old firmware kept
 running, and the new image did not boot even after a J-Link reset — the same failure
-that first made `--recover` mandatory. Unresolved (bench checklist §5j.1).
+that first made `--recover` mandatory. Unresolved (bench checklist §5j.1), but very
+likely the same boot-monitor power cycling that broke the separate-call flash.
 
 **Secrets never reach `west build`; never pass a secret with `-D`.** The script's
 temporary key file (`mktemp`, mode 600, keys on stdin, removed on exit) is the only

@@ -142,15 +142,44 @@ logged.
    `zephyr.hex` contain neither secret (grep for the hex strings).
 3. Write the key file (`generate_psa_key_attributes.py`, slots per §5.2) to a `mktemp` file,
    `chmod 600`.
-4. `nrfutil device recover --serial-number <J-Link>` (unlocks if locked; wipes KMU and NVS).
-5. `nrfutil device x-provision-keys --serial-number <J-Link> --key-file <temp>`; delete the
-   temp file whether it succeeds or not (`trap`).
-6. Program the image with `chip_erase_mode=ERASE_RANGES_TOUCHED_BY_FIRMWARE` — not "no
-   further erase": `recover` may leave recovery firmware in the application region, which
-   a program with no erase would not clear. The KMU sits in the configuration regions at
-   `0x00FFxxxx` and the script refuses any image that reaches them, so the ranges erased
-   are never the KMU's.
-7. `nrfutil device protection-set All` (UICR; the firmware locks at boot as well).
+4–7. **One nrfutil batch** (revised 2026-11-15 after the first run on the MFS board), built
+   with `--x-append-batch` into a file in the script's private `mktemp` directory and run by a
+   single `nrfutil device x-execute-batch --batch-path <file> --serial-number <J-Link>`, the
+   way Zephyr's west nrfutil runner does it (`runners/nrfutil.py` `_append_batch` /
+   `_exec_batch`):
+   1. `recover` (unlocks if locked; wipes KMU, NVS and the image);
+   2. `program --firmware build/merged.hex --options chip_erase_mode=ERASE_NONE,verify=VERIFY_READ`
+      — `ERASE_NONE` is west's own choice for nRF54L (`nrf_common.py` `program_hex`): recover
+      has just erased the chip, and RRAM is written without a page erase. The script still
+      refuses any image with a record at or above `0x00200000` (the configuration regions at
+      `0x00FFxxxx`: UICR, SICR/KMU);
+   3. `x-provision-keys --key-file <temp>` — the batch file records the key file's **path**
+      only, never a key (checked 2026-11-15 by building a batch with a fake key);
+   4. `protection-set All` (left out with `--unlocked`) — `protection-set` accepts
+      `--x-append-batch`, so the UICR lock is written inside the batch, before the new
+      firmware ever runs (the firmware locks at boot as well);
+   5. `reset --reset-kind RESET_PIN`.
+
+   Every append gets `--x-family nrf54l` and names no probe (nrfutil records the operation and
+   exits without touching a device). The key file and the batch file are deleted straight after
+   the batch, whether it succeeds or not (`trap` too).
+
+   **Why one batch:** on the MFS board, once `recover` has erased the app nothing stops the
+   nPM2100 boot monitor, so the board power-cycles every ~10.5–11 s (measured 2026-11-15), and
+   every nRF54L cold boot re-locks the debug port unless running firmware opens it. Separate
+   `recover`, `x-provision-keys` and `program` calls straddled a power cycle and failed
+   (`Memory access error at 0x00000000 ... Probe access is Secure`, then intermittent
+   `Failed to configure Coresight: LOW_VOLTAGE`, then readback protection enabled). The bare
+   nRF54L15 DK has no PMIC and hid this. The batch holds one J-Link session from recover to
+   reset, and the new app stops the boot monitor (`App::initPmic()`) as soon as it boots; run
+   by hand on 2026-11-15 (without `protection-set`), the board was stable and the boot key
+   check passed. A failed batch may leave the chip erased and power-cycling, its debug port
+   re-locking on each cold boot: the remedy is to re-run the script, whose batch starts with
+   `recover`.
+7a. `nrfutil device protection-get` (skipped with `--unlocked`): only the value after
+   `status value:` on the `access status` line counts — real unlocked output is
+   `access status: Debug access is enabled (status value: None)`. Anything but exactly one such
+   line with `All` fails the run; a stray `All` elsewhere in the output never counts.
 8. Print the end-to-end check: "Sync the clock from the app, then send one Disarm; if either
    fails, re-run this script."
 - `--build` builds only (steps 1–2). `--keep-nvs` is withdrawn: a reflash always erases, so the

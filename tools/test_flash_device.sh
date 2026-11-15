@@ -66,6 +66,11 @@ run_signalled()
     sleep 0.1
   done
   kept="$(find "$work/tmp" -name kmu_keys.json | wc -l | tr -d ' ')"
+  kept_batch="$(find "$work/tmp" -name batch.json | wc -l | tr -d ' ')"
+  batch_leaks=0
+  for file in $(find "$work/tmp" -name batch.json); do
+    if grep -qi -e "$fake_secret" -e "$fake_provision" "$file"; then batch_leaks=1; fi
+  done
   kill "-$2" "$pid"
   wait "$pid"
   status=$?
@@ -87,6 +92,17 @@ line_of()
 }
 
 device_commands() { grep -c '^DRY-RUN: nrfutil device' "$out"; }
+# The batch operations appended, in order, as one space-separated line.
+batch_ops() { grep '^DRY-RUN: nrfutil device .* --x-append-batch ' "$out" | awk '{ print $4 }' | tr '\n' ' ' | sed 's/ $//'; }
+# The distinct batch paths named by the append and execute commands.
+batch_paths()
+{
+  {
+    sed -n 's/^DRY-RUN: nrfutil device .* --x-append-batch \([^ ]*\)$/\1/p' "$out"
+    sed -n 's/^DRY-RUN: nrfutil device x-execute-batch --batch-path \([^ ]*\) .*/\1/p' "$out"
+  } | sort -u
+}
+executes() { grep -c '^DRY-RUN: nrfutil device x-execute-batch' "$out"; }
 leftovers() { find "$work/tmp" -mindepth 1 | wc -l | tr -d ' '; }
 leaks_secret() { grep -qi -e "$fake_secret" -e "$fake_provision" "$out"; }
 
@@ -96,24 +112,40 @@ if sh -n "$script" > "$out" 2>&1; then pass "sh -n flash_device.sh"; else fail "
 echo "Full sequence (locked)"
 make_conf "$serial" "$fake_secret" "$fake_provision"
 run sh "$script" "$serial" --dry-run
-recover=$(line_of recover)
-provision=$(line_of x-provision-keys)
-program=$(line_of program)
-protect=$(line_of "protection-set All")
-reset=$(line_of reset)
+execute=$(line_of x-execute-batch)
 verify=$(line_of protection-get)
+last_append="$(grep -n '^DRY-RUN: nrfutil device .* --x-append-batch ' "$out" | tail -n 1 | cut -d: -f1)"
 last="$(grep '^DRY-RUN: nrfutil device' "$out" | tail -n 1)"
 if [ "$status" -eq 0 ]; then pass "exits 0"; else fail "exits 0 (got $status)"; fi
-if [ "$recover" -gt 0 ] && [ "$provision" -gt "$recover" ] && [ "$program" -gt "$provision" ] && [ "$protect" -gt "$program" ] &&
-  [ "$reset" -gt "$protect" ] && [ "$verify" -gt "$reset" ]; then
-  pass "order recover -> x-provision-keys -> program -> protection-set All -> reset -> protection-get"
+if [ "$(batch_ops)" = "recover program x-provision-keys protection-set reset" ]; then
+  pass "batch is recover -> program -> x-provision-keys -> protection-set -> reset"
 else
-  fail "order recover -> x-provision-keys -> program -> protection-set All -> reset -> protection-get ($recover $provision $program $protect $reset $verify)"
+  fail "batch is recover -> program -> x-provision-keys -> protection-set -> reset (got '$(batch_ops)')"
 fi
+if grep -q '^DRY-RUN: nrfutil device recover --x-family nrf54l --x-append-batch [^ ]*$' "$out"; then pass "recover appended"; else fail "recover appended"; fi
+if grep -q "^DRY-RUN: nrfutil device program --firmware [^ ]*/build/merged.hex --options chip_erase_mode=ERASE_NONE,verify=VERIFY_READ --x-family nrf54l --x-append-batch [^ ]*\$" "$out"; then
+  pass "program merged.hex with ERASE_NONE and VERIFY_READ"
+else
+  fail "program merged.hex with ERASE_NONE and VERIFY_READ"
+fi
+if grep -q '^DRY-RUN: nrfutil device x-provision-keys --key-file [^ ]*/kmu_keys.json --x-family nrf54l --x-append-batch [^ ]*$' "$out"; then pass "x-provision-keys by key-file path"; else fail "x-provision-keys by key-file path"; fi
+if grep -q '^DRY-RUN: nrfutil device protection-set All --x-family nrf54l --x-append-batch [^ ]*$' "$out"; then pass "protection-set All in the batch"; else fail "protection-set All in the batch"; fi
+if grep -q '^DRY-RUN: nrfutil device reset --reset-kind RESET_PIN --x-family nrf54l --x-append-batch [^ ]*$' "$out"; then pass "reset RESET_PIN"; else fail "reset RESET_PIN"; fi
+if [ "$(batch_paths | wc -l | tr -d ' ')" -eq 1 ]; then pass "one batch file throughout"; else fail "one batch file throughout ($(batch_paths | tr '\n' ' '))"; fi
+case "$(batch_paths)" in
+  "$work/tmp/"*) pass "batch file in the private temp directory" ;;
+  *) fail "batch file in the private temp directory ($(batch_paths))" ;;
+esac
+if grep '^DRY-RUN: nrfutil device .* --x-append-batch ' "$out" | grep -q -e '--serial-number'; then fail "appends name no probe"; else pass "appends name no probe"; fi
+if [ "$(executes)" -eq 1 ] && grep -q '^DRY-RUN: nrfutil device x-execute-batch --batch-path [^ ]* --serial-number 853003346$' "$out"; then
+  pass "one x-execute-batch on the default J-Link 853003346"
+else
+  fail "one x-execute-batch on the default J-Link 853003346"
+fi
+if [ "$execute" -gt "${last_append:-0}" ] && [ "$verify" -gt "$execute" ]; then pass "appends -> x-execute-batch -> protection-get"; else fail "appends -> x-execute-batch -> protection-get"; fi
+if [ "$(device_commands)" -eq 7 ]; then pass "no device command outside the batch but protection-get"; else fail "no device command outside the batch but protection-get ($(device_commands))"; fi
 if [ "$last" = "DRY-RUN: nrfutil device protection-get --serial-number 853003346" ]; then pass "ends with protection-get"; else fail "ends with protection-get ($last)"; fi
 if grep -q 'Debug port verified locked (protection-get: All)' "$out"; then pass "lock verified"; else fail "lock verified"; fi
-if grep -q '^DRY-RUN: nrfutil device program .*chip_erase_mode=ERASE_RANGES_TOUCHED_BY_FIRMWARE,' "$out"; then pass "program erases only the image ranges"; else fail "program erases only the image ranges"; fi
-if grep -q '^DRY-RUN: nrfutil device .*--serial-number 853003346' "$out"; then pass "default J-Link 853003346"; else fail "default J-Link 853003346"; fi
 if grep -q "Key file written: 2 keys, slots $secret_slot and $provision_slot" "$out"; then pass "key file holds both keys at the slots from kmu_slots.hpp"; else fail "key file holds both keys"; fi
 if grep -q 'Derived conf: CONFIG_ALC_DEVICE_SERIAL CONFIG_MFS_DEVICE_ID$' "$out"; then pass "derived conf holds only serial and ID"; else fail "derived conf holds only serial and ID"; fi
 if grep -q 'debug-unlocked.conf' "$out"; then fail "locked build must not use debug-unlocked.conf"; else pass "locked build omits debug-unlocked.conf"; fi
@@ -124,7 +156,7 @@ else
   fail "final end-to-end message says what success looks like"
 fi
 if leaks_secret; then fail "output never shows a key"; else pass "output never shows a key"; fi
-if [ "$(leftovers)" -eq 0 ]; then pass "temp files removed"; else fail "temp files removed ($(leftovers) left)"; fi
+if [ "$(leftovers)" -eq 0 ]; then pass "key file and batch file removed"; else fail "key file and batch file removed ($(leftovers) left)"; fi
 logged="$(grep -r -l -i -F -e "$fake_secret" -e "$fake_provision" "$HOME/.nrfutil" /opt/nordic/ncs/toolchains/*/nrfutil/home 2>/dev/null | wc -l | tr -d ' ')"
 if [ "$logged" -eq 0 ]; then pass "no nrfutil log holds this run's keys"; else fail "no nrfutil log holds this run's keys ($logged files)"; fi
 
@@ -165,9 +197,14 @@ if [ "$status" -ne 0 ] && [ "$(device_commands)" -eq 0 ]; then pass "all-zero MF
 
 echo "Key-test DK allowed"
 run env MFS_DEV_ID=1057755043 sh "$script" "$serial" --dry-run
-if [ "$status" -eq 0 ] && grep -q '^DRY-RUN: nrfutil device recover --serial-number 1057755043' "$out"; then pass "MFS_DEV_ID=1057755043 used"; else fail "MFS_DEV_ID=1057755043 used"; fi
+if [ "$status" -eq 0 ] && grep -q '^DRY-RUN: nrfutil device x-execute-batch --batch-path [^ ]* --serial-number 1057755043$' "$out" &&
+  grep -q '^DRY-RUN: nrfutil device protection-get --serial-number 1057755043$' "$out"; then
+  pass "MFS_DEV_ID=1057755043 used"
+else
+  fail "MFS_DEV_ID=1057755043 used"
+fi
 run env MFS_DEV_ID=001057755043 sh "$script" "$serial" --dry-run
-if [ "$status" -eq 0 ] && grep -q '^DRY-RUN: nrfutil device recover --serial-number 1057755043$' "$out" && ! grep -q '00105775' "$out"; then
+if [ "$status" -eq 0 ] && grep -q '^DRY-RUN: nrfutil device x-execute-batch --batch-path [^ ]* --serial-number 1057755043$' "$out" && ! grep -q '00105775' "$out"; then
   pass "MFS_DEV_ID=001057755043 normalised to 1057755043"
 else
   fail "MFS_DEV_ID=001057755043 normalised to 1057755043"
@@ -199,72 +236,86 @@ else
 fi
 if [ "$(device_commands)" -eq 0 ] && ! leaks_secret; then pass "duplicate refusal shows no key"; else fail "duplicate refusal shows no key"; fi
 
-echo "Forced failure at provision"
+echo "Forced failure building the batch"
 make_conf "$serial" "$fake_secret" "$fake_provision"
-make_conf "$serial" "$fake_secret" "$fake_provision"
-run env MFS_DRY_RUN_FAIL_AT=provision sh "$script" "$serial" --dry-run
-if [ "$status" -ne 0 ]; then pass "exits non-zero"; else fail "exits non-zero"; fi
-if [ "$(line_of program)" -eq 0 ] && [ "$(line_of protection-set)" -eq 0 ]; then pass "nothing programmed or locked"; else fail "nothing programmed or locked"; fi
-if [ "$(leftovers)" -eq 0 ]; then pass "key file gone"; else fail "key file gone ($(leftovers) left)"; fi
-
-echo "Forced failure at recover"
-run env MFS_DRY_RUN_FAIL_AT=recover sh "$script" "$serial" --dry-run
-if [ "$status" -ne 0 ] && [ "$(line_of x-provision-keys)" -eq 0 ] && grep -q 'Recover failed' "$out" && [ "$(leftovers)" -eq 0 ]; then
-  pass "stops with its own message, temp files gone"
+run env MFS_DRY_RUN_FAIL_AT=append sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && [ "$(executes)" -eq 0 ] && [ "$(line_of protection-get)" -eq 0 ] && grep -q 'Building the device batch failed' "$out"; then
+  pass "stops before x-execute-batch with its own message"
 else
-  fail "stops with its own message, temp files gone"
+  fail "stops before x-execute-batch with its own message"
+fi
+if [ "$(leftovers)" -eq 0 ]; then pass "key file and batch file gone"; else fail "key file and batch file gone ($(leftovers) left)"; fi
+
+echo "Forced failure at the batch"
+run env MFS_DRY_RUN_FAIL_AT=batch sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && [ "$(executes)" -eq 1 ] && [ "$(line_of protection-get)" -eq 0 ] && ! grep -q 'Sync the clock' "$out"; then
+  pass "stops after x-execute-batch, no protection-get"
+else
+  fail "stops after x-execute-batch, no protection-get"
+fi
+if grep -q 'power-cycling every ~11 s' "$out" && grep -q 'debug port re-locks on every cold boot' "$out" && grep -q 'Re-run this script' "$out"; then
+  pass "says the chip may be erased and power-cycling, and to re-run"
+else
+  fail "says the chip may be erased and power-cycling, and to re-run"
+fi
+if [ "$(leftovers)" -eq 0 ]; then pass "key file and batch file gone"; else fail "key file and batch file gone ($(leftovers) left)"; fi
+if leaks_secret; then fail "batch failure shows no key"; else pass "batch failure shows no key"; fi
+
+echo "Forced failure at protection-get"
+run env MFS_DRY_RUN_FAIL_AT=protection-get sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && grep -q 'lock is unverified' "$out" && ! grep -q 'Sync the clock' "$out" && [ "$(leftovers)" -eq 0 ]; then
+  pass "fails loudly, lock unverified"
+else
+  fail "fails loudly, lock unverified"
 fi
 
-echo "Forced failure at program"
-run env MFS_DRY_RUN_FAIL_AT=program sh "$script" "$serial" --dry-run
-if [ "$status" -ne 0 ] && [ "$(line_of protection-set)" -eq 0 ] && [ "$(leftovers)" -eq 0 ]; then pass "stops, temp files gone"; else fail "stops, temp files gone"; fi
+echo "protection-get does not report All"
+for reported in Secure None; do
+  run env MFS_DRY_RUN_PROTECTION=$reported sh "$script" "$serial" --dry-run
+  if [ "$status" -ne 0 ] && grep -q "DEBUG PORT NOT LOCKED: protection-get reports '$reported'" "$out" && ! grep -q 'Sync the clock' "$out"; then
+    pass "$reported fails loudly"
+  else
+    fail "$reported fails loudly (exit $status)"
+  fi
+done
 
-echo "Forced failure at protect, protection-get reports All"
-run env MFS_DRY_RUN_FAIL_AT=protect sh "$script" "$serial" --dry-run
-if [ "$(line_of protection-get)" -gt "$(line_of "protection-set All")" ] && [ "$(line_of "protection-set All")" -gt 0 ]; then
-  pass "protection-get runs after the failed protection-set"
-else
-  fail "protection-get runs after the failed protection-set"
-fi
-if grep -q 'protection-get reports All: the firmware already locked the debug port' "$out" && [ "$status" -eq 0 ] && grep -q 'Sync the clock' "$out"; then
-  pass "diagnosed as already locked by the firmware, device fine"
-else
-  fail "diagnosed as already locked by the firmware, device fine (exit $status)"
-fi
-if [ "$(leftovers)" -eq 0 ]; then pass "temp files gone"; else fail "temp files gone"; fi
-
-echo "Forced failure at protect, protection-get reports None"
-run env MFS_DRY_RUN_FAIL_AT=protect MFS_DRY_RUN_PROTECTION=None sh "$script" "$serial" --dry-run
-if [ "$status" -ne 0 ] && [ "$(line_of reset)" -eq 0 ] && ! grep -q 'Sync the clock' "$out" && grep -q "protection-get reports 'None'" "$out" &&
-  grep -q 'UNLOCKED' "$out" && [ "$(leftovers)" -eq 0 ]; then
-  pass "stops before reset, reports the device unlocked"
-else
-  fail "stops before reset, reports the device unlocked"
-fi
-
-echo "Forced failure at protect, protection-get fails too"
-run env MFS_DRY_RUN_FAIL_AT="protect protection-get" sh "$script" "$serial" --dry-run
-if [ "$status" -ne 0 ] && [ "$(line_of reset)" -eq 0 ] && grep -q 'could not read the lock state' "$out"; then
-  pass "stops, says the lock state is unknown"
-else
-  fail "stops, says the lock state is unknown"
-fi
-
-echo "protection-set succeeds but protection-get does not report All"
-run env MFS_DRY_RUN_PROTECTION=Secure sh "$script" "$serial" --dry-run
-if [ "$status" -ne 0 ] && grep -q 'DEBUG PORT NOT LOCKED' "$out" && ! grep -q 'Sync the clock' "$out"; then
-  pass "fails loudly"
-else
-  fail "fails loudly (exit $status)"
-fi
+echo "protection-get output parsing"
+# Runs with protection-get printing file $1; expects status $2 (or FAIL for fail closed).
+parse_case()
+{
+  run env MFS_DRY_RUN_PROTECTION_FILE="$1" sh "$script" "$serial" --dry-run
+  if [ "$2" = "All" ]; then
+    if [ "$status" -eq 0 ] && grep -q 'Debug port verified locked (protection-get: All)' "$out"; then pass "$3"; else fail "$3 (exit $status)"; fi
+  else
+    if [ "$status" -ne 0 ] && grep -q "DEBUG PORT NOT LOCKED: protection-get reports '$2'" "$out" && ! grep -q 'Sync the clock' "$out"; then
+      pass "$3"
+    else
+      fail "$3 (exit $status)"
+    fi
+  fi
+}
+printf 'access status: Debug access is enabled (status value: None)\n' > "$work/protection_unlocked.txt"
+parse_case "$work/protection_unlocked.txt" None "real unlocked output (2026-11-15) parses as None"
+printf '[00:00:00] Some probe warning\naccess status: Debug access is disabled (status value: All)\n' > "$work/protection_locked.txt"
+parse_case "$work/protection_locked.txt" All "status value All parses as locked"
+printf 'WARNING: All access ports could not be enumerated\naccess status: Debug access is enabled (status value: None)\n' > "$work/protection_stray.txt"
+parse_case "$work/protection_stray.txt" None "a stray All in a warning does not count as locked"
+printf 'protection status: All\nAll\n' > "$work/protection_missing.txt"
+parse_case "$work/protection_missing.txt" unparsed "no access status line fails closed"
+printf 'access status: Debug access is disabled (status value: All)\naccess status: Debug access is enabled (status value: None)\n' > "$work/protection_two.txt"
+parse_case "$work/protection_two.txt" unparsed "two access status lines fail closed"
+printf 'access status: Debug access is odd (status value: AllBut)\n' > "$work/protection_odd.txt"
+parse_case "$work/protection_odd.txt" unknown "an unknown status value fails closed"
+: > "$work/protection_empty.txt"
+parse_case "$work/protection_empty.txt" unparsed "empty output fails closed"
 
 echo "Signals clean up"
 for signal in TERM INT HUP; do
-  run_signalled provision "$signal"
-  if [ "$kept" -eq 1 ] && [ "$status" -ne 0 ] && [ "$(leftovers)" -eq 0 ] && [ "$(line_of x-provision-keys)" -eq 0 ]; then
-    pass "SIG$signal at provision: key file existed, then removed (exit $status)"
+  run_signalled batch "$signal"
+  if [ "$kept" -eq 1 ] && [ "$kept_batch" -eq 1 ] && [ "$batch_leaks" -eq 0 ] && [ "$status" -ne 0 ] && [ "$(leftovers)" -eq 0 ] && [ "$(executes)" -eq 0 ]; then
+    pass "SIG$signal before x-execute-batch: key file and batch file existed (no key in the batch), then removed (exit $status)"
   else
-    fail "SIG$signal at provision: key file existed ($kept), then removed (exit $status, $(leftovers) left)"
+    fail "SIG$signal before x-execute-batch: key file ($kept) and batch file ($kept_batch, leaks $batch_leaks) existed, then removed (exit $status, $(leftovers) left)"
   fi
 done
 
@@ -274,7 +325,12 @@ if [ "$status" -ne 0 ] && grep -q 'MFS_SECRETS_DIR' "$out"; then pass "dry run w
 
 echo "--unlocked"
 run sh "$script" "$serial" --unlocked --dry-run
-if [ "$status" -eq 0 ] && [ "$(line_of protection-set)" -eq 0 ] && [ "$(line_of program)" -gt 0 ]; then pass "programs, no protection-set"; else fail "programs, no protection-set"; fi
+if [ "$status" -eq 0 ] && [ "$(batch_ops)" = "recover program x-provision-keys reset" ] && [ "$(executes)" -eq 1 ]; then
+  pass "batch is recover -> program -> x-provision-keys -> reset, no protection-set"
+else
+  fail "batch is recover -> program -> x-provision-keys -> reset, no protection-set (got '$(batch_ops)')"
+fi
+if [ "$(leftovers)" -eq 0 ]; then pass "key file and batch file removed"; else fail "key file and batch file removed"; fi
 if [ "$(line_of protection-get)" -eq 0 ]; then pass "no lock verification"; else fail "no lock verification"; fi
 if grep -q 'debug-unlocked.conf' "$out" && grep -q 'DEBUG PORT LEFT UNLOCKED' "$out"; then pass "adds debug-unlocked.conf and warns"; else fail "adds debug-unlocked.conf and warns"; fi
 
