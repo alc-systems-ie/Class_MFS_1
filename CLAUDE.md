@@ -441,17 +441,23 @@ keys, builds with a derived conf holding only the serial and device ID, checks t
 image carries that serial and neither key, then runs **one nrfutil batch — recover →
 program (`ERASE_NONE`) → provision the KMU → lock the debug port → pin reset** — with a
 single `x-execute-batch` on J-Link 853003346 (`MFS_DEV_ID` overrides), and finally checks
-`protection-get` reports `status value: All`. **It must be one batch**: once `recover`
+`protection-get` reports `status value: All`. The batch is judged as west judges it
+(`nrfutil --json`: exit 0 **and** a `batch_end` record with a null error) — never by
+the final `protection-get` alone, which a keyless device would pass because the firmware
+locks itself. **It must be one batch**: once `recover`
 erases the app nothing stops the nPM2100 boot monitor, so the MFS board power-cycles
 every ~11 s and each nRF54L cold boot re-locks the debug port; separate nrfutil calls
 straddled a power cycle and failed (2026-11-15; the bare DK, with no PMIC, hid it). A
-failed batch can leave the chip erased and power-cycling — re-run the script. The batch
+failed batch can leave the chip erased and power-cycling — re-run the script — unless
+the script says only the reset failed on a locked chip: then power-cycle and do the
+end-to-end check (sync + Disarm) instead. The batch
 file names the key file by path only. `--build` stops after the build checks;
 `--dry-run` prints every batch append and the execute instead of running anything; `--unlocked` leaves the debug port open for RTT
 (bench only, below); `--extra-conf` adds a diagnostic conf (`MFS_SCAN_DIAG` and the
 like). The J-Link of the live hub DK (**1057733814**) is always refused; the key-test
 DK is **1057755043**. `sh tools/test_flash_device.sh` is the host test of the script
-(dry-run only, fake keys) — run it with `make test` after touching the script.
+(dry-run only, fake keys) — run it **and** `make test` after touching the script
+(`make test` does not run it).
 
 `--keep-nvs` is **withdrawn**: every flash erases NVS — the engineer slots' sequence
 counters and the day floor — so the device restarts at sequence 0 while the app's

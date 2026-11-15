@@ -31,7 +31,14 @@
 #      after. One batch because separate calls fail on the MFS board: with the app
 #      erased nothing stops the nPM2100 boot monitor, so the board power-cycles
 #      every ~11 s, and each nRF54L cold boot re-locks the debug port (2026-11-15).
-#      A failed batch may leave the chip erased and power-cycling: re-run.
+#      The batch runs as `nrfutil --json device x-execute-batch` and succeeds
+#      only on exit 0 AND exactly one batch_end record with a null data.error
+#      (as west judges it): on a locked run protection-get alone would pass a
+#      keyless device, because the firmware locks itself. Its elapsed seconds
+#      are printed. A failed batch may leave the chip erased and power-cycling:
+#      re-run - except when the batch_end error names the reset and
+#      protection-get (run for diagnosis after any failed locked batch) reports
+#      All: then power-cycle and do the end-to-end check instead.
 #   8. nrfutil device protection-get (skipped with --unlocked): the run fails
 #      loudly unless its "access status" line says "status value: All".
 #
@@ -52,6 +59,8 @@
 # append, batch, protection-get, space-separated) fails those steps;
 # MFS_DRY_RUN_PROTECTION=<status> is the status value a dry-run protection-get
 # reports (default All), MFS_DRY_RUN_PROTECTION_FILE=<file> its whole output;
+# MFS_DRY_RUN_BATCH_FILE=<file> is the NDJSON a dry-run x-execute-batch
+# "prints" (default: a clean run ending in a batch_end with a null error);
 # MFS_DRY_RUN_PAUSE_AT=<device step> (append, batch) waits there so a signal
 # can be sent.
 #
@@ -390,6 +399,7 @@ echo "Key file written: 2 keys, slots $secret_slot and $provision_slot."
 # written before the new firmware ever runs. Appending names no probe: nrfutil
 # records the operation and exits without touching a device.
 batch="$work/batch.json"
+command -v python3 > /dev/null || die "python3 is needed to read the batch result (nrfutil --json); nothing has been done to the device."
 
 # appendOp <nrfutil device arguments...>: appends one operation to the batch, or
 # prints it (and records it in the batch file, as text) in a dry run.
@@ -423,16 +433,167 @@ if [ "$unlocked" -eq 1 ]; then
   echo "WARNING: --unlocked - protection-set left out of the batch. DEBUG PORT LEFT UNLOCKED. Never deploy this device." >&2
 fi
 
+# The operations in the batch, in order: names the failing one by operationId.
+if [ "$unlocked" -eq 1 ]; then
+  batch_ops="recover program x-provision-keys reset"
+else
+  batch_ops="recover program x-provision-keys protection-set reset"
+fi
+batch_output="$work/batch.ndjson"
+
+# Runs the batch as `nrfutil --json device x-execute-batch`, its NDJSON in
+# $batch_output; returns nrfutil's exit status. A dry run prints the command and
+# copies MFS_DRY_RUN_BATCH_FILE (default: a clean run) instead.
+executeBatch()
+{
+  if [ "$dry_run" -eq 1 ]; then
+    if [ "${MFS_DRY_RUN_PAUSE_AT:-}" = "batch" ]; then
+      echo "DRY-RUN: paused at batch."
+      sleep 30 &
+      wait $!
+    fi
+    echo "DRY-RUN: nrfutil --json device x-execute-batch --batch-path $batch --serial-number $dev_id"
+    if [ -n "${MFS_DRY_RUN_BATCH_FILE:-}" ]; then
+      cat "$MFS_DRY_RUN_BATCH_FILE" > "$batch_output"
+    else
+      : > "$batch_output"
+      id=1
+      for op in $batch_ops; do
+        printf '{"type":"batch_update","data":{"operationId":"%s","data":{"type":"task_progress","data":{"progress":{"progressPercentage":0,"description":"%s (dry run)"}}}}}\n' "$id" "$op" >> "$batch_output"
+        id=$((id + 1))
+      done
+      printf '{"type":"batch_end","data":{"error":null}}\n' >> "$batch_output"
+    fi
+    dryRunFailAt batch
+    return $?
+  fi
+  nrfutil --json device x-execute-batch --batch-path "$batch" --serial-number "$dev_id" > "$batch_output"
+}
+
+# Judges $batch_output as Zephyr's west nrfutil runner does (runners/nrfutil.py
+# _exec): NDJSON, one object per line; the batch failed if the record with
+# "type": "batch_end" has a non-null data.error. Fails closed: success needs
+# every line to parse, exactly one batch_end, and data.error present and null.
+# Prints OK or FAILED, then the failing operation (only when batch_end carries
+# the error: from the last batch_update's progress description, else its
+# operationId, 1-based in $batch_ops; otherwise "unidentified"), then
+# detail lines. Any 64-hex run is removed (keys are never in this output, but
+# nothing from it is printed unfiltered).
+batchResult()
+{
+  python3 -I - "$batch_output" $batch_ops << 'EOF' 2>/dev/null || printf 'FAILED\nunidentified\nbatch result unreadable (python3 failed)\n'
+import json, re, sys
+
+hex_run = re.compile(r"[0-9a-fA-F]{64}")
+
+
+def clean(value):
+    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    return hex_run.sub("<64 hex removed>", text)[:300]
+
+
+def find(obj, key):
+    # The last value of key anywhere in obj, depth first.
+    found = None
+    if isinstance(obj, dict):
+        for name, value in obj.items():
+            if name == key and not isinstance(value, (dict, list)):
+                found = value
+            inner = find(value, key)
+            if inner is not None:
+                found = inner
+    elif isinstance(obj, list):
+        for value in obj:
+            inner = find(value, key)
+            if inner is not None:
+                found = inner
+    return found
+
+
+path, ops = sys.argv[1], sys.argv[2:]
+records, malformed = [], 0
+with open(path, encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            malformed += 1
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+        else:
+            malformed += 1
+
+ends = [r for r in records if r.get("type") == "batch_end"]
+ok, error = False, "no batch_end record"
+if len(ends) > 1:
+    error = "%d batch_end records" % len(ends)
+elif len(ends) == 1:
+    data = ends[0].get("data")
+    if isinstance(data, dict) and "error" in data:
+        error = data["error"]
+        ok = error is None and malformed == 0
+    else:
+        error = "batch_end without data.error"
+
+last_id, last_description = None, None
+for record in records:
+    if record.get("type") != "batch_update":
+        continue
+    value = find(record, "operationId")
+    if value is not None:
+        last_id = value
+    value = find(record, "description")
+    if value is not None:
+        last_description = value
+
+# An operation is named only when the batch_end record itself carries the error:
+# a missing, duplicated or unparsable batch_end, or an exit code alone, names none.
+operation = "unidentified"
+clean_failure = len(ends) == 1 and malformed == 0 and not ok and isinstance(ends[0].get("data"), dict) and ends[0]["data"].get("error") is not None
+words = str(last_description or "").lower() if clean_failure else ""
+for keyword, name in (("provision", "x-provision-keys"), ("protect", "protection-set"), ("reset", "reset"),
+                      ("program", "program"), ("recover", "recover"), ("erase", "recover")):
+    if keyword in words and name in ops:
+        operation = name
+        break
+if clean_failure and operation == "unidentified" and last_id is not None:
+    try:
+        index = int(str(last_id))
+        if 1 <= index <= len(ops):
+            operation = ops[index - 1]
+    except ValueError:
+        pass
+
+print("OK" if ok else "FAILED")
+print(operation)
+print("records: %d, unparsable lines: %d, batch_end records: %d" % (len(records), malformed, len(ends)))
+if not ok:
+    print("batch_end error: %s" % clean(error))
+    print("last progress: operationId %s, description %s" % (clean(last_id), clean(last_description)))
+EOF
+}
+
 echo "Running the device batch on J-Link $dev_id: recover (ERASES the chip: KMU, NVS, image), program, provision the KMU$([ "$unlocked" -eq 1 ] || echo ', lock the debug port'), reset..."
-if device batch x-execute-batch --batch-path "$batch" --serial-number "$dev_id"; then
+batch_start="$(date +%s)"
+if executeBatch; then batch_exit=0; else batch_exit=$?; fi
+batch_secs=$(($(date +%s) - batch_start))
+batch_result="$(batchResult | sed -E 's/[0-9a-fA-F]{64}/<64 hex removed>/g')"
+removeBatchFiles
+rm -f "$batch_output"
+batch_verdict="$(printf '%s\n' "$batch_result" | sed -n 1p)"
+failed_op="$(printf '%s\n' "$batch_result" | sed -n 2p)"
+if [ "$batch_exit" -eq 0 ] && [ "$batch_verdict" = "OK" ]; then
+  echo "Device batch completed (batch_end without error) in $batch_secs s."
   batch_ok=1
 else
   batch_ok=0
+  echo "The device batch failed after $batch_secs s (nrfutil exit $batch_exit)." >&2
+  echo "Failing operation: $failed_op" >&2
+  printf '%s\n' "$batch_result" | sed -n '3,$p' | sed 's/^/  /' >&2
 fi
-removeBatchFiles
-[ "$batch_ok" -eq 1 ] ||
-  die "The device batch failed. The chip may be erased and power-cycling every ~11 s (the nPM2100 boot monitor, with no app to stop it), and its debug port re-locks on every cold boot. Re-run this script: the batch starts with recover."
-
 # Reads the access-port state into $work/protection.txt and prints it; returns
 # non-zero if protection-get itself fails. On nRF54L it reports what the port
 # allows now, not what protection-set asked for.
@@ -474,12 +635,29 @@ protectionStatus()
   esac
 }
 
+if [ "$batch_ok" -eq 0 ]; then
+  failure_status="not read (--unlocked)"
+  if [ "$unlocked" -eq 0 ]; then
+    echo "Reading the lock state for diagnosis..." >&2
+    if protectionGet; then failure_status="$(protectionStatus)"; else failure_status="unreadable"; fi
+    echo "protection-get after the failed batch: $failure_status" >&2
+  fi
+  if [ "$failed_op" = "reset" ] && [ "$failure_status" = "All" ]; then
+    die "Device batch: programmed, provisioned and locked; only the reset failed - power-cycle the board and do the end-to-end check (sync + Disarm); do not re-run unless that fails."
+  fi
+  die "The device batch failed. The chip may be erased and power-cycling every ~11 s (the nPM2100 boot monitor, with no app to stop it), and its debug port re-locks on every cold boot. Re-run this script: the batch starts with recover."
+fi
+
 if [ "$unlocked" -eq 0 ]; then
   echo "Verifying the lock..."
   protectionGet || die "DEBUG PORT NOT LOCKED? protection-get failed after the batch, so the lock is unverified. Run 'nrfutil device protection-get --serial-number $dev_id'; if it does not report 'status value: All', re-run this script. Never deploy an unverified device."
   status="$(protectionStatus)"
-  [ "$status" = "All" ] ||
-    die "DEBUG PORT NOT LOCKED: protection-get reports '$status' after the batch's protection-set All. Never deploy this device; re-run this script."
+  case "$status" in
+    All) ;;
+    unparsed | unknown)
+      die "protection-get: lock state UNKNOWN ('$status') - record the printed line (bench checklist 5l.4). Never deploy this device until it is understood." ;;
+    *) die "DEBUG PORT NOT LOCKED: protection-get reports '$status' after the batch's protection-set All. Never deploy this device; re-run this script." ;;
+  esac
   echo "Debug port verified locked (protection-get: All)."
 fi
 

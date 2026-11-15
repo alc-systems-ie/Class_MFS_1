@@ -176,10 +176,30 @@ logged.
    check passed. A failed batch may leave the chip erased and power-cycling, its debug port
    re-locking on each cold boot: the remedy is to re-run the script, whose batch starts with
    `recover`.
+   **Batch success** is judged as west judges it (`runners/nrfutil.py` `_exec`): the execute
+   runs as `nrfutil --json device x-execute-batch`, its NDJSON saved in the private directory,
+   and the batch passes only on exit 0 **and** exactly one record with `"type": "batch_end"`
+   whose `data.error` is present and null, every line parsing as a JSON object. Exit code alone
+   is not enough, and neither is the final `protection-get`: a device whose `x-provision-keys`
+   failed still locks itself at boot (`CONFIG_NRF_APPROTECT_LOCK`), so it would report All
+   without keys. On failure the script prints the elapsed seconds, the `batch_end` error and
+   the failing operation — named only when `batch_end` carries the error, from the last
+   `batch_update`'s progress `description` (keyword), else its `operationId` (1-based, in batch
+   order). These field names beyond west's (`type`, `data.error`, `data.data.type`,
+   `data.data.data.progress.description`) are inferred and to be confirmed on the bench. Any
+   64-hex run in that output is removed before printing.
+
+   **After a failed locked batch** the script still runs `protection-get` for diagnosis (the
+   exit stays non-zero). If the failing operation is the reset and the lock reads All, the
+   device is programmed, provisioned and locked and only the reset failed: power-cycle and do
+   the end-to-end check (sync + Disarm), and re-run only if that fails. Every other failure:
+   re-run.
 7a. `nrfutil device protection-get` (skipped with `--unlocked`): only the value after
    `status value:` on the `access status` line counts — real unlocked output is
    `access status: Debug access is enabled (status value: None)`. Anything but exactly one such
-   line with `All` fails the run; a stray `All` elsewhere in the output never counts.
+   line with `All` fails the run; a stray `All` elsewhere in the output never counts. `None` or
+   `Secure` reports NOT LOCKED; no such line, several, or another value reports the lock state
+   UNKNOWN and asks for the printed line to be recorded (bench checklist §5l.4).
 8. Print the end-to-end check: "Sync the clock from the app, then send one Disarm; if either
    fails, re-run this script."
 - `--build` builds only (steps 1–2). `--keep-nvs` is withdrawn: a reflash always erases, so the
