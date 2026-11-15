@@ -1,5 +1,3 @@
-#include <cstring>
-
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -13,6 +11,8 @@
 #include "credentials.hpp"
 #include "crypto.hpp"
 #include "crypto_selftest.hpp"
+#include "key_check.hpp"
+#include "kmu_slots.hpp"
 #include "npm2100_zephyr.hpp"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
@@ -140,11 +140,10 @@ namespace alc
     // returns 1 when the pin is electrically LOW, i.e. when AWAKE is asserted.
     const struct gpio_dt_spec s_adxl_int1 = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), adxl_int1_gpios);
 
-    // BENCH credentials, parsed from Kconfig (credentials.conf) at boot. Production
-    // moves both keys into the KMU - see docs/tan-scheme.md section 8.
+    // The public device ID, parsed from Kconfig at boot. The two long-term keys are
+    // never in the image: they live in the KMU (src/kmu_slots.hpp), provisioned by
+    // tools/flash_device.sh, and the firmware uses them only by slot.
     uint32_t s_device_id { 0 };
-    uint8_t s_device_secret[access::M_SECRET_BYTES] {};
-    uint8_t s_provision_key[access::M_SECRET_BYTES] {};
 
     const char* verdictName(AccessControl::Verdict verdict)
     {
@@ -250,7 +249,7 @@ namespace alc
       , m_accelerometer(DEVICE_DT_GET(DT_NODELABEL(i2c22)))
       , m_scanner()
       , m_clock()
-      , m_access(0, s_device_secret, &access_store::Persist, nullptr)
+      , m_access(0, crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), &access_store::Persist, nullptr)
       , m_last_advance_secs(0)
       , m_access_ready(false)
       , m_output_switch()
@@ -1360,18 +1359,8 @@ namespace alc
     int result { 0 };
     AccessState restored {};
 
-    if (!credentials::ParseDeviceId(CONFIG_MFS_DEVICE_ID, s_device_id) ||
-        !credentials::ParseHexBytes(CONFIG_MFS_DEVICE_SECRET, s_device_secret, sizeof(s_device_secret)) ||
-        !credentials::ParseHexBytes(CONFIG_MFS_PROVISION_KEY, s_provision_key, sizeof(s_provision_key))) {
-      LOG_ERR("Credentials missing or malformed - build with -DEXTRA_CONF_FILE=credentials.conf!");
-      return -EINVAL;
-    }
-
-    // An all-zero key is a template nobody filled in, and would be shared by every
-    // such build. The two keys must also differ, or the provisioner holds entry.
-    if (credentials::IsAllZero(s_device_secret, sizeof(s_device_secret)) || credentials::IsAllZero(s_provision_key, sizeof(s_provision_key)) ||
-        memcmp(s_device_secret, s_provision_key, sizeof(s_device_secret)) == 0) {
-      LOG_ERR("Device secret and provisioning key must be set and must differ!");
+    if (!credentials::ParseDeviceId(CONFIG_MFS_DEVICE_ID, s_device_id)) {
+      LOG_ERR("Device ID missing or malformed - build with tools/flash_device.sh!");
       return -EINVAL;
     }
 
@@ -1380,6 +1369,15 @@ namespace alc
 
     result = crypto::RunSelfTest();
     if (result < 0) { return result; }
+
+    // The keys are checked by what they compute, never read: both must be present
+    // in the KMU, not all zero, and distinct, or the provisioner holds entry
+    // (design 2026-11-15 section 5.3). Only the code is logged.
+    result = key_check::CheckLongTermKeys(crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), crypto::KeyRef::Kmu(kmu::M_PROVISION_SLOT));
+    if (result < 0) {
+      LOG_ERR("Device keys missing or unusable in the KMU (%d) - commands refused; reprovision with tools/flash_device.sh!", result);
+      return result;
+    }
 
     result = settings_subsys_init();
     if (result < 0) {
@@ -1464,7 +1462,7 @@ namespace alc
 
     // Almost every advert in range lands here and fails the tag. That is routine
     // and is not logged, or the RTT buffer would fill with other people's phones.
-    if (!access::OpenTimeSync(s_provision_key, s_device_id, candidate.bytes, unixSeconds)) { return; }
+    if (!access::OpenTimeSync(crypto::KeyRef::Kmu(kmu::M_PROVISION_SLOT), s_device_id, candidate.bytes, unixSeconds)) { return; }
 
     syncResult = m_clock.ApplyProvisionerSync(unixSeconds, uptimeSecs);
     if (syncResult != DeviceClock::SyncResult::Applied) {

@@ -4,9 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 
-// Not every libc defines it (macOS does not); the Linux value is used.
+// Not every libc defines it: neither the target's picolibc nor macOS does. The
+// fallback must not collide with an errno the libc does define - 126, the Linux
+// value, is ENETRESET in picolibc - so it sits above picolibc's __ELASTERROR
+// (2000, "users can add values starting here") and macOS's ELAST (107).
 #ifndef ENOKEY
-#define ENOKEY 126
+#define ENOKEY 2001
 #endif
 
 namespace alc::crypto
