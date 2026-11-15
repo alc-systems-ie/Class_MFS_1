@@ -357,9 +357,15 @@ namespace alc
     if (result < 0) { return result; }
 
     // Not fatal. A device that cannot authenticate commands still boots, safe
-    // and Inactive, so its hardware can be diagnosed over RTT.
+    // and Inactive, so its hardware can be diagnosed over RTT. It refuses
+    // commands with the warning (design 2026-11-15 sections 4 and 5.3): the
+    // orange 3 s steady, once at boot, is the only sign a locked device without
+    // RTT can give. The LEDs are initialised above, so it plays at once.
     result = initAccess();
-    if (result < 0) { LOG_ERR("Access control unavailable (%d) - commands will be ignored this boot!", result); }
+    if (result < 0) {
+      LOG_ERR("Access control unavailable (%d) - commands will be ignored this boot!", result);
+      signalWarning("device keys missing or unusable - commands refused", result);
+    }
 
     // After initAccess(), which initialises the settings subsystem. Defaults stand
     // if nothing is stored or the record is invalid.

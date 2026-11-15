@@ -486,8 +486,12 @@ west build -t menuconfig                                         # inspect resol
   to `secrets/MFS1-0926-00001.conf`.
 - **Boot key check** (`src/key_check.*`, called from `App::initAccess()`): HMAC of
   `"MFS-KCV" 0x07` under each KMU key and under an all-zero key. A missing key, two
-  equal keys, or a zero key refuses commands and syncs (`Device keys missing or
-  unusable in the KMU`, warning); nothing derived from a key is logged. The mbedTLS heap
+  equal keys, or a zero key refuses commands and syncs: `LOG_ERR` (`Device keys missing
+  or unusable in the KMU`) and the warning — `App::signalWarning()`, orange steady 3 s,
+  once at boot (`device keys missing or unusable - commands refused`; any other
+  `initAccess()` failure, the device ID included, raises the same warning). That orange
+  3 s at boot is the only sign a locked device can give, so `tools/flash_device.sh`
+  names it in its final message. Nothing derived from a key is logged. The mbedTLS heap
   is 2048 B for this (`prj.conf`).
 - **Every build locks the debug port**: `prj.conf` sets `CONFIG_NRF_APPROTECT_LOCK=y`
   and `CONFIG_NRF_SECURE_APPROTECT_LOCK=y`, and `CMakeLists.txt` fails a build that
