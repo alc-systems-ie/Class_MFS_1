@@ -296,6 +296,9 @@ namespace alc
 #endif
 
     LOG_INF("MFS_1 starting, serial %s.", CONFIG_ALC_DEVICE_SERIAL);
+#if defined(CONFIG_MFS_DEBUG_UNLOCKED)
+    LOG_WRN("DEBUG PORT UNLOCKED - not for the field!");
+#endif
 
     k_timer_init(&m_delay_timer, nullptr, nullptr);
     k_timer_init(&m_led_timer, &App::ledTimerHandler, nullptr);
