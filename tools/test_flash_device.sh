@@ -5,8 +5,9 @@
 #
 #   sh tools/test_flash_device.sh
 #
-# Needs the NCS v3.2.4 toolchain (nrfutil toolchain-manager), because the dry run
-# still writes the KMU key file with generate_psa_key_attributes.py - a host step.
+# Needs the NCS v3.2.4 toolchain: the KMU key file the script writes is compared
+# with generate_psa_key_attributes.py's output for a fake key, run with the
+# toolchain's python3 directly (never through nrfutil, which logs its argv).
 
 set -u
 
@@ -17,8 +18,10 @@ trap 'rm -rf "$work"' EXIT INT TERM
 
 serial="MFS1-0000-00001"
 device_id="FA4E0001"
-fake_secret="1111111111111111111111111111111111111111111111111111111111111111"
-fake_provision="2222222222222222222222222222222222222222222222222222222222222222"
+# Unique per run, so a later grep of nrfutil's logs can only find this run's keys.
+randomKey() { od -An -N32 -tx1 /dev/urandom | tr -d ' \n'; }
+fake_secret="$(randomKey)"
+fake_provision="$(randomKey)"
 zero_key="0000000000000000000000000000000000000000000000000000000000000000"
 
 passed=0
@@ -40,6 +43,25 @@ make_conf()
     echo "CONFIG_MFS_DEVICE_SECRET=\"$2\""
     echo "CONFIG_MFS_PROVISION_KEY=\"$3\""
   } > "$work/secrets/$serial.conf"
+}
+
+# Runs the script in the background, paused in its dry run at step $1, then sends
+# signal $2; sets status. Job control (set -m) keeps SIGINT deliverable.
+run_signalled()
+{
+  set -m
+  env MFS_SECRETS_DIR="$work/secrets" TMPDIR="$work/tmp" MFS_DRY_RUN_PAUSE_AT="$1" sh "$script" "$serial" --dry-run > "$out" 2>&1 &
+  pid=$!
+  tries=0
+  while ! grep -q "DRY-RUN: paused at $1" "$out" && [ "$tries" -lt 100 ]; do
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  kept="$(find "$work/tmp" -name kmu_keys.json | wc -l | tr -d ' ')"
+  kill "-$2" "$pid"
+  wait "$pid"
+  status=$?
+  set +m
 }
 
 # Runs the script in dry-run mode; sets status. Extra environment via env(1) args.
@@ -84,15 +106,53 @@ if grep -q 'debug-unlocked.conf' "$out"; then fail "locked build must not use de
 if grep -q 'Sync the clock from the app, then send one Disarm' "$out"; then pass "final end-to-end message"; else fail "final end-to-end message"; fi
 if leaks_secret; then fail "output never shows a key"; else pass "output never shows a key"; fi
 if [ "$(leftovers)" -eq 0 ]; then pass "temp files removed"; else fail "temp files removed ($(leftovers) left)"; fi
+logged="$(grep -r -l -i -F -e "$fake_secret" -e "$fake_provision" "$HOME/.nrfutil" /opt/nordic/ncs/toolchains/*/nrfutil/home 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$logged" -eq 0 ]; then pass "no nrfutil log holds this run's keys"; else fail "no nrfutil log holds this run's keys ($logged files)"; fi
+
+echo "KMU key file matches generate_psa_key_attributes.py"
+toolchain_bin="$(nrfutil toolchain-manager env --ncs-version v3.2.4 --as-script sh | sed -n 's/^export PATH=\([^:]*\):.*/\1/p')"
+generator="/opt/nordic/ncs/v3.2.4/nrf/scripts/generate_psa_key_attributes.py"
+rm -f "$work/generated.json" "$work/written.json"
+for pair in "100 $fake_secret" "102 $fake_provision"; do
+  set -- $pair
+  "$toolchain_bin/python3" "$generator" --usage SIGN --id "$1" --type HMAC --key-bits 256 --algorithm HMAC_SHA256 --location LOCATION_CRACEN_KMU \
+    --persistence PERSISTENCE_DEFAULT --cracen-usage RAW --key "0x$2" --file "$work/generated.json" > /dev/null 2>&1
+done
+printf '%s\n%s\n' "$fake_secret" "$fake_provision" | sh "$root/tools/kmu_key_file.sh" "$work/written.json" 100 102 > "$out" 2>&1
+if [ -s "$work/generated.json" ] && [ "$(tr -d ' \n' < "$work/written.json")" = "$(tr -d ' \n' < "$work/generated.json")" ]; then
+  pass "slots 100 and 102 identical to the generator's output"
+else
+  fail "slots 100 and 102 identical to the generator's output"
+fi
+if [ "$(ls -l "$work/written.json" | cut -c1-10)" = "-rw-------" ]; then pass "key file mode 600"; else fail "key file mode 600"; fi
+if leaks_secret; then fail "key file writer prints no key"; else pass "key file writer prints no key"; fi
+printf '%s\n' "$fake_secret" | sh "$root/tools/kmu_key_file.sh" "$work/short.json" 100 102 > "$out" 2>&1
+if [ $? -ne 0 ] && [ ! -e "$work/short.json" ]; then pass "missing key refused, nothing written"; else fail "missing key refused, nothing written"; fi
+printf '%s\n%s\n' "$fake_secret" "xyz" | sh "$root/tools/kmu_key_file.sh" "$work/bad.json" 100 102 > "$out" 2>&1
+if [ $? -ne 0 ] && [ ! -e "$work/bad.json" ] && ! leaks_secret; then pass "malformed key refused, nothing written or shown"; else fail "malformed key refused"; fi
+rm -f "$work/generated.json" "$work/written.json"
 
 echo "Hub DK refused"
 make_conf "$serial" "$fake_secret" "$fake_provision"
 run env MFS_DEV_ID=1057733814 sh "$script" "$serial" --dry-run
 if [ "$status" -ne 0 ] && [ "$(device_commands)" -eq 0 ] && grep -q '1057733814' "$out"; then pass "MFS_DEV_ID=1057733814 refused before any device command"; else fail "MFS_DEV_ID=1057733814 refused"; fi
 
+for padded in 001057733814 01057733814; do
+  run env MFS_DEV_ID=$padded sh "$script" "$serial" --dry-run
+  if [ "$status" -ne 0 ] && [ "$(device_commands)" -eq 0 ]; then pass "MFS_DEV_ID=$padded refused"; else fail "MFS_DEV_ID=$padded refused"; fi
+done
+run env MFS_DEV_ID=000 sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && [ "$(device_commands)" -eq 0 ]; then pass "all-zero MFS_DEV_ID refused"; else fail "all-zero MFS_DEV_ID refused"; fi
+
 echo "Key-test DK allowed"
 run env MFS_DEV_ID=1057755043 sh "$script" "$serial" --dry-run
 if [ "$status" -eq 0 ] && grep -q '^DRY-RUN: nrfutil device recover --serial-number 1057755043' "$out"; then pass "MFS_DEV_ID=1057755043 used"; else fail "MFS_DEV_ID=1057755043 used"; fi
+run env MFS_DEV_ID=001057755043 sh "$script" "$serial" --dry-run
+if [ "$status" -eq 0 ] && grep -q '^DRY-RUN: nrfutil device recover --serial-number 1057755043$' "$out" && ! grep -q '00105775' "$out"; then
+  pass "MFS_DEV_ID=001057755043 normalised to 1057755043"
+else
+  fail "MFS_DEV_ID=001057755043 normalised to 1057755043"
+fi
 
 echo "Bad keys refused before any device command"
 make_conf "$serial" "$fake_secret" "$fake_secret"
@@ -110,7 +170,18 @@ run sh "$script" "$serial" --dry-run
 if [ "$status" -ne 0 ] && [ "$(device_commands)" -eq 0 ]; then pass "short key refused"; else fail "short key refused"; fi
 if [ "$(leftovers)" -eq 0 ]; then pass "temp files removed after refusal"; else fail "temp files removed after refusal"; fi
 
+make_conf "$serial" "$fake_secret" "$fake_provision"
+echo "CONFIG_MFS_DEVICE_SECRET=\"$fake_secret\"" >> "$work/secrets/$serial.conf"
+run sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && grep -q 'must set CONFIG_MFS_DEVICE_SECRET exactly once' "$out" && ! grep -q 'not a hex string' "$out"; then
+  pass "duplicate secret refused with its own message"
+else
+  fail "duplicate secret refused with its own message"
+fi
+if [ "$(device_commands)" -eq 0 ] && ! leaks_secret; then pass "duplicate refusal shows no key"; else fail "duplicate refusal shows no key"; fi
+
 echo "Forced failure at provision"
+make_conf "$serial" "$fake_secret" "$fake_provision"
 make_conf "$serial" "$fake_secret" "$fake_provision"
 run env MFS_DRY_RUN_FAIL_AT=provision sh "$script" "$serial" --dry-run
 if [ "$status" -ne 0 ]; then pass "exits non-zero"; else fail "exits non-zero"; fi
@@ -120,6 +191,28 @@ if [ "$(leftovers)" -eq 0 ]; then pass "key file gone"; else fail "key file gone
 echo "Forced failure at program"
 run env MFS_DRY_RUN_FAIL_AT=program sh "$script" "$serial" --dry-run
 if [ "$status" -ne 0 ] && [ "$(line_of protection-set)" -eq 0 ] && [ "$(leftovers)" -eq 0 ]; then pass "stops, temp files gone"; else fail "stops, temp files gone"; fi
+
+echo "Forced failure at protect"
+run env MFS_DRY_RUN_FAIL_AT=protect sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && [ "$(line_of reset)" -eq 0 ] && ! grep -q 'Sync the clock' "$out" && [ "$(leftovers)" -eq 0 ]; then
+  pass "stops before reset and the final message"
+else
+  fail "stops before reset and the final message"
+fi
+
+echo "Signals clean up"
+for signal in TERM INT HUP; do
+  run_signalled provision "$signal"
+  if [ "$kept" -eq 1 ] && [ "$status" -ne 0 ] && [ "$(leftovers)" -eq 0 ] && [ "$(line_of x-provision-keys)" -eq 0 ]; then
+    pass "SIG$signal at provision: key file existed, then removed (exit $status)"
+  else
+    fail "SIG$signal at provision: key file existed ($kept), then removed (exit $status, $(leftovers) left)"
+  fi
+done
+
+echo "--dry-run needs a throwaway secrets directory"
+run env -u MFS_SECRETS_DIR sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && grep -q 'MFS_SECRETS_DIR' "$out"; then pass "dry run without MFS_SECRETS_DIR refused"; else fail "dry run without MFS_SECRETS_DIR refused"; fi
 
 echo "--unlocked"
 run sh "$script" "$serial" --unlocked --dry-run

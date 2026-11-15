@@ -18,11 +18,14 @@
 #   1. Validate the serial and secrets/<serial>.conf; refuse all-zero or equal keys.
 #   2. Build from the derived conf; check the image carries the serial and ID,
 #      the debug-lock settings, and neither key (.config, autoconf.h, hex files).
-#   3. Write the KMU key file (slots from src/kmu_slots.hpp).
+#   3. Write the KMU key file (tools/kmu_key_file.sh, keys on stdin, slots from
+#      src/kmu_slots.hpp). No key is ever in the argv of anything, least of all
+#      of nrfutil, which logs its argv to ~/.nrfutil/logs.
 #   4. nrfutil device recover - unlocks and ERASES EVERYTHING: KMU, NVS, image.
 #   5. nrfutil device x-provision-keys; the key file is deleted straight after.
 #   6. nrfutil device program, erasing only the ranges the image touches (the
-#      KMU sits in UICR, which the image does not touch).
+#      KMU is in the configuration regions at 0x00FFxxxx (UICR, SICR/KMU),
+#      which the image never touches).
 #   7. nrfutil device protection-set All (skipped with --unlocked), then reset.
 #
 # Every run erases NVS: the engineer slots' sequence counters and the day floor
@@ -32,10 +35,13 @@
 #
 # Credentials come from secrets/<serial>.conf (tools/gen_fleet_credentials.py);
 # MFS_SECRETS_DIR overrides the directory (tools/test_flash_device.sh only).
-# The J-Link defaults to the MFS bench probe 853003346; MFS_DEV_ID overrides it.
-# J-Link 1057733814 (the live hub DK) is always refused.
-# --dry-run (with MFS_DRY_RUN_FAIL_AT=<step>: build, keyfile, recover,
-# provision, program, protect, reset) exists for tools/test_flash_device.sh.
+# The J-Link defaults to the MFS bench probe 853003346; MFS_DEV_ID overrides it
+# (leading zeros, as nrfutil device list shows them, are stripped). J-Link
+# 1057733814 (the live hub DK) is always refused.
+# --dry-run exists for tools/test_flash_device.sh and requires MFS_SECRETS_DIR,
+# so a dry run never handles real keys. MFS_DRY_RUN_FAIL_AT=<step> (build,
+# keyfile, recover, provision, program, protect, reset) fails that step;
+# MFS_DRY_RUN_PAUSE_AT=<device step> waits there so a signal can be sent.
 #
 # Never add set -x: the key file step passes each key to the generator.
 
@@ -47,7 +53,6 @@ M_HUB_DEV_ID="1057733814"
 M_BOARD="nrf54l15dk/nrf54l05/cpuapp"
 M_KEY_HEX_LENGTH=64
 M_ID_HEX_LENGTH=8
-M_GENERATOR="/opt/nordic/ncs/v3.2.4/nrf/scripts/generate_psa_key_attributes.py"
 ncs="nrfutil toolchain-manager launch --ncs-version v3.2.4 --"
 
 die()
@@ -97,10 +102,17 @@ case "$serial" in
   *) die "$serial is not a CLASS serial (MODEL-MMYY-NNNNN, e.g. MFS1-1126-00003)." ;;
 esac
 
-dev_id="${MFS_DEV_ID:-$M_DEFAULT_DEV_ID}"
-case "$dev_id" in
+if [ "$dry_run" -eq 1 ] && [ -z "${MFS_SECRETS_DIR:-}" ]; then
+  die "--dry-run requires MFS_SECRETS_DIR (a throwaway secrets directory with fake keys): a dry run never handles real keys."
+fi
+
+raw_dev_id="${MFS_DEV_ID:-$M_DEFAULT_DEV_ID}"
+case "$raw_dev_id" in
   "" | *[!0-9]*) die "MFS_DEV_ID must be a J-Link serial number (digits only)." ;;
 esac
+# Normalised: nrfutil lists J-Link serials zero-padded to 12 digits.
+dev_id="$(printf '%s' "$raw_dev_id" | sed 's/^0*//')"
+[ -n "$dev_id" ] || die "MFS_DEV_ID $raw_dev_id is not a J-Link serial number."
 [ "$dev_id" != "$M_HUB_DEV_ID" ] || die "Refusing J-Link $M_HUB_DEV_ID: that is the live hub DK, never an MFS target."
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -136,6 +148,7 @@ cleanup()
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 # In a dry run, fails the named step when MFS_DRY_RUN_FAIL_AT asks for it.
 dryRunFailAt()
@@ -153,6 +166,11 @@ device()
   step="$1"
   shift
   if [ "$dry_run" -eq 1 ]; then
+    if [ "${MFS_DRY_RUN_PAUSE_AT:-}" = "$step" ]; then
+      echo "DRY-RUN: paused at $step."
+      sleep 30 &
+      wait $!
+    fi
     echo "DRY-RUN: nrfutil device $*"
     dryRunFailAt "$step"
     return $?
@@ -198,8 +216,11 @@ case "$device_id" in
 esac
 [ "${#device_id}" -eq "$M_ID_HEX_LENGTH" ] || die "CONFIG_MFS_DEVICE_ID in $conf must be $M_ID_HEX_LENGTH hex characters."
 
-secret="$(lowerHex "$(confValue CONFIG_MFS_DEVICE_SECRET)")"
-provision="$(lowerHex "$(confValue CONFIG_MFS_PROVISION_KEY)")"
+# Read raw first: a die inside a nested substitution would only leave the subshell.
+secret_raw="$(confValue CONFIG_MFS_DEVICE_SECRET)"
+provision_raw="$(confValue CONFIG_MFS_PROVISION_KEY)"
+secret="$(lowerHex "$secret_raw")"
+provision="$(lowerHex "$provision_raw")"
 checkKey "$secret" CONFIG_MFS_DEVICE_SECRET
 checkKey "$provision" CONFIG_MFS_PROVISION_KEY
 [ "$secret" != "$provision" ] || die "The device secret and the provisioning key in $conf are equal - refusing them."
@@ -312,11 +333,11 @@ else
   rm -f "$text_patterns" "$byte_patterns"
   [ -z "$found" ] || die "A key was found in:$found - not flashing. Delete $build_dir."
 
-  # The image must not reach UICR (0x00FFD000 up), where the KMU lives: step 6
-  # erases every range the image touches.
+  # The image must not reach the configuration regions at 0x00FFxxxx (UICR,
+  # SICR/KMU): step 6 erases every range the image touches.
   # RRAM ends below 0x00200000, so every extended address must be 0x0000-0x001F.
   if [ -n "$(grep -i '^:02000004' "$merged_hex" | grep -v -i '^:0200000400[01]' || true)" ]; then
-    die "$merged_hex reaches UICR - programming it would erase the KMU. Not flashing."
+    die "$merged_hex reaches beyond RRAM (towards UICR, SICR/KMU) - programming it could erase the KMU. Not flashing."
   fi
   echo "Image built for $serial: serial, ID and lock settings checked; neither key in .config, autoconf.h, zephyr.hex or merged.hex."
 fi
@@ -327,18 +348,10 @@ fi
 
 keyfile="$work/kmu_keys.json"
 
-# makeKey <slot> <key> <name>: appends one KMU key entry. The generator's output
-# is suppressed because an error from it could echo the key.
-makeKey()
-{
-  if ! $ncs python3 "$M_GENERATOR" --usage SIGN --id "$1" --type HMAC --key-bits 256 --algorithm HMAC_SHA256 \
-    --location LOCATION_CRACEN_KMU --persistence PERSISTENCE_DEFAULT --cracen-usage RAW --key "0x$2" --file "$keyfile" > /dev/null 2>&1; then
-    die "Writing the KMU key file failed for $3 (generator output suppressed: it could contain the key)."
-  fi
-}
-
-makeKey "$secret_slot" "$secret" CONFIG_MFS_DEVICE_SECRET
-makeKey "$provision_slot" "$provision" CONFIG_MFS_PROVISION_KEY
+# Keys go to the writer on stdin (printf is a shell builtin), never in argv.
+if ! printf '%s\n%s\n' "$secret" "$provision" | sh "$root/tools/kmu_key_file.sh" "$keyfile" "$secret_slot" "$provision_slot"; then
+  die "Writing the KMU key file failed."
+fi
 chmod 600 "$keyfile"
 key_count="$(grep -c '"metadata"' "$keyfile" || true)"
 [ "$key_count" -eq 2 ] || die "KMU key file holds $key_count keys, expected 2."
@@ -360,7 +373,7 @@ rm -f "$keyfile"
 [ "$provisioned" -eq 1 ] || die "KMU provisioning failed. The chip is erased and unlocked; re-run this script."
 
 # Erases only the ranges the image touches (as plain west flash does), so the
-# KMU survives and nothing of recover's own firmware is left in those ranges.
+# KMU (0x00FFxxxx) survives and nothing of recover's own firmware is left in those ranges.
 echo "Programming $serial..."
 device program program --firmware "$merged_hex" --serial-number "$dev_id" \
   --options chip_erase_mode=ERASE_RANGES_TOUCHED_BY_FIRMWARE,verify=VERIFY_READ,reset=RESET_NONE ||
