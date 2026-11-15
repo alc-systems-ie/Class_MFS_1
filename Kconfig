@@ -262,8 +262,11 @@ config MFS_DEBUG_UNLOCKED
 	  BENCH ONLY - never in a field device. Set only by debug-unlocked.conf,
 	  which also replaces the debug-port locks in prj.conf with
 	  NRF_APPROTECT_DISABLE and NRF_SECURE_APPROTECT_DISABLE so RTT works.
-	  This symbol changes nothing itself: it makes the firmware log
-	  "DEBUG PORT UNLOCKED - not for the field!" at every boot, so an
-	  unlocked image cannot pass unnoticed. Design 2026-11-15 section 5.4.
+	  It is the build's permission to be unlocked: CMakeLists.txt fails any
+	  build whose debug-port locks are off without it, and any build that
+	  sets it while a lock is still on. The boot warning "DEBUG PORT
+	  UNLOCKED - not for the field!" is keyed on the lock symbols
+	  themselves, so every unlocked image logs it. Design 2026-11-15
+	  section 5.4.
 
 source "Kconfig.zephyr"

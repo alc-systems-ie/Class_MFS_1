@@ -296,7 +296,9 @@ namespace alc
 #endif
 
     LOG_INF("MFS_1 starting, serial %s.", CONFIG_ALC_DEVICE_SERIAL);
-#if defined(CONFIG_MFS_DEBUG_UNLOCKED)
+    // Keyed on the lock itself, not on MFS_DEBUG_UNLOCKED, so any image that
+    // boots with the debug port open says so.
+#if !defined(CONFIG_NRF_APPROTECT_LOCK) || !defined(CONFIG_NRF_SECURE_APPROTECT_LOCK)
     LOG_WRN("DEBUG PORT UNLOCKED - not for the field!");
 #endif
 
@@ -1462,6 +1464,7 @@ namespace alc
   {
     uint32_t unixSeconds { 0 };
     DeviceClock::SyncResult syncResult { DeviceClock::SyncResult::BeforeEpoch };
+    int result { 0 };
 
     // Almost every advert in range lands here and fails the tag. That is routine
     // and is not logged, or the RTT buffer would fill with other people's phones.
@@ -1476,7 +1479,8 @@ namespace alc
     LOG_INF("Clock set by provisioner: unix %u, day %u, %02u:%02u UTC.", unixSeconds, m_clock.DayIndex(uptimeSecs),
             m_clock.MinuteOfDay(uptimeSecs) / 60U, m_clock.MinuteOfDay(uptimeSecs) % 60U);
 
-    if (m_access.Advance(m_clock, uptimeSecs) < 0) { LOG_ERR("Day rollover could not be persisted after the time sync!"); }
+    result = m_access.Advance(m_clock, uptimeSecs);
+    if (result < 0) { LOG_ERR("Day rollover failed: %d!", result); }
 
     // An applied time sync is an accepted, authenticated command: it clears the
     // device-disarmed latch and is confirmed by the orange triple. Green then
@@ -1553,12 +1557,14 @@ namespace alc
   void App::serviceDayRollover()
   {
     int64_t uptimeSecs { k_uptime_get() / MSEC_PER_SEC };
+    int result { 0 };
 
     if (!m_access_ready || !m_clock.IsValid()) { return; }
     if (uptimeSecs - m_last_advance_secs < M_ADVANCE_INTERVAL_SECS) { return; }
 
     m_last_advance_secs = uptimeSecs;
-    if (m_access.Advance(m_clock, uptimeSecs) < 0) { LOG_ERR("Day rollover could not be persisted!"); }
+    result              = m_access.Advance(m_clock, uptimeSecs);
+    if (result < 0) { LOG_ERR("Day rollover failed: %d!", result); }
   }
 
   void App::applyCommand(const AccessControl::Evaluation& evaluation, int64_t uptimeSecs)
