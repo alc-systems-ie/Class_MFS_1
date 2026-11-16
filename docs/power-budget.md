@@ -299,8 +299,8 @@ documents this same trap in its hand-off notes.
 
 **Corrected 2026-11-12.** This section previously said the FEM was not fitted
 on MFS_1. It is: the CLASS MFS board carries the nRF21540 with the
-`alc_drawer_master` pinout (SPI on `spi30`: SCK P0.03, MOSI P0.02, MISO P0.01,
-CS P0.00; PDN P0.04, TX_EN P1.09, RX_EN P1.10, MODE P1.11). Because the firmware
+`alc_drawer_master` pinout (SPI pins SCK P0.03, MOSI P0.02, MISO P0.01, CS P0.00 —
+unused since 2026-11-16, see §5.1; PDN P0.04, TX_EN P1.09, RX_EN P1.10, MODE P1.11). Because the firmware
 believed otherwise it never declared the FEM, so the nRF21540 sat **powered down
 in the RF path** — attenuating both directions.
 
@@ -339,6 +339,39 @@ than feared — though still the largest single change this budget has seen.
 splits the requested +10 dBm at the antenna (`CONFIG_BT_CTLR_TX_PWR_ANTENNA=10`)
 into 0 dBm from the SoC plus 10 dB from the FEM. POUTA (+20 dB) is for bench
 tools only.
+
+### 5.1 Transmit was ~40 dB low in GPIO+SPI mode — fixed 2026-11-16
+
+**Symptom.** The hub never heard MFS1-1126-00007's daily report from the shed
+(~10 m, 15 mm wood) after commissioning, though the device heard commands well.
+A bench beacon (`../link_beacon`) read **−81 dBm** (Drawer Master) and **−85 dBm**
+(MFS1-1126-00001) at 20 cm on an iPhone (nRF Connect), against **−50 dBm** for a
+bare nRF54L DK at +8 dBm with no FEM.
+
+**Ruled out, each by measurement:** the antenna (NanoVNA at the Ignion NN02-201
+network: 32.9 + j36.1 Ω at 2430 MHz, 0.94 dB mismatch loss); the FEM circuit
+(matches Nordic's single-antenna reference part for part; ANT_SEL to GND selects
+ANT1, ANT2 terminated); the TX_EN, RX_EN and PDN wiring (`../fem_pin_test`); the
+SPI wiring (PARTNUMBER 0x0C, CONFREG0 write and read-back); the HFXO load
+capacitance (a frequency error cannot cost 35 dB while packets still decode).
+With the FEM off the board read −82 dBm — the same as "on", so the FEM gave no
+gain on transmit; with the FEM held in TX by GPIO (MODE high) it read **−39 dBm**.
+
+**Cause.** In `CONFIG_MPSL_FEM_NRF21540_GPIO_SPI` mode MPSL writes CONFREG0 over
+SPI before every transmission. Read from its SPIM DMA buffer: `C0 18` — **TX_GAIN
+6** — with the built-in power model, `C0 20` (TX_GAIN 8, −78 dBm) without it. The
+chip's factory POUTA preset is 27 (+20 dB). Receive never depends on that
+register, which is why commands were heard.
+
+**Fix.** `CONFIG_MPSL_FEM_NRF21540_GPIO` (no `spi-if` in the FEM node): MPSL
+holds MODE high, selecting the factory-calibrated POUTB preset (+10 dB), and never
+writes SPI. Measured **−40 dBm** at 20 cm (Drawer Master). The unused SPI pins are
+GPIO-hogged (CSN high, SCK/MOSI low) as the nRF21540 datasheet requires. Side
+effect: no power model, so no temperature wake every 5 s (§2's small spikes) — a
+few µA saved. The RX current and the transmit power budget above are unchanged:
+transmit is now what this section always assumed. Before this fix every MFS
+radiated about −30 dBm, not +10 dBm, on the FIRE confirmation burst and the
+daily report.
 
 ## 6. Detection probability at a 100 ms window
 

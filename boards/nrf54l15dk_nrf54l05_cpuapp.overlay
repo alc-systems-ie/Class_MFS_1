@@ -2,9 +2,11 @@
  * Project CLASS MFS_1 pin map — CLASS MFS hardware, first full revision
  * (2026-11-10). nRF54L05 + nPM2100 + ADXL367 + OPT3001 + nRF21540 FEM.
  *
- * SPI (spi30) - nRF21540 FEM:   SCK P0.03, MOSI P0.02, MISO P0.01, CS P0.00.
  * nRF21540 control:             PDN P0.04, TX_EN P1.09, RX_EN P1.10, MODE P1.11.
- *                               Pinout as alc_drawer_master; MPSL drives it.
+ *                               Pinout as alc_drawer_master; MPSL drives it in
+ *                               GPIO-only mode (see the nrf_radio_fem node).
+ * nRF21540 SPI (unused):        SCK P0.03, MOSI P0.02, MISO P0.01, CSN P0.00 -
+ *                               hogged idle: CSN high, SCK/MOSI low.
  * I²C 1 (i2c21) - nPM2100:      SCL P1.04, SDA P1.05, addr 0x74.
  * I²C 2 (i2c22) - ADXL367:      SCL P1.08, SDA P1.07, addr 0x1D.
  *                 OPT3001:      same bus (not used by v1 firmware).
@@ -59,41 +61,32 @@
             low-power-enable;
         };
     };
-
-    /* ─── spi30 → nRF21540 FEM ───
-     * spi30, not spi22: P0 is in the 30-series peripheral/clock domain on
-     * nRF54L, and spi22 silently cannot reach P0 pads even though pinctrl
-     * writes succeed (alc_drawer_master). */
-    spi30_default: spi30_default {
-        group1 {
-            psels = <NRF_PSEL(SPIM_SCK,  0, 3)>,
-                    <NRF_PSEL(SPIM_MOSI, 0, 2)>,
-                    <NRF_PSEL(SPIM_MISO, 0, 1)>;
-        };
-    };
-
-    spi30_sleep: spi30_sleep {
-        group1 {
-            psels = <NRF_PSEL(SPIM_SCK,  0, 3)>,
-                    <NRF_PSEL(SPIM_MOSI, 0, 2)>,
-                    <NRF_PSEL(SPIM_MISO, 0, 1)>;
-            low-power-enable;
-        };
-    };
 };
 
-&spi30 {
-    status = "okay";
-    pinctrl-0 = <&spi30_default>;
-    pinctrl-1 = <&spi30_sleep>;
-    pinctrl-names = "default", "sleep";
-    cs-gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
+/* ─── nRF21540 SPI pins: unused, held idle ───
+ * The FEM runs in GPIO-only mode (see the nrf_radio_fem node), so spi30 is not
+ * enabled. The nRF21540 datasheet asks for CSN tied inactive and SCK/MOSI tied to
+ * VSS when SPI is not used; GPIO hogs do that at boot, before any application
+ * code, so the FEM's SPI inputs never float. MISO (P0.01) is a FEM output and is
+ * left as an unconnected SoC input. (spi30, not spi22, if SPI ever returns: P0 is
+ * in the 30-series domain on nRF54L and spi22 silently cannot reach P0 pads.) */
+&gpio0 {
+    fem_csn_hog {
+        gpio-hog;
+        gpios = <0 GPIO_ACTIVE_HIGH>;
+        output-high;
+    };
 
-    nrf_radio_fem_spi: nrf21540_fem_spi@0 {
-        compatible = "nordic,nrf21540-fem-spi";
-        status = "okay";
-        reg = <0>;
-        spi-max-frequency = <8000000>;
+    fem_mosi_hog {
+        gpio-hog;
+        gpios = <2 GPIO_ACTIVE_HIGH>;
+        output-low;
+    };
+
+    fem_sck_hog {
+        gpio-hog;
+        gpios = <3 GPIO_ACTIVE_HIGH>;
+        output-low;
     };
 };
 
@@ -144,17 +137,19 @@
      * the FEM was not fitted and never declared it, so it sat powered down in
      * the RF path: range was ~5 m on the ground (tools/range_pong). There is
      * no bypass mode - the LNA must be on for the device to hear commands.
-     * Cost: docs/power-budget.md section 5. */
+     * Cost: docs/power-budget.md section 5.
+     *
+     * GPIO-only mode - no spi-if (2026-11-16, power-budget section 5.1). With
+     * spi-if, MPSL ran it in GPIO+SPI mode and wrote TX_GAIN 6-8 before every
+     * transmission: ~40 dB below the factory POUTB preset. Without spi-if, MPSL
+     * holds MODE high, selecting POUTB (+10 dB, factory calibrated). Do not
+     * restore spi-if without an RSSI check against a bare-DK reference. */
     nrf_radio_fem: nrf21540_fem {
         compatible  = "nordic,nrf21540-fem";
         tx-en-gpios = <&gpio1  9 GPIO_ACTIVE_HIGH>;
         rx-en-gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
         pdn-gpios   = <&gpio0  4 GPIO_ACTIVE_HIGH>;
         mode-gpios  = <&gpio1 11 GPIO_ACTIVE_HIGH>;
-        spi-if      = <&nrf_radio_fem_spi>;
-        /* Required by the nRF21540 built-in power model, or the build fails.
-         * 3000 mV as every Nordic reference design; the FEM runs from VOUT. */
-        supply-voltage-mv = <3000>;
     };
 
     /* Application-side control GPIOs that don't belong to a standard driver

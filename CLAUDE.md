@@ -37,7 +37,7 @@ left it powered down in the RF path and range was ~5 m — see
 | Sleep architecture | **System ON idle + RTC wake** — *not* nPM2100 Hibernate |
 | Scan | **100 ms passive every 7.245 s** (1.38% RX duty cycle; 5.970 s until 2026-11-14) |
 | ADXL367 | Continuous measurement mode, 100 Hz ODR |
-| nRF21540 FEM | **Fitted, driven by MPSL** — LNA on for every scan (no bypass mode), POUTB +10 dBm on TX |
+| nRF21540 FEM | **Fitted, driven by MPSL in GPIO-only mode** — LNA on for every scan (no bypass mode), POUTB +10 dBm on TX via the MODE pin. **Never GPIO+SPI** (transmitted ~40 dB low, 2026-11-16) |
 | Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version 0x03 with an explicit command type |
 | Day boundary | **04:00 UTC**, no multi-day validity window |
 | Timekeeping | **LFXO** 32.768 kHz (fitted), GRTC-sourced. **No external RTC** (BOM, reaffirmed 2026-09-13). Invalid on every boot until provisioner sync |
@@ -64,7 +64,7 @@ specific numeric constraint recorded there.
 | LED3 green (`led0`) | P2.04 | Disarmed: steady until the time sync, then 500 ms on / 2500 ms off |
 | nPM2100 GPIO0 / GPIO1 | P1.06 / P2.01 | Unused |
 | nPM2100 RESET | P2.00, active low | Unused |
-| nRF21540 SPI (`spi30`) | SCK P0.03, MOSI P0.02, MISO P0.01, CS P0.00 | MPSL FEM driver (as `alc_drawer_master`) |
+| nRF21540 SPI | SCK P0.03, MOSI P0.02, MISO P0.01, CS P0.00 | **Unused** — GPIO hogs hold CSN high, SCK/MOSI low; `spi30` disabled |
 | nRF21540 PDN / TX_EN / RX_EN / MODE | P0.04 / P1.09 / P1.10 / P1.11 | MPSL FEM driver |
 
 **LED scheme: `docs/superpowers/specs/2026-11-12-three-led-indication-design.md`**
@@ -240,6 +240,14 @@ Constraints from that analysis that are easy to violate by accident:
   power — making the LNA an app-set option is the sanctioned route
   (`docs/todo.md`). **POUTB (+10 dB) only** on transmit, for Irish EIRP
   compliance.
+- **The nRF21540 runs in MPSL's GPIO-only mode, never GPIO+SPI** (2026-11-16,
+  `docs/power-budget.md` §5.1). In GPIO+SPI mode MPSL wrote TX_GAIN 6–8 before
+  every transmission, so every MFS and the Drawer Master transmitted ~40 dB low
+  (−81…−85 dBm at 20 cm on a phone against −40 dBm fixed, −50 dBm for a bare DK
+  at +8 dBm) while receive worked — the hub never heard 00007 from the shed. In
+  GPIO-only mode MPSL holds MODE high, selecting the factory POUTB preset. Do not
+  restore `spi-if` or `CONFIG_MPSL_FEM_NRF21540_GPIO_SPI` without an RSSI check
+  against a bare-DK reference (`../link_beacon`).
 - **The counterpart's advertising interval is not ours to set.** Measured
   (2026-09-14, `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`
   §1): **187.5 ms, steady**, from a Mac (`CoreBluetooth`, foreground); **~35 ms,

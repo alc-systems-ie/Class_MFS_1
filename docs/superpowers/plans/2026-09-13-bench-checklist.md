@@ -416,6 +416,13 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 - [x] 2. **103.4 µA, 2026-11-14** (MFS1-1126-00007, 60 s, armed, debugger unplugged and power-cycled; `docs/power-budget.md`). PPK2 (ammeter, CR123A), armed, settled, 60 s: scan bursts ~7.25 s apart, the small power-model spikes 5 s apart (were 2 s); average ~106 µA (was 126.7 µA). Record in `docs/power-budget.md`.
 - [ ] 3. Command reliability from each phone (iPhone, Mac, the production Android once available): 20 Sends each, Arm/Disarm alternating, all heard within one 30 s Send. Re-run `tools/scan_phase_check.py` with the Android's measured interval.
 
+## 5m. FEM in GPIO-only mode (2026-11-16, `docs/power-budget.md` §5.1)
+
+- [ ] 1. After flashing the fix, RSSI of the device's transmit at 20 cm is within a few dB of −40 dBm on the iPhone (nRF Connect). The production firmware never advertises, so use the FIRE confirmation burst (an nRF Connect scan shows it) or the hub's `rssi` on the daily report; the `../link_beacon` GPO build is the bench reference (−40 dBm on the Drawer Master).
+- [ ] 2. The hub receives MFS1-1126-00007's 03:00 daily report from the shed once 00007 carries the fix (trial tag build).
+- [ ] 3. Commands still heard as before (LNA unchanged): 10 Arm/Disarm Sends from the iPhone at the usual distances.
+- [ ] 4. PPK2, armed, 60 s: the 5 s power-model spikes are gone; average at or slightly below 103.4 µA.
+
 ## 5l. Keys in the KMU and the fleet debug lock (2026-11-15, design `docs/superpowers/specs/2026-11-15-kmu-keys-and-debug-lock-design.md`)
 
 - [ ] 1. **First key-test DK run is `--unlocked` — STOP if it fails.** `MFS_DEV_ID=1057755043 tools/flash_device.sh <dk serial> --unlocked` with the DK's own `secrets/<serial>.conf` (throwaway keys). RTT: `DEBUG PORT UNLOCKED - not for the field!`, then the boot key check passing — `Device 0x... ready. Clock INVALID until a provisioner time sync.` and no `Device keys missing or unusable`; no orange 3 s warning at boot.
