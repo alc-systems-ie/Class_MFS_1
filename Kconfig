@@ -226,6 +226,20 @@ config MFS_DEVICE_ID
 	  Not secret and never transmitted. The Network Manager looks the device
 	  up by it. See docs/tan-scheme.md section 3.
 
+config MFS_REPORT_GENERATION
+	int "Event report key generation (0 = reports disabled)"
+	default 0
+	range 0 65535
+	help
+	  The report-key generation bound into the event report key and its
+	  nonce (docs/superpowers/specs/2026-11-24-event-reports-design.md
+	  section 4). Set by tools/flash_device.sh, which raises it on every
+	  flash so a reflashed device, whose report counter starts again from
+	  zero, never reuses a nonce under an earlier key. Not secret.
+
+	  0 disables event reports: the device logs a warning at boot and works
+	  otherwise as normal. A plain west build leaves it at 0.
+
 config MFS_DEVICE_SECRET
 	string "Device secret (64-char hex string) - MUST STAY EMPTY"
 	default ""

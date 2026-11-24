@@ -5,6 +5,8 @@
 
 #include <zephyr/settings/settings.h>
 
+#include <cstring>
+
 #include "access_keys.hpp"
 #include "access_store.hpp"
 #include "app.hpp"
@@ -14,6 +16,7 @@
 #include "key_check.hpp"
 #include "kmu_slots.hpp"
 #include "npm2100_zephyr.hpp"
+#include "report_store.hpp"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
@@ -44,20 +47,20 @@ namespace alc
     // The detection engine's configure retry spacing, for log messages.
     constexpr uint32_t M_ENGINE_RETRY_MS { static_cast<uint32_t>(DetectionEngine::M_COOLDOWN_RETRY_MS) };
 
-    // access::ConfirmId()'s event byte for a FIRE command's receipt - confirm on
-    // receipt, at the top of the countdown, not at detonation. Live and rehearsal
-    // are DIFFERENT events so the phone can tell them apart: a live fire destroys
-    // the device (the app marks it "Fired", dead), a rehearsal does not.
-    constexpr uint8_t M_CONFIRM_EVENT_FIRE_LIVE { 0x01 };
-    constexpr uint8_t M_CONFIRM_EVENT_FIRE_REHEARSAL { 0x02 };
+    // How long an event report advertises: about five adverts at 20 ms. The fire
+    // output asserts FireGate::M_ANNOUNCE_MS after a fired report's burst starts
+    // (event reports design section 5.3).
+    constexpr int64_t M_REPORT_BURST_MS { 100 };
 
-    // How long the confirmation burst advertises: the WHOLE exit countdown. The
-    // phone has one radio, so it must advertise the FIRE long enough for this
-    // duty-cycled device to catch it (~one scan period), THEN stop and scan for
-    // this burst - by which time a short burst would be long over. Bursting for
-    // the full countdown keeps the confirmId on air until the phone is listening.
-    // It stops at the countdown deadline, as the fire asserts.
-    constexpr int64_t M_CONFIRM_BURST_MS { FireSequence::M_FIRE_COUNTDOWN_MS };
+    // How often a failing report counter refill is retried.
+    constexpr int64_t M_REPORT_REFILL_RETRY_MS { 60 * 1000 };
+
+    // VBAT is read at boot, after every arming battery test, and at this interval
+    // (event reports design section 5.4).
+    constexpr int64_t M_BATTERY_READ_INTERVAL_MS { 6 * 60 * 60 * 1000 };
+
+    // m_battery_mv before the first good read.
+    constexpr int32_t M_BATTERY_UNKNOWN_MV { -1 };
 
 #if defined(CONFIG_MFS_BATTERY_TEST)
     // Liveness blink for the battery test, at the scan period.
@@ -144,6 +147,30 @@ namespace alc
     // never in the image: they live in the KMU (src/kmu_slots.hpp), provisioned by
     // tools/flash_device.sh, and the firmware uses them only by slot.
     uint32_t s_device_id { 0 };
+
+    // The report key generation, set by tools/flash_device.sh. Not const: its
+    // address is the report counter's persist context (report_store::Persist),
+    // so it lives for the whole run.
+    uint16_t s_report_generation { static_cast<uint16_t>(CONFIG_MFS_REPORT_GENERATION) };
+
+    const char* reportEventName(report::ReportEvent event)
+    {
+      switch (event) {
+        case report::ReportEvent::LowBattery:
+          return "low battery";
+        case report::ReportEvent::Activated:
+          return "activated";
+        case report::ReportEvent::Deactivated:
+          return "deactivated";
+        case report::ReportEvent::FiredFromCommand:
+          return "fired from command";
+        case report::ReportEvent::FiredFromMotion:
+          return "fired from motion";
+        case report::ReportEvent::FiredFromSound:
+          return "fired from sound level";
+      }
+      return "unknown"; // Unreachable while every ReportEvent is handled above - -Wswitch warns if a new one is added.
+    }
 
     const char* verdictName(AccessControl::Verdict verdict)
     {
@@ -265,7 +292,15 @@ namespace alc
       , m_scan_outage_logged(false)
       , m_logging_cooldown(false)
       , m_fire()
+      , m_fire_gate()
       , m_advertiser()
+      , m_report_key {}
+      , m_reports_ready(false)
+      , m_report_counter(&report_store::Persist, &s_report_generation)
+      , m_report_policy()
+      , m_next_refill_ms(0)
+      , m_last_battery_read_ms(0)
+      , m_battery_mv(M_BATTERY_UNKNOWN_MV)
       , m_engine(*this)
       , m_arming(*this)
       , m_led_sequencer()
@@ -347,6 +382,9 @@ namespace alc
       return result;
     }
 
+    // Before any report can be sent, so every report carries a measured voltage.
+    readBattery();
+
     result = initAccelerometer();
     if (result < 0) {
       LOG_ERR("Failed to initialise the accelerometer: %d!", result);
@@ -417,15 +455,15 @@ namespace alc
         LOG_INF("Arm state: Active - fire pins enabled (uptime %lld ms).", k_uptime_get());
       }
 
-      // Advance the FIRE countdown and its assertion window every tick, before
-      // the output is derived below. IsFaulted() is the fire-switch fault input:
-      // a fault while CountingDown aborts the fire outright. The switch fault
-      // itself fails safe (disarm) through the existing m_switch_fault_pending
-      // path, so no second disarm path is added here.
+      // Advance the FIRE assertion window every tick, before the output is
+      // derived below. IsFaulted() is the fire-switch fault input: a fault ends
+      // the window at once. The switch fault itself fails safe (disarm) through
+      // the existing m_switch_fault_pending path, so no second disarm path is
+      // added here.
       m_fire.Service(k_uptime_get(), m_output_switch.IsFaulted());
 
-      // Stops the FIRE confirmation burst once its window has elapsed. No-op
-      // otherwise - see applyCommand()'s ArmAction::Fire handling for the start.
+      // Stops a report burst once its window has elapsed. No-op otherwise - see
+      // sendReport() for the start.
       m_advertiser.Service(k_uptime_get());
 
       // A failed arming has already failed safe and raised the warning inside
@@ -458,21 +496,15 @@ namespace alc
       // expiry changing the cadence) that serviceScanHealth()'s retry healed at
       // the top of this tick would otherwise leave an Active device with its
       // trigger silently suppressed and no warning.
-      // SCANNER-LOSS EXEMPTION DURING A LIVE FIRE EVENT. A FIRE command has
-      // already landed and authenticated; scanner loss must not abort it. While
-      // a LIVE fire countdown or its assertion window runs, the scanner-health
-      // fail-safe is suspended entirely - not run and not acted on. A rehearsal
-      // does NOT defer this check (amendment §4 scopes the carve-out to a fire
-      // accepted while Active) - an overlapping Arm still fails safe on its own
-      // scanner loss. Everywhere else it is unchanged.
-      if (!m_fire.LiveInProgress()) {
-        stateBeforeHealthCheck = m_arming.State();
-        if (m_arming.ServiceScannerHealth()) {
-          latchFaultDisplay();
-          logArmingFailure(FailureSource::Sequence);
-          LOG_INF("Arm state: Inactive%s (uptime %lld ms).", (stateBeforeHealthCheck == ArmState::Arming) ? " - arming cancelled" : "",
-                  k_uptime_get());
-        }
+      //
+      // NO EXCEPTION. FIRE no longer has a countdown, so a live fire is not
+      // exempt: a scanner loss during its window disarms, which drops the fire
+      // condition and cancels it (event reports design section 5.2).
+      stateBeforeHealthCheck = m_arming.State();
+      if (m_arming.ServiceScannerHealth()) {
+        latchFaultDisplay();
+        logArmingFailure(FailureSource::Sequence);
+        LOG_INF("Arm state: Inactive%s (uptime %lld ms).", (stateBeforeHealthCheck == ArmState::Arming) ? " - arming cancelled" : "", k_uptime_get());
       }
 
       // The arming is acknowledged only now, after the cadence gate and the
@@ -512,6 +544,29 @@ namespace alc
         (void)disarmDevice();
         latchFaultDisplay();
       }
+
+      // EVENT REPORTS, after every state change of the tick. Activated on
+      // reaching Active, deactivated on leaving it (never after a fire - the
+      // fired report, sent from updateOutputState() above, implies it). A
+      // disarmed device sends nothing. Called every tick so the policy sees every
+      // transition.
+      if (auto event = m_report_policy.ServiceArmState(m_arming.State())) { (void)sendReport(*event); }
+
+      // Low battery waits for a quiet radio rather than cutting another report
+      // short; it is taken only once it can be sent.
+      if (!m_advertiser.IsAdvertising() && m_report_policy.TakeLowBattery(m_arming.State())) { (void)sendReport(report::ReportEvent::LowBattery); }
+
+      // The counter refill writes NVS, so it is done here - never in the fire
+      // path - and only with no burst on air.
+      if (m_reports_ready && m_report_counter.NeedsRefill() && !m_advertiser.IsAdvertising() && k_uptime_get() >= m_next_refill_ms) {
+        result = m_report_counter.Refill();
+        if (result < 0) {
+          m_next_refill_ms = k_uptime_get() + M_REPORT_REFILL_RETRY_MS;
+          LOG_ERR("Report counter refill failed: %d - retrying in %lld ms!", result, M_REPORT_REFILL_RETRY_MS);
+        }
+      }
+
+      if (k_uptime_get() - m_last_battery_read_ms >= M_BATTERY_READ_INTERVAL_MS) { readBattery(); }
 
       // Compute the LED levels HERE, once, so the log below reports what is
       // actually written to the pins. Recomputing them inside the log statement
@@ -804,11 +859,40 @@ namespace alc
     // LAYER ONE of the delay interlock is the last term: while a delay is
     // pending - armed trigger or test - detection cannot reach the output. The
     // arm state stays definitive: a live FIRE latch only reaches the output while
-    // Active, and it bypasses the detection delay because the countdown IS the
-    // fire's own delay. When FireLatched() falls at the window end the output
-    // falls, the engine one-shot completes, and the main loop's TakeTriggerComplete()
-    // block latches Inactive - FIRE self-terminates exactly like a motion trigger.
-    m_output_active = (m_arming.State() == ArmState::Active) && ((m_engine.DetectionMet() && delayPermitsFiring()) || m_fire.FireLatched());
+    // Active, and it bypasses the detection delay - an engineer's FIRE means now.
+    // When FireLatched() falls at the window end the output falls, the engine
+    // one-shot completes, and the main loop's TakeTriggerComplete() block latches
+    // Inactive - FIRE self-terminates exactly like a motion trigger.
+    bool fireCondition { (m_arming.State() == ArmState::Active) && ((m_engine.DetectionMet() && delayPermitsFiring()) || m_fire.FireLatched()) };
+
+    // THE FIRED REPORT (event reports design section 5.3). The gate holds the
+    // output back for FireGate::M_ANNOUNCE_MS from the tick the condition rises,
+    // while the report's burst goes out - not by blocking: the output asserts on
+    // a later tick. The condition is re-evaluated every tick, so a Disarm or any
+    // fault inside the window drops it and the fire is cancelled. A falling
+    // condition - including the disarm path's re-derivation - only resets the
+    // gate and never sends anything.
+    bool firePermitted { m_fire_gate.Update(fireCondition, k_uptime_get()) };
+
+    if (m_fire_gate.TakeAnnounceDue()) {
+      report::ReportEvent cause { m_fire.FireLatched() ? report::ReportEvent::FiredFromCommand : report::ReportEvent::FiredFromMotion };
+      int reportResult { sendReport(cause) };
+
+      // A report that cannot be built or sent, or one switched off, must not
+      // delay the fire: permit it at once.
+      if (reportResult < 0) {
+        m_fire_gate.Skip();
+        if (reportResult != -EPERM) { LOG_ERR("Fire report not sent (%d) - firing anyway!", reportResult); }
+      }
+      m_report_policy.NoteFired();
+
+      // The supply settle (blocking, as before) overlaps the burst, so where the
+      // supply still has to rise the report adds nothing.
+      prepareFireSupply();
+      firePermitted = m_fire_gate.Update(fireCondition, k_uptime_get());
+    }
+
+    m_output_active = fireCondition && firePermitted;
 
     // The fire output is driven HERE, in the same breath as the condition is
     // derived, rather than from the main loop. A consumer that lives at the
@@ -853,6 +937,10 @@ namespace alc
     //  trigger too - the fail-safe direction.
     // ================================================================
     bool cancelled { m_arming.Disarm() };
+
+    // A Disarm always acts: a live FIRE window (or a rehearsal) ends here. The
+    // state is already Inactive, so the output could not assert anyway.
+    m_fire.Cancel();
 
     logArmingFailure(FailureSource::Sequence);
 
@@ -990,7 +1078,12 @@ namespace alc
     // The arming battery test - the sequence lowers the supply straight after.
     // Must not call back into m_arming. Runs in the synchronous arming step, so
     // the settle delay blocks the main loop for M_FIRE_SUPPLY_SETTLE_MS once.
-    return raiseFireSupply();
+    int result { raiseFireSupply() };
+
+    // VBAT after every arming battery test, pass or fail. Touches only the PMIC
+    // and the report policy - never m_arming.
+    readBattery();
+    return result;
   }
 
   void App::prepareFireSupply()
@@ -1396,6 +1489,9 @@ namespace alc
       return result;
     }
 
+    // Not fatal: a device without reports still works. initReports() logs.
+    (void)initReports();
+
     result = access_store::Load(restored);
     if (result < 0) { return result; }
 
@@ -1414,6 +1510,87 @@ namespace alc
     m_access_ready = true;
     LOG_INF("Device 0x%08X ready. Clock INVALID until a provisioner time sync.", s_device_id);
     return 0;
+  }
+
+  int App::initReports()
+  {
+    uint32_t storedFloor { 0 };
+    int result { 0 };
+
+    if (s_report_generation == 0) {
+      LOG_WRN("Report generation 0 - event reports disabled (flash with tools/flash_device.sh).");
+      return 0;
+    }
+
+    result = report::DeriveReportKey(crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), s_device_id, s_report_generation, m_report_key);
+    if (result < 0) {
+      LOG_ERR("Report key could not be derived (%d) - event reports disabled!", result);
+      memset(m_report_key, 0, sizeof(m_report_key));
+      return result;
+    }
+
+    result = report_store::Load(s_report_generation, storedFloor);
+    if (result == 0) { result = m_report_counter.Begin(storedFloor); }
+    if (result < 0) {
+      LOG_ERR("Report counter unavailable (%d) - event reports disabled!", result);
+      memset(m_report_key, 0, sizeof(m_report_key));
+      return result;
+    }
+
+    m_reports_ready = true;
+    LOG_INF("Event reports ready: generation %u, counter from %u.", s_report_generation, storedFloor);
+    return 0;
+  }
+
+  int App::sendReport(report::ReportEvent event)
+  {
+    uint8_t plaintext[report::M_PLAINTEXT_BYTES] {};
+    uint8_t onAir[report::M_ON_AIR_BYTES] {};
+    uint32_t counter { 0 };
+    int result { 0 };
+
+    if (!m_reports_ready || !ReportPolicy::Enabled(event, m_settings.ReportSuppress())) { return -EPERM; }
+
+    if (!m_report_counter.Take(counter)) {
+      LOG_ERR("Report %s not sent - no report counter reserved!", reportEventName(event));
+      return -ENOSPC;
+    }
+
+    report::EncodeReport(event, report::BatteryTenths(m_battery_mv), plaintext);
+    result = report::SealReport(m_report_key, s_device_id, s_report_generation, counter, plaintext, onAir);
+    if (result < 0) {
+      LOG_ERR("Report %s could not be sealed: %d!", reportEventName(event), result);
+      return result;
+    }
+
+    result = m_advertiser.Burst(onAir, k_uptime_get(), M_REPORT_BURST_MS);
+    if (result < 0) { return result; }
+
+    LOG_INF("Report %s sent (r %u).", reportEventName(event), counter);
+    return 0;
+  }
+
+  void App::readBattery()
+  {
+    float vbatVolts { 0.0f };
+    int32_t millivolts { 0 };
+    int result { m_pmic.AdcReadVbat(vbatVolts) };
+
+    m_last_battery_read_ms = k_uptime_get();
+    if (result < 0) {
+      LOG_ERR("Battery read failed: %d - keeping %d mV!", result, m_battery_mv);
+      return;
+    }
+
+    millivolts = static_cast<int32_t>(vbatVolts * M_MILLIVOLTS_PER_VOLT);
+    if (millivolts < 0) { millivolts = 0; }
+    if (millivolts > UINT16_MAX) { millivolts = UINT16_MAX; }
+
+    // Logged when the tenths a report would carry change, not on every read.
+    if (m_battery_mv < 0 || report::BatteryTenths(millivolts) != report::BatteryTenths(m_battery_mv)) { LOG_INF("Battery %d mV.", millivolts); }
+
+    m_battery_mv = millivolts;
+    m_report_policy.NoteBattery(static_cast<uint16_t>(millivolts));
   }
 
   void App::serviceCandidates()
@@ -1614,17 +1791,6 @@ namespace alc
       return;
     }
 
-    // A LIVE FIRE countdown (or its assertion window) is uninterruptible by a
-    // Disarm command - a rehearsal is not (FireSequence::AcceptsDisarm()).
-    // DecideCommand() still returns Disarm - it does not know about the
-    // countdown - so the refusal lives here, before any trim or state change: no
-    // trim, no disarm, nothing. The only thing that stops a live fire is a
-    // fire-switch fault (handled by FireSequence::Service()).
-    if (decision.action == ArmAction::Disarm && !m_fire.AcceptsDisarm()) {
-      LOG_WRN("Disarm ignored during fire countdown.");
-      return;
-    }
-
     if (decision.trimClock && m_clock.ApplyMinuteHint(command.minuteOfDay, uptimeSecs) == DeviceClock::TrimResult::Trimmed) {
       LOG_INF("Clock trimmed from slot %u: now minute %u.", evaluation.slot, m_clock.MinuteOfDay(uptimeSecs));
     }
@@ -1711,35 +1877,18 @@ namespace alc
         break;
 
       case ArmAction::Fire: {
-        // Active fires live; Inactive rehearses (red only, while disarmed). FireSequence starts
-        // its 10 s unstoppable countdown and, at expiry, asserts for one detection
-        // hold period before self-terminating. The pins are already live for a
-        // live fire (the device is Active); a rehearsal never touches them. No
-        // overlay here - the confirmation advert below is the acknowledgement.
+        // Active fires live; Inactive rehearses (red only, while disarmed). No
+        // countdown (event reports design section 5.2): the window starts now and
+        // asserts for one detection hold period before self-terminating. A live
+        // fire reaches the pins through updateOutputState(), which sends the
+        // fired report and asserts FireGate::M_ANNOUNCE_MS later; a Disarm or a
+        // fault before then cancels it. A rehearsal never touches the pins or the
+        // supply, and sends nothing. No overlay.
         bool live { m_arming.State() == ArmState::Active };
-        uint8_t confirmUuid[protocol::M_UUID_BYTES];
 
         m_fire.Start(live, k_uptime_get(), DetectionEngine::M_DELAYED_TRIGGER_HOLD_MS);
-        // A live fire raises the supply at the top of its 10 s countdown, so it has
-        // long settled when the pins assert. A rehearsal never touches it.
         if (live) { prepareFireSupply(); }
-        LOG_WRN("FIRE received from slot %u n %u - %s, %u s countdown.", evaluation.slot, evaluation.n, live ? "LIVE" : "rehearsal",
-                static_cast<unsigned>(FireSequence::M_FIRE_COUNTDOWN_MS / MSEC_PER_SEC));
-
-        // Confirm on receipt, at the top of the countdown - not at detonation -
-        // and for both live and rehearsal fires, so a bench rehearsal exercises
-        // the whole path. The event byte distinguishes them so the phone knows
-        // whether the device is about to be destroyed (live) or is only testing
-        // (rehearsal). confirmId is derived from the same day key the command
-        // authenticated with (AccessControl::DayKey()), so only a holder of that
-        // day's key material could have produced this burst.
-        result = access::ConfirmId(m_access.DayKey(evaluation.slot), evaluation.n, live ? M_CONFIRM_EVENT_FIRE_LIVE : M_CONFIRM_EVENT_FIRE_REHEARSAL,
-                                   confirmUuid);
-        if (result < 0) {
-          LOG_ERR("Could not derive the FIRE confirmation ID: %d!", result);
-        } else {
-          m_advertiser.Burst(confirmUuid, k_uptime_get(), M_CONFIRM_BURST_MS);
-        }
+        LOG_WRN("FIRE received from slot %u n %u - %s.", evaluation.slot, evaluation.n, live ? "LIVE" : "rehearsal");
 
         // Return, not break: FIRE applied no settings, so the shared "Applied:"
         // settings log below would be misleading. There is no overlay.

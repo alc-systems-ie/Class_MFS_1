@@ -43,9 +43,13 @@ namespace alc
    * | Inactive  | Arm      | Arming, STORED settings       | no       | no   | yes  |
    * | Inactive  | Disarm   | Stay Inactive, restart test   | no       | no   | yes  |
    * | Inactive  | Settings | Tune                          | yes      | slot 0 only | yes |
-   * | Active    | FIRE     | Fire (live, one-shot)         | no       | no   | yes  |
+   * | Active    | FIRE     | Fire (live, at once, one-shot) | no      | no   | yes  |
    * | Inactive  | FIRE     | Fire (rehearsal, red only)    | no       | no   | yes  |
-   * | Arming    | FIRE     | Ignore - nothing, no confirmation | no   | no   | no   |
+   * | Arming    | FIRE     | Ignore - nothing, no report   | no       | no   | no   |
+   *
+   * FIRE has no countdown (event reports design section 5.2): a live fire
+   * asserts about 100 ms after the command is applied, once its fired report
+   * is on air, and a Disarm before then cancels it.
    *
    * **An armed device has only two ways out of the armed state: a disarm
    * command, or firing** (App latches Inactive when the output period ends).
@@ -74,7 +78,7 @@ namespace alc
     if (command.type == protocol::CommandType::Reserved && !command.isFire) { return decision; }
 
     if (command.isFire) {
-      // Arming: only Disarm acts during the exit delay. No confirmation.
+      // Arming: only Disarm acts during the exit delay. Nothing is shown or sent.
       if (state == ArmState::Arming) { return decision; }
 
       // Active fires live; Inactive rehearses on the red LED only. App decides which
