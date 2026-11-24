@@ -482,6 +482,7 @@ if [ "$status" -eq 0 ] && grep -qx 'Report generation: 41 -> 42 (not saved).' "$
 if cmp -s "$work/conf.before" "$work/secrets/$serial.conf"; then pass "dry run leaves a generation conf byte-identical"; else fail "dry run leaves a generation conf byte-identical"; fi
 run sh "$script" "$serial" --build --dry-run
 if [ "$status" -eq 0 ] && grep -qx 'Report generation: 41 -> 42 (not saved).' "$out"; then pass "--build does not save"; else fail "--build does not save"; fi
+if [ "$status" -eq 0 ] && grep -q 'never flash it by hand' "$out"; then pass "--build warns against a hand flash"; else fail "--build warns against a hand flash"; fi
 sed 's/^CONFIG_MFS_REPORT_GENERATION=.*/CONFIG_MFS_REPORT_GENERATION=65535/' "$work/conf.before" > "$work/secrets/$serial.conf"
 run sh "$script" "$serial" --dry-run
 if [ "$status" -ne 0 ] && grep -q 'report generation' "$out" && ! grep -q 'west build' "$out"; then pass "generation 65535 refused"; else fail "generation 65535 refused"; fi

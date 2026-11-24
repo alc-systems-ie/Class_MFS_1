@@ -78,6 +78,15 @@ namespace alc::report_store
     storedFloor      = (static_cast<uint32_t>(s_loaded[2]) << (3 * M_BYTE_BITS)) | (static_cast<uint32_t>(s_loaded[3]) << (2 * M_BYTE_BITS)) |
                        (static_cast<uint32_t>(s_loaded[4]) << M_BYTE_BITS) | static_cast<uint32_t>(s_loaded[5]);
 
+    // A stored generation above the image's means an older build was flashed without
+    // erasing NVS: its generation's counter values may already be spent, and floor 0
+    // would reuse nonces under that key. Refuse, so reports stay off.
+    if (storedGeneration > generation) {
+      LOG_ERR("Stored report generation %u is above this image's %u - reports disabled (reflash with tools/flash_device.sh)!", storedGeneration,
+              generation);
+      return -ESTALE;
+    }
+
     // A new generation derives new keys, so the counter restarts at zero under them.
     if (storedGeneration == generation) { floor = storedFloor; }
     return 0;

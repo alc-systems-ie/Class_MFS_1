@@ -108,9 +108,11 @@ reason) without a format change.
 **Report counter `r`.** Never reused under one `(reportKey)`. The device persists a
 **reservation floor** in NVS (new record `report/v1`) in blocks: at boot it reserves
 `[floor, floor + 16)` by saving `floor + 16` first, then uses those values from RAM,
-and reserves the next block when four remain — outside the fire path. A reset skips at
-most one block's unused values, which is harmless. **(builder's call:** block size 16,
-refill at 4.)
+and reserves the next block when four remain — outside the fire path. A reset skips
+the values reserved but unused — **up to 20** (a refill at four remaining reserves the
+next 16 before the last four are used) — which is harmless for nonce safety. Every boot
+reserves a block even if nothing is sent, so a device in a boot loop burns 16 values
+per boot. **(builder's call:** block size 16, refill at 4.)
 
 **Report generation `g`.** A reflash erases NVS, so `r` restarts at 0 — under a fixed
 key that would reuse nonces. The fix: every reflash **bumps `g`**, which changes
@@ -126,24 +128,39 @@ erase, does not exist on this chip.)
   drift. The credentials spreadsheet does not carry `g`.
 - **When the script bumps it:** on every run that goes on to the nrfutil batch, before the
   build, so the image and the file always agree. `--build` and `--dry-run` do not bump it.
-  A failed batch has still bumped it — the chip may hold the old image or none — so
-  **the NM accepts reports under `g` and `g − 1`** and drops `g − 1` once it has heard
-  one under `g`. **(builder's call)**
+  A failed run has still bumped it — a build error, no J-Link or a refused key check
+  leaves the chip on its old image, a failed batch may leave the old image or none — and
+  any number of failed runs can follow one another, so the device's `g` can trail the
+  file's by more than one. **The NM therefore accepts every generation from the last one
+  it has heard from that device (1 if none) up to the file's current `g`**, trying the
+  newest first; once it hears a report under generation `g′` it stops trying every
+  generation below `g′`. A failed flash still burns a generation; the NM tolerates any
+  number of skipped generations. **(controller ruling 2026-11-24**, replacing the
+  earlier `g` / `g − 1` rule, which dropped every report after two failed runs.)
 
-**At the NM.** Per device: the current `g` and a floor; it accepts `r` in
-`[floor, floor + 1024)` and sets `floor = r + 1`. A new `g` starts at floor 0.
+- **The device refuses a stored generation above its own.** `report/v1` holds the `g`
+  it was saved under. Equal: resume from its floor. Lower: a new generation, floor 0.
+  Higher — an older build flashed without erasing NVS — would restart a spent key's
+  counter at 0, so reports stay off that boot (`LOG_ERR` naming both numbers) until the
+  device is reflashed through the script.
+
+**At the NM.** Per device: the last heard `g` and a floor for each generation it is
+trying; it accepts `r` in `[floor, floor + 1024)` and sets `floor = r + 1`. A
+generation not yet heard starts at floor 0.
 Duplicates from a burst, and replays, fall below the floor and are dropped silently.
 The floor persists in the NM stand-in's state file.
 
 - **Why 1024, not the commands' 64:** unlike day keys there is no daily reset to bring
   the two sides back into step, and the device uses up counter values the NM never hears
-  — up to 15 per reset (block reservation) and one per unheard report. A 1024 window
-  covers ~60 resets or ~1000 unheard reports. The cost is a precomputed table of 1024
+  — up to 20 per reset (block reservation: 16 per block, refilled at four remaining), a
+  whole block of 16 on every boot even when nothing is sent, and one per unheard report.
+  A 1024 window covers ~64 boots without a heard report (a boot loop reaches that
+  quickly) or ~1000 unheard reports. The cost is a precomputed table of 1024
   four-byte IDs per device. A false ID match (~1024 / 2³² per device per UUID) is caught
   by the CCM tag. **(builder's call)**
 - **If a device ever drifts past the window**, its reports are lost until the next reflash
-  (new `g`). The NM logs a daily warning for any device with no report for 7 days, so the
-  loss is visible. **(builder's call)**
+  (new `g`). The NM logs a daily warning for any device with no report for 7 days; that
+  silence warning is what makes such a loss — a boot loop included — visible. **(builder's call)**
 
 ## 5. MFS firmware (`class_mfs_1`)
 
@@ -195,12 +212,16 @@ switch (§5.5); a switched-off event is simply not sent.
    has to be raised (FIRE, undelayed motion), the burst **overlaps the existing 100 ms
    supply settle**, so they add nothing. An armed delayed trigger, whose supply is already
    up, fires **up to 100 ms later** than today.
-   - **Not by blocking.** The wait is a short *pending-fire* stage inside
-     `updateOutputState()`: the tick that decides to fire starts the burst; the next tick
-     (the loop runs every 100 ms) asserts. `m_output_switch.Set()` is still called only
-     there, so the single-derivation invariant holds. A **Disarm or any fault in that
-     window cancels the fire** — always-fail-safe, with no exception (§5.2). The supply
-     settle keeps its existing blocking 100 ms, as today. **(builder's call)**
+   - **Not by an added block.** The wait is a short *pending-fire* stage inside
+     `updateOutputState()`: the tick that decides to fire starts the burst. Where the
+     supply is already up (an armed trigger delay, or a FIRE during a pending delay), the
+     next tick (the loop runs every 100 ms) asserts, and a **Disarm or any fault in that
+     window cancels the fire**. Where the supply still has to rise (a live FIRE, an
+     undelayed motion trigger), the same tick blocks in the existing 100 ms supply
+     settle, re-evaluates the gate and asserts in that tick — no command can be
+     processed in between, so that fire cannot be cancelled once announced.
+     `m_output_switch.Set()` is still called only there, so the single-derivation
+     invariant holds. **(builder's call;** cancellation corrected 2026-11-24.)
 5. If the report cannot be built (crypto fault, no reserved counter), **fire anyway**
    with no extra wait, and log `Fire report not sent (%d) - firing anyway!`.
 
@@ -283,7 +304,8 @@ mini beside the bridge under launchd, like the bridge.)
   a secrets host, and never log a key or a derived key.
 - **Input:** subscribes to `alc/hub/+/uuid` on the local broker.
 - **Matching:** for each UUID, look up `reportId` in a precomputed table of each
-  device's window `[floor, floor + 64)` under its current `g`; on a hit, decrypt and
+  device's window `[floor, floor + 1024)` under each generation it is trying (§4.3: from
+  the last heard `g` up to the file's current `g`, newest first); on a hit, decrypt and
   verify. A miss (a phone command, noise, a duplicate) is dropped silently.
 - **State:** per-device floors in a local JSON file, saved before publishing.
 

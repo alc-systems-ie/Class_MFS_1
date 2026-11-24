@@ -4,8 +4,11 @@
 > §5.2. **FIRE fires at once**: the 10 s countdown, its "unstoppable by Disarm" carve-out
 > and its scanner-loss exemption are gone, and so is the receipt confirmation (the
 > `confirmId` burst, label `0x06`, retired and never reused). An armed FIRE now sends a
-> *fired from command* event report and asserts ~100 ms after receipt; a Disarm or any
-> fault before the output asserts cancels it — always-fail-safe has no exception. A
+> *fired from command* event report and asserts ~100 ms after receipt, in the same tick
+> as its supply settle when the supply was not yet raised — so a Disarm can cancel it only
+> when the supply was already up (a FIRE during a pending trigger delay), where the
+> assertion falls on the next tick. Always-fail-safe has no exception: a fault or Disarm
+> during the assertion window still ends it. A
 > disarmed FIRE rehearses on the red LED and sends nothing. §3–§4 below, and every
 > countdown or confirmation detail elsewhere in this document (owner decisions 2–4 in
 > §1, the `confirmId` vectors), are replaced by that section. The FIRE payload (§2) is

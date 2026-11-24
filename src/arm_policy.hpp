@@ -49,7 +49,10 @@ namespace alc
    *
    * FIRE has no countdown (event reports design section 5.2): a live fire
    * asserts about 100 ms after the command is applied, once its fired report
-   * is on air, and a Disarm before then cancels it.
+   * is on air. Where the fire supply still has to rise, the assertion falls in
+   * the same tick as the announce, so no Disarm can cancel it; only where the
+   * supply is already up (a pending trigger delay) does a Disarm before the
+   * next tick cancel it.
    *
    * **An armed device has only two ways out of the armed state: a disarm
    * command, or firing** (App latches Inactive when the output period ends).

@@ -867,9 +867,14 @@ namespace alc
 
     // THE FIRED REPORT (event reports design section 5.3). The gate holds the
     // output back for FireGate::M_ANNOUNCE_MS from the tick the condition rises,
-    // while the report's burst goes out - not by blocking: the output asserts on
-    // a later tick. The condition is re-evaluated every tick, so a Disarm or any
-    // fault inside the window drops it and the fire is cancelled. A falling
+    // while the report's burst goes out. Where the supply is already up (an armed
+    // trigger delay, or a FIRE during a pending delay) the output asserts on the
+    // next tick, and the condition is re-evaluated then, so a Disarm or any fault
+    // inside the window drops it and the fire is cancelled. Where the supply still
+    // has to rise (a live FIRE, an undelayed motion trigger), prepareFireSupply()
+    // below blocks for the settle, the gate is re-evaluated and the output asserts
+    // in this SAME tick - no command is processed in between, so that fire cannot
+    // be cancelled once announced. A falling
     // condition - including the disarm path's re-derivation - only resets the
     // gate and never sends anything.
     bool firePermitted { m_fire_gate.Update(fireCondition, k_uptime_get()) };
@@ -1893,11 +1898,13 @@ namespace alc
         // countdown (event reports design section 5.2): the window starts now and
         // asserts for one detection hold period before self-terminating. A live
         // fire reaches the pins through updateOutputState(), which sends the
-        // fired report and asserts FireGate::M_ANNOUNCE_MS later; a Disarm or a
-        // fault before then cancels it. The supply is NOT raised here: the
-        // announce in updateOutputState(), later this same tick, starts the burst
-        // and then raises it, so the 100 ms settle overlaps the burst and FIRE
-        // asserts ~100 ms after receipt (design section 5.3). A rehearsal never
+        // fired report and asserts FireGate::M_ANNOUNCE_MS later. The supply is
+        // NOT raised here: the announce in updateOutputState(), later this same
+        // tick, starts the burst and then raises it, so the 100 ms settle overlaps
+        // the burst and FIRE asserts ~100 ms after receipt, in this same tick, with
+        // no chance for a Disarm to cancel it (design section 5.3). Only a FIRE
+        // whose supply is already up (a pending trigger delay) asserts on the next
+        // tick, where a Disarm or a fault before then cancels it. A rehearsal never
         // touches the pins or the supply, and sends nothing. No overlay.
         bool live { m_arming.State() == ArmState::Active };
 

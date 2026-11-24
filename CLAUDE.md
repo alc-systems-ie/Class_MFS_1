@@ -366,15 +366,17 @@ KMU `deviceSecret` (`docs/tan-scheme.md` §3), per device and **report generatio
 `CONFIG_MFS_REPORT_GENERATION`, with a never-reused counter reserved in blocks of 16 in
 `report/v1`. `tools/flash_device.sh` **bumps the generation** in `secrets/<serial>.conf`
 before the build on every real flash (the file is verified before it is replaced;
-`--build` and `--dry-run` print "(not saved)"), because a flash erases the counter.
+`--build` and `--dry-run` print "(not saved)"), because a flash erases the counter. A
+failed flash still burns a generation; the NM tolerates any number of skipped generations.
 **Generation 0 — a plain `west build` — disables reports** (`Report generation 0` at
 boot). The fired report is sent from inside `updateOutputState()` on the condition's
-rising edge (`FireGate`), and the output asserts **100 ms later**, on a later tick, not
-by blocking: a live FIRE raises its supply under the burst and asserts ~100 ms after
-receipt; a delayed motion trigger whose supply is already up asserts on the next tick.
-A Disarm or a fault inside that window cancels the fire — the device is then noted as
-fired only if the output actually asserted, so a cancelled fire is followed by
-*deactivated*. A report that cannot be built never delays a fire (`Fire report not sent
+rising edge (`FireGate`), and the output asserts **100 ms later**: a live FIRE or an
+undelayed motion trigger raises its supply under the burst — blocking in the 100 ms
+settle — and asserts in that **same tick**, so no Disarm can cancel it once announced;
+a trigger whose supply is already up (an armed trigger delay, or a FIRE during a pending
+delay) asserts on the next tick, and only there can a Disarm or a fault inside the
+window cancel the fire — the device is then noted as fired only if the output actually
+asserted, so a cancelled fire is followed by *deactivated*. A report that cannot be built never delays a fire (`Fire report not sent
 (%d) - firing anyway!`). Settings byte 6 bits 0–3 **suppress** low battery / activated /
 deactivated / fired (zero = all on), applied only while Inactive and kept in `params/v1`
 (now 6 bytes; a 5-byte record still loads). Protocol **0x05**. `tools/fire_fob` is

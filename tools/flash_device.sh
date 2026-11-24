@@ -289,6 +289,9 @@ new_generation=$((old_generation + 1))
 
 if [ "$dry_run" -eq 1 ] || [ "$build_only" -eq 1 ]; then
   echo "Report generation: $old_generation -> $new_generation (not saved)."
+  if [ "$build_only" -eq 1 ]; then
+    echo "This image carries an unsaved report generation: never flash it by hand (its counter would reuse nonces) - flash with this script."
+  fi
 else
   # Saved before the build, so the image and the file always agree. Every other
   # line is kept byte for byte; the file holds keys, so it stays mode 600.

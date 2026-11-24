@@ -4,6 +4,9 @@
 #
 #   FOB_DEV_ID=<J-Link serial> tools/fire_fob/flash_fob.sh MFS1-1126-00004 MFS1-1126-00006 MFS1-1126-00009
 set -eu
+# A stale FOB_KEYS_DIR export from a compile check (gen_fob_keys.py --fake) must never
+# build a flashable fob with fake keys: this script always uses secrets/.
+unset FOB_KEYS_DIR
 M_HUB_PROBE=1057733814
 cd "$(dirname "$0")"
 [ $# -ge 1 ] || { echo "usage: FOB_DEV_ID=<J-Link> $0 <serial>..." >&2; exit 2; }
