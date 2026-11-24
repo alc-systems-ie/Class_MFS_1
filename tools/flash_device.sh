@@ -9,8 +9,8 @@
 #   tools/flash_device.sh <serial> --dry-run               print every device command instead of running it
 #
 # RULE: secrets never reach west build; never pass a secret with -D. The build
-# gets a derived conf holding only CONFIG_ALC_DEVICE_SERIAL and
-# CONFIG_MFS_DEVICE_ID; the keys go only into a temporary KMU key file
+# gets a derived conf holding only CONFIG_ALC_DEVICE_SERIAL,
+# CONFIG_MFS_DEVICE_ID and CONFIG_MFS_REPORT_GENERATION (bumped by one per real flash); the keys go only into a temporary KMU key file
 # (mktemp, mode 600, removed on exit) and from there into the KMU. CMakeLists.txt
 # fails any build that sets either key, and this script refuses to start one.
 #
@@ -264,10 +264,54 @@ provision_slot="$(slotOf M_PROVISION_SLOT)"
 
 echo "Credentials for $serial: device ID $device_id, keys valid (not shown). KMU slots $secret_slot and $provision_slot."
 
+# ---- 1b. Report generation ---------------------------------------------------
+
+# The generation namespaces the report keys: every flash bumps it, so a device
+# that comes back from a recover never reuses a report ID or nonce of an earlier
+# image. Not secret. Missing is 0; it is unquoted (an int), so confValue's
+# quoted parse does not apply.
+M_GENERATION_SYMBOL=CONFIG_MFS_REPORT_GENERATION
+M_GENERATION_MAX=65535
+
+generation_count="$(grep -c "^$M_GENERATION_SYMBOL=" "$conf" || true)"
+[ "$generation_count" -le 1 ] || die "$conf must set the report generation ($M_GENERATION_SYMBOL) at most once."
+old_generation=0
+if [ "$generation_count" -eq 1 ]; then
+  old_generation="$(sed -n "s/^$M_GENERATION_SYMBOL=\\(.*\\)\$/\\1/p" "$conf")"
+  case "$old_generation" in
+    0) ;;
+    "" | 0* | *[!0-9]*) die "The report generation in $conf must be a plain decimal number (no sign, no leading zeros)." ;;
+  esac
+  [ "${#old_generation}" -le 5 ] || die "The report generation in $conf is above $M_GENERATION_MAX."
+fi
+[ "$old_generation" -lt "$M_GENERATION_MAX" ] || die "The report generation in $conf is $old_generation: the next flash would exceed $M_GENERATION_MAX. Use a new serial."
+new_generation=$((old_generation + 1))
+
+if [ "$dry_run" -eq 1 ] || [ "$build_only" -eq 1 ]; then
+  echo "Report generation: $old_generation -> $new_generation (not saved)."
+else
+  # Saved before the build, so the image and the file always agree. Every other
+  # line is kept byte for byte; the file holds keys, so it stays mode 600.
+  updated="$work/generation.conf"
+  if [ "$generation_count" -eq 1 ]; then
+    sed "s/^$M_GENERATION_SYMBOL=.*\$/$M_GENERATION_SYMBOL=$new_generation/" "$conf" > "$updated" || die "Cannot update the report generation in $conf."
+  else
+    {
+      cat "$conf"
+      if [ -n "$(tail -c 1 "$conf")" ]; then echo; fi
+      echo "$M_GENERATION_SYMBOL=$new_generation"
+    } > "$updated" || die "Cannot update the report generation in $conf."
+  fi
+  chmod 600 "$updated"
+  mv "$updated" "$conf" || die "Cannot save the report generation to $conf."
+  chmod 600 "$conf"
+  echo "Report generation: $old_generation -> $new_generation."
+fi
+
 # ---- 2. Build ------------------------------------------------------------------
 
 derived="$work/identity.conf"
-printf 'CONFIG_ALC_DEVICE_SERIAL="%s"\nCONFIG_MFS_DEVICE_ID="%s"\n' "$serial" "$device_id" > "$derived"
+printf 'CONFIG_ALC_DEVICE_SERIAL="%s"\nCONFIG_MFS_DEVICE_ID="%s"\n%s=%s\n' "$serial" "$device_id" "$M_GENERATION_SYMBOL" "$new_generation" > "$derived"
 chmod 600 "$derived"
 echo "Derived conf: $(sed 's/=.*//' "$derived" | tr '\n' ' ' | sed 's/ $//')"
 
@@ -322,6 +366,7 @@ if [ "$dry_run" -eq 1 ]; then
 else
   grep -qx "CONFIG_ALC_DEVICE_SERIAL=\"$serial\"" "$dotconfig" || die "Built image does not carry serial $serial - not flashing."
   grep -qx "CONFIG_MFS_DEVICE_ID=\"$device_id\"" "$dotconfig" || die "Built image does not carry device ID $device_id - not flashing."
+  grep -qx "$M_GENERATION_SYMBOL=$new_generation" "$dotconfig" || die "Built image does not carry report generation $new_generation - not flashing."
   if [ "$unlocked" -eq 1 ]; then
     grep -qx 'CONFIG_MFS_DEBUG_UNLOCKED=y' "$dotconfig" || die "--unlocked build lacks CONFIG_MFS_DEBUG_UNLOCKED - not flashing."
   else
