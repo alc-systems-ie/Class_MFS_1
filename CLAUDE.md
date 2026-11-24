@@ -37,7 +37,7 @@ left it powered down in the RF path and range was ~5 m — see
 | Sleep architecture | **System ON idle + RTC wake** — *not* nPM2100 Hibernate |
 | Scan | **100 ms passive every 7.245 s** (1.38% RX duty cycle; 5.970 s until 2026-11-14) |
 | ADXL367 | Continuous measurement mode, 100 Hz ODR |
-| nRF21540 FEM | **Fitted, driven by MPSL in GPIO-only mode** — LNA on for every scan (no bypass mode), POUTB +10 dBm on TX via the MODE pin. **Never GPIO+SPI** (transmitted ~40 dB low, 2026-11-16) |
+| nRF21540 FEM | **Fitted, driven by MPSL in GPIO-only mode** — LNA on for every scan (no bypass mode), POUTB +10 dBm on TX via the MODE pin, **except the fired event report at +20 dBm (POUTA)**, owner 2026-11-24. **Never GPIO+SPI** (transmitted ~40 dB low, 2026-11-16) |
 | Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; explicit command type; protocol version **0x05** since 2026-11-24 (event reports; 0x04 was FIRE, 0x03 the command types) |
 | Day boundary | **04:00 UTC**, no multi-day validity window |
 | Timekeeping | **LFXO** 32.768 kHz (fitted), GRTC-sourced. **No external RTC** (BOM, reaffirmed 2026-09-13). Invalid on every boot until provisioner sync |
@@ -239,14 +239,18 @@ Constraints from that analysis that are easy to violate by accident:
   The LNA costs 2.9 mA × 1.675% = **+48.6 µA**, taking life from 2.4 to ~1.4
   years. Never remove the `nrf_radio_fem` node or `CONFIG_MPSL_FEM` to save
   power — making the LNA an app-set option is the sanctioned route
-  (`docs/todo.md`). **POUTB (+10 dB) only** on transmit, for Irish EIRP
-  compliance.
+  (`docs/todo.md`). **POUTB (+10 dB) on every transmission except the
+  fired event report**, for Irish EIRP compliance. The fired report goes at
+  **+20 dBm (POUTA)** (owner 2026-11-24, `docs/superpowers/specs/2026-11-24-fire-report-power-design.md`) — at the ETSI EN 300 328 100 mW
+  EIRP limit before antenna gain, which the owner accepted for this case.
 - **The nRF21540 runs in MPSL's GPIO-only mode, never GPIO+SPI** (2026-11-16,
   `docs/power-budget.md` §5.1). In GPIO+SPI mode MPSL wrote TX_GAIN 6–8 before
   every transmission, so every MFS and the Drawer Master transmitted ~40 dB low
   (−81…−85 dBm at 20 cm on a phone against −40 dBm fixed, −50 dBm for a bare DK
   at +8 dBm) while receive worked — the hub never heard 00007 from the shed. In
-  GPIO-only mode MPSL holds MODE high, selecting the factory POUTB preset. Do not
+  GPIO-only mode MPSL drives MODE per transmission (runtime PA gain control,
+  `CONFIG_MPSL_FEM_NRF21540_RUNTIME_PA_GAIN_CONTROL`): POUTB, the factory preset, by default
+  and POUTA for the fired report. Still never SPI. Do not
   restore `spi-if` or `CONFIG_MPSL_FEM_NRF21540_GPIO_SPI` without an RSSI check
   against a bare-DK reference (`../link_beacon`).
 - **The counterpart's advertising interval is not ours to set.** Measured
@@ -379,7 +383,10 @@ window cancel the fire — the device is then noted as fired only if the output 
 asserted, so a cancelled fire is followed by *deactivated*. A report that cannot be built never delays a fire (`Fire report not sent
 (%d) - firing anyway!`). Settings byte 6 bits 0–3 **suppress** low battery / activated /
 deactivated / fired (zero = all on), applied only while Inactive and kept in `params/v1`
-(now 6 bytes; a 5-byte record still loads). Protocol **0x05**. `tools/fire_fob` is
+(now 6 bytes; a 5-byte record still loads). Protocol **0x05**. **The fired report goes out at +20 dBm (POUTA); every other report stays at +10 dBm**
+(`ReportPolicy::TxPowerDbm()`; `CommandAdvertiser::Burst()` sets it with the vendor HCI power command around
+`bt_le_adv_start()`; a failure logs `Report advert power not set (%d) - previous power.` and never delays a fire;
+owner 2026-11-24, `docs/superpowers/specs/2026-11-24-fire-report-power-design.md`). `tools/fire_fob` is
 fire-and-forget: its green LED means sent, not received (the `FOB_KEYS_DIR`
 environment variable with `gen_fob_keys.py --fake --out` compile-checks it without real keys).
 

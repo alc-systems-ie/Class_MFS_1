@@ -42,6 +42,7 @@ them.
 | nRF21540 RX (LNA active), 13 dB gain, NF 2.7 dB | 2.9 mA typ @ 3 V | nRF21540 Product Specification, I<sub>RX</sub> (corrected 2026-11-12; was quoted as ~5 mA) |
 | nRF21540 power down (PDN low) | 45 nA typ | nRF21540 PS, I<sub>PD</sub> (was quoted as ~0.4 µA standby) |
 | nRF21540 TX at +10 dBm (POUTB) | 38 mA typ | nRF21540 PS, I<sub>TX_10dBm</sub> |
+| nRF21540 TX at +20 dBm (POUTA) | ~110 mA typ | nRF21540 PS, I<sub>TX_20dBm</sub> (to confirm) |
 | nRF54L05 max TX power (QFN) | +7 dBm | nRF54L05 product page |
 | nRF54L05 RX sensitivity, LE 1M | −96 dBm | nRF54L05 product page |
 
@@ -325,6 +326,7 @@ window. Making this an app-set option is tracked in `docs/todo.md`.
 | Power down | 45 nA | ~98% | 0.04 µA |
 | PG (transition) | 1.1 mA | µs per scan | negligible |
 | TX, +10 dBm (POUTB) | 38 mA | event reports only (below) | negligible |
+| TX, +20 dBm (POUTA) | ~110 mA typ, nRF21540 PS (to confirm) | the fired report only: one 100 ms burst per device life | negligible |
 
 **+48.6 µA: 68.8 µA → 117.4 µA, 2.4 years → ~1.4 years** on the 1450 mAh
 CR123A. Continuous-scan periods (the 10 s arming exit delay, a pending armed
@@ -335,10 +337,14 @@ The earlier version of this section put the LNA at ~5 mA and +83.8 µA. The
 Product Specification gives 2.9 mA typical, so the real cost is about 42% lower
 than feared — though still the largest single change this budget has seen.
 
-**Transmit.** POUTB (+10 dB) only, per the Irish EIRP allocation: the controller
-splits the requested +10 dBm at the antenna (`CONFIG_BT_CTLR_TX_PWR_ANTENNA=10`)
-into 0 dBm from the SoC plus 10 dB from the FEM. POUTA (+20 dB) is for bench
-tools only.
+**Transmit.** POUTB (+10 dB) for every transmission except the fired event report, per
+the Irish EIRP allocation: the controller splits the requested +10 dBm at the antenna
+(`CONFIG_BT_CTLR_TX_PWR_ANTENNA=10`) into 0 dBm from the SoC plus 10 dB from the FEM.
+**The fired report alone goes at +20 dBm (POUTA)** (owner 2026-11-24,
+`docs/superpowers/specs/2026-11-24-fire-report-power-design.md`): at the ETSI EN 300 328 100 mW EIRP limit before antenna gain, which the owner
+accepted for this case. MPSL picks the preset per transmission (runtime PA gain
+control, GPIO-only mode, never SPI). POUTA draws ~110 mA typ (nRF21540 PS, to confirm),
+but it is one ~4 ms-on-air, 100 ms burst once per device life, so the budget does not move.
 
 **Event reports and the 6 h battery read — negligible (2026-11-24,
 `docs/superpowers/specs/2026-11-24-event-reports-design.md` §5.3–§5.4).** The device's
@@ -377,7 +383,7 @@ chip's factory POUTA preset is 27 (+20 dB). Receive never depends on that
 register, which is why commands were heard.
 
 **Fix.** `CONFIG_MPSL_FEM_NRF21540_GPIO` (no `spi-if` in the FEM node): MPSL
-holds MODE high, selecting the factory-calibrated POUTB preset (+10 dB), and never
+drives MODE for the factory-calibrated POUTB preset (+10 dB; POUTA for the fired report since 2026-11-24), and never
 writes SPI. Measured **−40 dBm** at 20 cm (Drawer Master). The unused SPI pins are
 GPIO-hogged (CSN high, SCK/MOSI low) as the nRF21540 datasheet requires. Side
 effect: no power model, so no temperature wake every 5 s (§2's small spikes) — a
