@@ -49,8 +49,8 @@ namespace alc
        *             would recognise, unreversed.
        * @param nowMs Current uptime, ms (`k_uptime_get()`).
        * @param durationMs How long to advertise before Service() stops it.
-       * @param txPowerDbm Requested power at the antenna, dBm (`ReportPolicy::TxPowerDbm()`). Set on every burst, after the advert
-       *                   starts, so a fired burst at +20 dBm never leaves the next one at +20. A failure to set it is logged and the
+       * @param txPowerDbm Requested power at the antenna, dBm (`ReportPolicy::TxPowerDbm()`). Each burst sets its own power, before and
+       *                   after the advert starts. A failure to set it is logged and the
        *                   burst goes out at the controller's current power; it never changes the result.
        * @return 0 if the advert started; the bt_le_adv_start() error otherwise.
        */

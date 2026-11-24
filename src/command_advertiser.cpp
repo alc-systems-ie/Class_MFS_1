@@ -35,7 +35,7 @@ namespace alc
 
     buffer = bt_hci_cmd_alloc(K_NO_WAIT);
     if (buffer == nullptr) {
-      LOG_WRN("Report advert power not set (%d) - default power.", -ENOMEM);
+      LOG_WRN("Report advert power not set (%d) - previous power.", -ENOMEM);
       return;
     }
 
@@ -46,7 +46,7 @@ namespace alc
 
     result = bt_hci_cmd_send_sync(BT_HCI_OP_VS_WRITE_TX_POWER_LEVEL, buffer, &reply);
     if (result < 0) {
-      LOG_WRN("Report advert power not set (%d) - default power.", result);
+      LOG_WRN("Report advert power not set (%d) - previous power.", result);
       return;
     }
 
@@ -67,6 +67,10 @@ namespace alc
     // leaves two adverts contending for the radio - bt_le_adv_start() would
     // otherwise simply fail with -EALREADY.
     if (m_advertising) { bt_le_adv_stop(); }
+
+    // Power is set both before and after the start: the SDC ignores the handle for legacy advertising, so the first call targets the single
+    // legacy advertiser, and the second covers a controller that resets power on LE Set Advertising Parameters. Neither changes the result.
+    setTxPower(txPowerDbm);
 
     // Non-connectable, non-scannable, no identity (BT_LE_ADV_OPT_NONE).
     result = bt_le_adv_start(BT_LE_ADV_PARAM(BT_LE_ADV_OPT_NONE, M_REPORT_ADV_INTERVAL_UNITS, M_REPORT_ADV_INTERVAL_UNITS, nullptr), ad,

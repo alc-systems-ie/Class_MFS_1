@@ -19,10 +19,11 @@ first end-to-end relay (00008, motion fire, 40 cm from the hub) arrived at −53
   `CONFIG_BT_CTLR_TX_PWR_DYNAMIC_CONTROL=y` (per-advert-set power via the vendor HCI command
   `BT_HCI_OP_VS_WRITE_TX_POWER_LEVEL`, handle type ADV, handle 0 — as in Zephyr's `hci_pwr_ctrl`
   sample). `CONFIG_BT_CTLR_TX_PWR_ANTENNA=10` stays the default.
-- **Every burst sets its power explicitly** after `bt_le_adv_start()` (+20 for fired, +10 otherwise), so
-  a fired burst can never leave the next burst at +20.
+- **Each burst sets its own power, before and after `bt_le_adv_start()`** (+20 for fired, +10 otherwise):
+  the SDC ignores the handle for legacy advertising, so the first call targets the single legacy advertiser
+  and the second covers a controller that resets power on LE Set Advertising Parameters.
 - **A power-setting failure never blocks or delays a fire**: it is logged (`LOG_WRN`) and the burst goes
-  out at whatever power the controller has (the default +10 dBm).
+  out at whatever power the controller has (the previous power).
 - Which event gets which power is pure, host-tested logic beside `ReportPolicy::Enabled()`.
 
 ## Approaches considered
