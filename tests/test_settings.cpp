@@ -46,5 +46,16 @@ void run_settings_tests()
   assert(settings.DelaySeconds() == 32400);
   assert(!settings.ApplyFrom(command, true));
 
+  // The four report switches: default all on, a change alone is detected.
+  {
+    Settings fresh;
+    protocol::Command suppress;
+    assert(fresh.ReportSuppress() == 0);
+    suppress.reportSuppress = 0x06;
+    assert(fresh.ApplyFrom(suppress, false));
+    assert(fresh.ReportSuppress() == 0x06);
+    assert(!fresh.ApplyFrom(suppress, false));
+  }
+
   printf("settings: OK\n");
 }

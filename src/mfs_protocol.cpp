@@ -20,6 +20,10 @@ namespace alc::protocol
     decoded.sensitivityByte = plaintext[M_PT_SENSITIVITY];
     decoded.minuteOfDay     = minuteField & M_MINUTE_MASK;
 
+    // Byte 6 carries the report switches in a Settings command only. Arm and
+    // Disarm carry no settings, so whatever sits there is not examined.
+    if (decoded.type == CommandType::Settings) { decoded.reportSuppress = plaintext[M_PT_REPORTS] & M_REPORT_SUPPRESS_MASK; }
+
     // Type 00 is reserved. It rejects UNLESS it carries the FIRE "OMG" magic in
     // bytes 0, 2, 3 with byte 1 held at 0x00 - see the FIRE command amendment
     // section 2. A type-00 payload without the magic still rejects exactly as
@@ -29,8 +33,8 @@ namespace alc::protocol
                              plaintext[M_PT_COOLDOWN] == M_FIRE_MAGIC_2 && plaintext[M_PT_SENSITIVITY] == M_FIRE_MAGIC_3;
       if (!fireMagic) { return false; }
 
-      // Bytes 6-7 are per-variant extension space and are never validated,
-      // even for FIRE.
+      // Bytes 6-7 are never validated, even for FIRE, and FIRE carries no
+      // report switches.
       if (decoded.minuteOfDay >= M_MINUTES_PER_DAY) { return false; }
 
       out             = Command {};
@@ -49,7 +53,7 @@ namespace alc::protocol
     // minute is a bug in the sender, and the freshness check cannot judge it.
     if (decoded.minuteOfDay >= M_MINUTES_PER_DAY) { return false; }
 
-    // Plaintext bytes 6-7, byte 0 bit 0 and minute bits 11-15 are deliberately
+    // Byte 6 bits 4-7, byte 7, byte 0 bit 0 and minute bits 11-15 are deliberately
     // not examined. They belong to other MFS variants and MFS_1 must tolerate
     // whatever they hold.
 
@@ -83,7 +87,7 @@ namespace alc::protocol
     plaintext[M_PT_SENSITIVITY] = command.sensitivityByte;
     plaintext[M_PT_MINUTE]      = static_cast<uint8_t>(minuteField & 0xFF);
     plaintext[M_PT_MINUTE + 1]  = static_cast<uint8_t>(minuteField >> 8);
-    plaintext[6]                = 0;
+    plaintext[M_PT_REPORTS]     = static_cast<uint8_t>(command.type == CommandType::Settings ? (command.reportSuppress & M_REPORT_SUPPRESS_MASK) : 0);
     plaintext[7]                = 0;
   }
 
