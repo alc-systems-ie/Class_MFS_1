@@ -293,15 +293,22 @@ else
   # Saved before the build, so the image and the file always agree. Every other
   # line is kept byte for byte; the file holds keys, so it stays mode 600.
   updated="$work/generation.conf"
+  original_rest="$work/generation.original"
+  updated_rest="$work/generation.updated"
+  cp "$conf" "$updated" || die "Cannot copy $conf to update the report generation."
   if [ "$generation_count" -eq 1 ]; then
     sed "s/^$M_GENERATION_SYMBOL=.*\$/$M_GENERATION_SYMBOL=$new_generation/" "$conf" > "$updated" || die "Cannot update the report generation in $conf."
   else
-    {
-      cat "$conf"
-      if [ -n "$(tail -c 1 "$conf")" ]; then echo; fi
-      echo "$M_GENERATION_SYMBOL=$new_generation"
-    } > "$updated" || die "Cannot update the report generation in $conf."
+    if [ -n "$(tail -c 1 "$conf")" ]; then echo >> "$updated" || die "Cannot update the report generation in $conf."; fi
+    echo "$M_GENERATION_SYMBOL=$new_generation" >> "$updated" || die "Cannot update the report generation in $conf."
   fi
+  # Verify before replacing the key-bearing conf: every other line identical and
+  # in order, and exactly one generation line with the new value.
+  grep -v "^$M_GENERATION_SYMBOL=" "$conf" > "$original_rest" || [ $? -eq 1 ] || die "Cannot verify the updated conf."
+  grep -v "^$M_GENERATION_SYMBOL=" "$updated" > "$updated_rest" || [ $? -eq 1 ] || die "Cannot verify the updated conf."
+  cmp -s "$original_rest" "$updated_rest" || die "Updated conf differs from $conf beyond the report generation - not saving."
+  [ "$(grep -c "^$M_GENERATION_SYMBOL=" "$updated" || true)" -eq 1 ] || die "Updated conf does not hold exactly one report generation - not saving."
+  grep -qx "$M_GENERATION_SYMBOL=$new_generation" "$updated" || die "Updated conf lacks report generation $new_generation - not saving."
   chmod 600 "$updated"
   mv "$updated" "$conf" || die "Cannot save the report generation to $conf."
   chmod 600 "$conf"
