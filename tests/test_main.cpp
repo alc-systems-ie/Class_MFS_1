@@ -13,6 +13,7 @@ void run_credentials_tests();
 void run_arm_policy_tests();
 void run_arming_sequence_tests();
 void run_fire_sequence_tests();
+void run_fire_gate_tests();
 void run_detection_engine_tests();
 void run_scan_policy_tests();
 void run_key_ref_tests();
@@ -36,6 +37,7 @@ int main()
   run_arm_policy_tests();
   run_arming_sequence_tests();
   run_fire_sequence_tests();
+  run_fire_gate_tests();
   run_detection_engine_tests();
   run_scan_policy_tests();
   run_key_ref_tests();
