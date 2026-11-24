@@ -14,7 +14,7 @@ namespace alc::key_check
   /**
    * @brief The check message: ASCII "MFS-KCV" followed by domain byte 0x07.
    *
-   * 0x07 is distinct from every protocol label (0x02-0x06, docs/tan-scheme.md
+   * 0x07 is distinct from every protocol label (0x02-0x05 and 0x08-0x0A, docs/tan-scheme.md
    * section 3 and the FIRE amendment), so a check MAC is never a protocol MAC.
    */
   constexpr uint8_t M_CHECK_MESSAGE[] { 'M', 'F', 'S', '-', 'K', 'C', 'V', 0x07 };

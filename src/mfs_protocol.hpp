@@ -29,7 +29,9 @@ namespace alc::protocol
   // 0x04 since 2026-09-15: FIRE recognition (docs/superpowers/specs/2026-09-15-
   // fire-command-amendment.md section 2). A 0x03 payload fails authentication
   // rather than being reinterpreted as FIRE.
-  constexpr uint8_t M_PROTOCOL_VERSION { 0x04 };
+  // 0x05 since 2026-11-24: event reports (docs/superpowers/specs/2026-11-24-event-reports-
+  // design.md); the FIRE confirmId burst is retired. A 0x04 command fails authentication.
+  constexpr uint8_t M_PROTOCOL_VERSION { 0x05 };
 
   // Plaintext layout, after decryption.
   constexpr uint8_t M_PT_ARM_DELAY { 0 };        // bit 0 reserved (was arm), bits 1-7 delay code
