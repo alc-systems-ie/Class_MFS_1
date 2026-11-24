@@ -873,6 +873,7 @@ namespace alc
     // condition - including the disarm path's re-derivation - only resets the
     // gate and never sends anything.
     bool firePermitted { m_fire_gate.Update(fireCondition, k_uptime_get()) };
+    bool wasAsserted { m_output_active };
 
     if (m_fire_gate.TakeAnnounceDue()) {
       report::ReportEvent cause { m_fire.FireLatched() ? report::ReportEvent::FiredFromCommand : report::ReportEvent::FiredFromMotion };
@@ -884,7 +885,6 @@ namespace alc
         m_fire_gate.Skip();
         if (reportResult != -EPERM) { LOG_ERR("Fire report not sent (%d) - firing anyway!", reportResult); }
       }
-      m_report_policy.NoteFired();
 
       // The supply settle (blocking, as before) overlaps the burst, so where the
       // supply still has to rise the report adds nothing.
@@ -893,6 +893,12 @@ namespace alc
     }
 
     m_output_active = fireCondition && firePermitted;
+
+    // The device FIRED only once the output actually asserts. Noted then, not at
+    // the announce: a fire cancelled inside the announce window was reported as
+    // fired but never asserted, so the ordinary Deactivated report follows as the
+    // device leaves Active. Still before the main loop's ServiceArmState().
+    if (m_output_active && !wasAsserted) { m_report_policy.NoteFired(); }
 
     // The fire output is driven HERE, in the same breath as the condition is
     // derived, rather than from the main loop. A consumer that lives at the
@@ -1882,12 +1888,14 @@ namespace alc
         // asserts for one detection hold period before self-terminating. A live
         // fire reaches the pins through updateOutputState(), which sends the
         // fired report and asserts FireGate::M_ANNOUNCE_MS later; a Disarm or a
-        // fault before then cancels it. A rehearsal never touches the pins or the
-        // supply, and sends nothing. No overlay.
+        // fault before then cancels it. The supply is NOT raised here: the
+        // announce in updateOutputState(), later this same tick, starts the burst
+        // and then raises it, so the 100 ms settle overlaps the burst and FIRE
+        // asserts ~100 ms after receipt (design section 5.3). A rehearsal never
+        // touches the pins or the supply, and sends nothing. No overlay.
         bool live { m_arming.State() == ArmState::Active };
 
         m_fire.Start(live, k_uptime_get(), DetectionEngine::M_DELAYED_TRIGGER_HOLD_MS);
-        if (live) { prepareFireSupply(); }
         LOG_WRN("FIRE received from slot %u n %u - %s.", evaluation.slot, evaluation.n, live ? "LIVE" : "rehearsal");
 
         // Return, not break: FIRE applied no settings, so the shared "Applied:"
