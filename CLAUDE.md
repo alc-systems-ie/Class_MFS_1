@@ -38,7 +38,7 @@ left it powered down in the RF path and range was ~5 m — see
 | Scan | **100 ms passive every 7.245 s** (1.38% RX duty cycle; 5.970 s until 2026-11-14) |
 | ADXL367 | Continuous measurement mode, 100 Hz ODR |
 | nRF21540 FEM | **Fitted, driven by MPSL in GPIO-only mode** — LNA on for every scan (no bypass mode), POUTB +10 dBm on TX via the MODE pin. **Never GPIO+SPI** (transmitted ~40 dB low, 2026-11-16) |
-| Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version 0x03 with an explicit command type |
+| Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version **0x05** (explicit command type 0x03, FIRE 0x04, event reports 0x05) |
 | Day boundary | **04:00 UTC**, no multi-day validity window |
 | Timekeeping | **LFXO** 32.768 kHz (fitted), GRTC-sourced. **No external RTC** (BOM, reaffirmed 2026-09-13). Invalid on every boot until provisioner sync |
 | Battery | CR123A, **~1.4 year** expected life at ~117 µA average (69 µA + 49 µA FEM LNA) |
@@ -85,8 +85,9 @@ gate drive is VOUT. At ~3.0 V (the board's VSET level) they are only partly on
 5 V and 10 V) and the e-match fired late or not at all; at 3.3 V with high-drive
 pins it fires. **The boost is raised to 3.3 V only when a fire is pending**
 (`docs/superpowers/specs/2026-11-14-fire-supply-on-demand-amendment.md`, owner
-2026-11-14 — holding it raised while armed cost ~40 µA, measured): at a live
-FIRE's acceptance, at an armed trigger delay's start, and otherwise just before
+2026-11-14 — holding it raised while armed cost ~40 µA, measured): for a live
+FIRE, under its fired report's burst in the tick that accepts it (event reports,
+below), at an armed trigger delay's start, and otherwise just before
 the output asserts (raise → 100 ms → assert; `App::prepareFireSupply()`, the
 backstop in `updateOutputState()`). If it cannot be verified then, the device
 **fires anyway** and logs it (owner). Arming keeps a **battery test**
@@ -115,7 +116,8 @@ for 10 ms (`M_FIRE_STAGGER_MS`); a failed FIRE_1 write never reaches FIRE_2.
 sync, ADXL367 waking the SoC via INT1, an Active/Inactive arm state defaulting to
 Inactive, engineer commands, and the LEDs. **No BLE connection at all in v1** — a
 command is one 16-byte encrypted service UUID, so there is no GATT, no central role
-and no transmission. Everything else from Drawer Master is deferred.
+and no reply. The one transmission is the armed device's one-way **event reports**
+(below). Everything else from Drawer Master is deferred.
 
 **ADXL367 INT2 → SHPHLD hazard — removed in hardware** (`docs/v1-scope.md` §2).
 Drawer Master routed INT2 → nPM2100 SHPHLD, where a 5 s assertion then release is
@@ -190,11 +192,10 @@ firing while deactivated is dangerous.
   never fires an armed delay whose scanner was lost or is down at expiry
   (`DelayExpiredScanLostSuppressed`). This supersedes the 2026-09-13 "prioritise
   fire" ruling.
-  **FIRE's 10 s countdown is the one deliberate exception** (owner decision
-  2026-09-15): once accepted while Active, it is unstoppable by a Disarm (refused
-  and logged) and by a scanner loss during it. Only a fire-path hardware fault
-  aborts it, isolating the pins and disarming as any other fault would
-  (`docs/superpowers/specs/2026-09-15-fire-command-amendment.md` §4).
+  **There is no exception any more** (2026-11-24): FIRE's 10 s countdown and its
+  Disarm/scanner-loss carve-out are gone (event reports design §5.2). Every path
+  to Inactive (`RestartDetection(false)`) cancels a live FIRE window, so a FIRE
+  cut short by a Disarm or a fail-safe can never re-assert on a quick re-arm.
 
 Related: **arming is edge-triggered** (§1.0.1). AWAKE is a level, not a latch, so a
 naive `armed && triggered` fires the instant the device is armed on motion that
@@ -343,14 +344,42 @@ next 04:00 UTC only — `docs/power-budget.md` §8.1):
   **slow flash**, latched until the next accepted command, after the 3 s warning.
 - **The device never advertises to solicit contact.** It scans. Report modes are
   documented exceptions (design spec §4.3). Advertising forfeits covertness.
-  **FIRE's confirmId burst is a further, bounded exception**: an authenticated,
-  random-looking UUID sent once on receipt of a FIRE (armed or rehearsal), never
-  on detonation, indistinguishable from noise to anyone without the day key
-  (`docs/superpowers/specs/2026-09-15-fire-command-amendment.md` §3).
+  **Event reports are the one production exception, and they are switchable**
+  (below): one-way, sent only while armed, a random-looking UUID under a per-device
+  report key with no fixed identifier on air, never acknowledged. The FIRE receipt
+  confirmation (`confirmId`, label 0x06) is retired, and 0x06 is never reused.
 - **A corrupt `access/v1` record refuses commands every boot** (`access_store.cpp`
   logs "Stored access state is invalid"). There is no in-field recovery — the fix
   is a wired erase of the settings partition followed by re-provisioning, never an
   attempt to parse around the corruption.
+
+**Event reports** (`docs/superpowers/specs/2026-11-24-event-reports-design.md`,
+owner 2026-11-24): the device tells the Network Manager, through the hub, that it was
+**activated** (on reaching Active, not on the Arm), **deactivated** (on leaving Active
+for Inactive — Disarm or fail-safe — never after a fire), **fired from command / from
+motion**, or is on **low battery** (below 2.7 V, once, re-armed at ≥ 2.8 V or boot;
+V<sub>BAT</sub> read at boot, after each arming battery test and every 6 h). **A
+disarmed device — Inactive or Arming — sends nothing**; a FIRE rehearsal sends nothing.
+Each report is one 16-byte service UUID, `reportId(4) ‖ ciphertext(8) ‖ tag(4)`, sent as a
+100 ms burst at 20 ms; the hub relays it unread. Keys: labels **0x08–0x0A** under the
+KMU `deviceSecret` (`docs/tan-scheme.md` §3), per device and **report generation**
+`CONFIG_MFS_REPORT_GENERATION`, with a never-reused counter reserved in blocks of 16 in
+`report/v1`. `tools/flash_device.sh` **bumps the generation** in `secrets/<serial>.conf`
+before the build on every real flash (the file is verified before it is replaced;
+`--build` and `--dry-run` print "(not saved)"), because a flash erases the counter.
+**Generation 0 — a plain `west build` — disables reports** (`Report generation 0` at
+boot). The fired report is sent from inside `updateOutputState()` on the condition's
+rising edge (`FireGate`), and the output asserts **100 ms later**, on a later tick, not
+by blocking: a live FIRE raises its supply under the burst and asserts ~100 ms after
+receipt; a delayed motion trigger whose supply is already up asserts on the next tick.
+A Disarm or a fault inside that window cancels the fire — the device is then noted as
+fired only if the output actually asserted, so a cancelled fire is followed by
+*deactivated*. A report that cannot be built never delays a fire (`Fire report not sent
+(%d) - firing anyway!`). Settings byte 6 bits 0–3 **suppress** low battery / activated /
+deactivated / fired (zero = all on), applied only while Inactive and kept in `params/v1`
+(now 6 bytes; a 5-byte record still loads). Protocol **0x05**. `tools/fire_fob` is
+fire-and-forget: its green LED means sent, not received (the `FOB_KEYS_DIR`
+environment variable with `gen_fob_keys.py --fake --out` compile-checks it without real keys).
 
 Hardware and end-to-end verification this workspace's agents are barred from
 running (no flashing, no J-Link, no RTT) is tracked as a single ordered checklist:
@@ -445,7 +474,8 @@ tools/flash_device.sh <serial> [--unlocked] [--extra-conf <file>] [--build] [--d
 
 It loads `secrets/<serial>.conf` (gitignored, from `tools/gen_fleet_credentials.py`,
 with the spreadsheet `secrets/MFS1-1126-credentials.xlsx`), refuses all-zero or equal
-keys, builds with a derived conf holding only the serial and device ID, checks the
+keys, bumps the report generation in the conf (event reports, above), builds with a
+derived conf holding only the serial, device ID and generation, checks the
 image carries that serial and neither key, then runs **one nrfutil batch — recover →
 program (`ERASE_NONE`) → provision the KMU → lock the debug port → pin reset** — with a
 single `x-execute-batch` on J-Link 853003346 (`MFS_DEV_ID` overrides), and finally checks
