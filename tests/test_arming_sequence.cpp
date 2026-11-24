@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "arming_sequence.hpp"
+#include "fire_sequence.hpp"
 
 // Host tests for ArmingSequence. Clause references are to
 // docs/superpowers/specs/2026-09-14-arming-sequence-amendment.md.
@@ -62,6 +63,8 @@ namespace
       int RestartDetection(bool armed) override
       {
         record(armed ? Call::RestartArmed : Call::RestartDisarmed);
+        // Mirrors App::RestartDetection(): every path to Inactive cancels a FIRE window.
+        if (!armed && fire != nullptr) { fire->Cancel(); }
         // Section 3: the engine's armed session never runs while the state is Active.
         if (sequence != nullptr) { assert(sequence->State() != ArmState::Active); }
         if (armed && loseScannerInsideRestartArmed) {
@@ -143,6 +146,7 @@ namespace
       }
 
       ArmingSequence* sequence { nullptr };
+      FireSequence* fire { nullptr };
       bool disarmInsideRestartArmed { false };
       bool disarmInsideEnable { false };
       bool rearmAfterNestedDisarm { false };
@@ -1112,6 +1116,44 @@ namespace
     printf("arming sequence: scanner loss lowers the fire supply: OK\n");
   }
 
+  // 33. A scanner loss during a live FIRE window cancels it: re-armed while the
+  // window would still be open, the device reaches Active with no fire latched.
+  // The window is set longer than the exit delay so only the cancel prevents it.
+  void testScannerLossCancelsLiveFire()
+  {
+    constexpr int64_t M_LONG_FIRE_WINDOW_MS { M_ARMING_DELAY_MS * 3 };
+    constexpr int64_t M_REARM_AFTER_MS { 100 };
+    constexpr bool M_LIVE { true };
+    Fixture fixture;
+    FireSequence fire;
+    int64_t nowMs { M_START_MS };
+
+    fixture.actions.fire = &fire;
+    armFully(fixture, nowMs);
+    nowMs += M_ARMING_DELAY_MS;
+
+    fire.Start(M_LIVE, nowMs, M_LONG_FIRE_WINDOW_MS);
+    assert(fire.FireLatched());
+
+    // Scanner lost: the fail-safe disarms through RestartDetection(false).
+    fixture.actions.scannerRunning = false;
+    assert(fixture.sequence.ServiceScannerHealth());
+    assert(fixture.sequence.State() == ArmState::Inactive);
+    assert(!fire.FireLatched());
+
+    // Scanner back, re-armed at once; Active well inside the old window.
+    fixture.actions.scannerRunning = true;
+    nowMs += M_REARM_AFTER_MS;
+    armFully(fixture, nowMs);
+    nowMs += M_ARMING_DELAY_MS;
+    fire.Service(nowMs, false);
+    assert(nowMs < M_START_MS + M_ARMING_DELAY_MS + M_LONG_FIRE_WINDOW_MS);
+    assert(fixture.sequence.State() == ArmState::Active);
+    assert(!fire.FireLatched());
+
+    printf("arming sequence: scanner loss cancels a live FIRE window: OK\n");
+  }
+
 }
 
 void run_arming_sequence_tests()
@@ -1148,5 +1190,6 @@ void run_arming_sequence_tests()
   testDisarmLowersFireSupply();
   testDisarmInsideEnableLowersSupplyLast();
   testScannerLossLowersFireSupply();
+  testScannerLossCancelsLiveFire();
   printf("arming sequence: OK\n");
 }

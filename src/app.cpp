@@ -942,11 +942,9 @@ namespace alc
     //  state is deliberately not persisted, so a reset loses a pending
     //  trigger too - the fail-safe direction.
     // ================================================================
+    // A Disarm always acts: a live FIRE window (or a rehearsal) is cancelled by
+    // RestartDetection(false) inside Disarm(), as on every path to Inactive.
     bool cancelled { m_arming.Disarm() };
-
-    // A Disarm always acts: a live FIRE window (or a rehearsal) ends here. The
-    // state is already Inactive, so the output could not assert anyway.
-    m_fire.Cancel();
 
     logArmingFailure(FailureSource::Sequence);
 
@@ -1053,6 +1051,14 @@ namespace alc
     int result { 0 };
 
     if (!armed) {
+      // EVERY PATH TO INACTIVE CANCELS A FIRE. ArmingSequence reaches Inactive
+      // only through its fail-safe, which always lands here - a Disarm command,
+      // the trigger latch, a switch fault, a scanner loss, a failed arming. A
+      // live FIRE window left open past a fail-safe would otherwise re-assert
+      // the output if the device were re-armed before the window ended. Pure:
+      // never calls back into m_arming.
+      m_fire.Cancel();
+
       // Disarm order step 3. The state is already Inactive, so the output
       // re-derives false without an engine tick - no edge counted, no cooldown
       // started - and Set(false) on the disabled switch does nothing.
