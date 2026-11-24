@@ -22,6 +22,14 @@ namespace alc
       static constexpr uint16_t M_LOW_BATTERY_MV { 2700 };
       static constexpr uint16_t M_BATTERY_RECOVERED_MV { 2800 };
 
+      // Requested power at the antenna. 0 dBm from the SoC plus the nRF21540's POUTB (+10 dB) is the default; a fired report asks for +20 dBm,
+      // which MPSL serves with POUTA (owner 2026-11-24).
+      static constexpr int8_t M_TX_POWER_DBM { 10 };
+      static constexpr int8_t M_FIRED_TX_POWER_DBM { 20 };
+
+      /** Requested antenna power for this event's report burst, in dBm: +20 for a fired report, +10 for every other. */
+      static int8_t TxPowerDbm(report::ReportEvent event);
+
       /** True if the suppress mask (settings byte 6, bits 0-3) leaves this event on. */
       static bool Enabled(report::ReportEvent event, uint8_t suppressMask);
 

@@ -1580,7 +1580,7 @@ namespace alc
       return result;
     }
 
-    result = m_advertiser.Burst(onAir, k_uptime_get(), M_REPORT_BURST_MS);
+    result = m_advertiser.Burst(onAir, k_uptime_get(), M_REPORT_BURST_MS, ReportPolicy::TxPowerDbm(event));
     if (result < 0) { return result; }
 
     LOG_INF("Report %s sent (r %u).", reportEventName(event), counter);
