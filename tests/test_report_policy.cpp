@@ -11,6 +11,16 @@ void run_report_policy_tests()
   using alc::ReportPolicy;
   using alc::report::ReportEvent;
 
+  // Fired reports go out at +20 dBm (POUTA); every other report stays at +10 dBm (POUTB).
+  {
+    assert(ReportPolicy::TxPowerDbm(ReportEvent::FiredFromCommand) == 20);
+    assert(ReportPolicy::TxPowerDbm(ReportEvent::FiredFromMotion) == 20);
+    assert(ReportPolicy::TxPowerDbm(ReportEvent::FiredFromSound) == 20);
+    assert(ReportPolicy::TxPowerDbm(ReportEvent::LowBattery) == 10);
+    assert(ReportPolicy::TxPowerDbm(ReportEvent::Activated) == 10);
+    assert(ReportPolicy::TxPowerDbm(ReportEvent::Deactivated) == 10);
+  }
+
   // The first call establishes the state: boot is not a transition.
   {
     ReportPolicy policy {};

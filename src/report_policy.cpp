@@ -28,6 +28,21 @@ namespace alc
     return (suppressMask & bit) == 0;
   }
 
+  int8_t ReportPolicy::TxPowerDbm(report::ReportEvent event)
+  {
+    switch (event) {
+      case report::ReportEvent::FiredFromCommand:
+      case report::ReportEvent::FiredFromMotion:
+      case report::ReportEvent::FiredFromSound:
+        return M_FIRED_TX_POWER_DBM;
+      case report::ReportEvent::LowBattery:
+      case report::ReportEvent::Activated:
+      case report::ReportEvent::Deactivated:
+        break;
+    }
+    return M_TX_POWER_DBM;
+  }
+
   std::optional<report::ReportEvent> ReportPolicy::ServiceArmState(ArmState state)
   {
     std::optional<report::ReportEvent> due {};

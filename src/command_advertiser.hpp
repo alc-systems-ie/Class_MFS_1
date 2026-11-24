@@ -49,9 +49,12 @@ namespace alc
        *             would recognise, unreversed.
        * @param nowMs Current uptime, ms (`k_uptime_get()`).
        * @param durationMs How long to advertise before Service() stops it.
+       * @param txPowerDbm Requested power at the antenna, dBm (`ReportPolicy::TxPowerDbm()`). Set on every burst, after the advert
+       *                   starts, so a fired burst at +20 dBm never leaves the next one at +20. A failure to set it is logged and the
+       *                   burst goes out at the controller's current power; it never changes the result.
        * @return 0 if the advert started; the bt_le_adv_start() error otherwise.
        */
-      int Burst(const uint8_t uuid[16], int64_t nowMs, int64_t durationMs);
+      int Burst(const uint8_t uuid[16], int64_t nowMs, int64_t durationMs, int8_t txPowerDbm);
 
       /**
        * @brief Stop the burst once its duration has elapsed. No-op otherwise.
@@ -64,6 +67,9 @@ namespace alc
       bool IsAdvertising() const { return m_advertising; }
 
     private:
+      /** Sends the vendor Write TX Power command for the advertiser (legacy advertising ignores the handle). Logs only. */
+      void setTxPower(int8_t txPowerDbm);
+
       bool m_advertising;
       int64_t m_stop_deadline_ms;
   };
