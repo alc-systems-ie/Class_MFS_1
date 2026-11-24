@@ -1,30 +1,44 @@
 // HOST-ONLY crypto backend for the unit tests. Never linked into firmware.
 
 #include <cerrno>
+#include <map>
 #include <memory>
+#include <vector>
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 
 #include "crypto.hpp"
-#include "crypto_fault.hpp"
+#include "host_kmu.hpp"
 
 namespace alc::crypto
 {
 
   namespace
   {
-    // Remaining successful HmacSha256() calls before the injected fault; negative means disarmed.
-    int s_hmac_calls_before_failure { -1 };
+    std::map<uint8_t, std::vector<uint8_t>>& kmuTable()
+    {
+      static std::map<uint8_t, std::vector<uint8_t>> table;
+      return table;
+    }
+
+    // Raw-key HMACs still allowed before the injected fault; negative = no fault.
+    int32_t s_hmac_calls_before_fault { -1 };
   }
 
-  namespace host_fault
+  namespace host_kmu
   {
-    void FailHmacAfter(int callsBeforeFailure)
-    { s_hmac_calls_before_failure = callsBeforeFailure; }
+    void Provision(uint8_t slot, const uint8_t* key, size_t length)
+    { kmuTable()[slot] = std::vector<uint8_t>(key, key + length); }
 
     void Clear()
-    { s_hmac_calls_before_failure = -1; }
+    {
+      kmuTable().clear();
+      s_hmac_calls_before_fault = -1;
+    }
+
+    void FailHmacAfter(int32_t calls)
+    { s_hmac_calls_before_fault = calls; }
   }
 
   int Init()
@@ -34,11 +48,22 @@ namespace alc::crypto
   {
     unsigned int outLength { 0 };
 
-    if (s_hmac_calls_before_failure == 0) { return -EIO; }
-    if (s_hmac_calls_before_failure > 0) { s_hmac_calls_before_failure--; }
-
+    // A missing or empty key is a bug, never "HMAC under the empty key".
+    if (key == nullptr || keyLength == 0) { return -EINVAL; }
+    if (s_hmac_calls_before_fault == 0) { return -EIO; }
+    if (s_hmac_calls_before_fault > 0) { s_hmac_calls_before_fault--; }
     if (HMAC(EVP_sha256(), key, static_cast<int>(keyLength), message, messageLength, out, &outLength) == nullptr) { return -EIO; }
     return outLength == M_HMAC_SHA256_BYTES ? 0 : -EIO;
+  }
+
+  int HmacSha256(const KeyRef& key, const uint8_t* message, size_t messageLength, uint8_t* out)
+  {
+    if (!key.IsKmu()) { return HmacSha256(key.bytes, key.length, message, messageLength, out); }
+
+    const auto found { kmuTable().find(key.slot) };
+
+    if (found == kmuTable().end()) { return -ENOKEY; }
+    return HmacSha256(found->second.data(), found->second.size(), message, messageLength, out);
   }
 
   namespace

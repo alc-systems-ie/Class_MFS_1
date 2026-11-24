@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 v1 app control is implemented and host-tested. `src/app.{hpp,cpp}` holds the state
 machine (boot sequence, PMIC/ADXL/LED bring-up, the detection engine, the delay
 interlock and the command path); one class per peripheral; `boards/` overlays for
-the nRF54L15 DK target; all Kconfig in `prj.conf` plus `credentials.conf` (gitignored,
-templated by `credentials.conf.template`) for the device secret and provisioning
-key. Units for every on-air and NVS field are in
+the nRF54L15 DK target; all Kconfig in `prj.conf`. The device secret and provisioning
+key live in the nRF54L05 KMU, never in a build (see **Keys, the KMU and the debug
+lock** below). Units for every on-air and NVS field are in
 `docs/superpowers/specs/2026-09-12-app-control-design.md` §6.1. Run the host suite
 with `make test` (see **Host-side unit tests** below) before trusting a change to
 `AccessControl`, `DeviceClock`, `arm_policy.hpp` or `command_scanner.hpp`. Hardware
@@ -37,7 +37,7 @@ left it powered down in the RF path and range was ~5 m — see
 | Sleep architecture | **System ON idle + RTC wake** — *not* nPM2100 Hibernate |
 | Scan | **100 ms passive every 7.245 s** (1.38% RX duty cycle; 5.970 s until 2026-11-14) |
 | ADXL367 | Continuous measurement mode, 100 Hz ODR |
-| nRF21540 FEM | **Fitted, driven by MPSL** — LNA on for every scan (no bypass mode), POUTB +10 dBm on TX |
+| nRF21540 FEM | **Fitted, driven by MPSL in GPIO-only mode** — LNA on for every scan (no bypass mode), POUTB +10 dBm on TX via the MODE pin. **Never GPIO+SPI** (transmitted ~40 dB low, 2026-11-16) |
 | Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version 0x03 with an explicit command type |
 | Day boundary | **04:00 UTC**, no multi-day validity window |
 | Timekeeping | **LFXO** 32.768 kHz (fitted), GRTC-sourced. **No external RTC** (BOM, reaffirmed 2026-09-13). Invalid on every boot until provisioner sync |
@@ -64,7 +64,7 @@ specific numeric constraint recorded there.
 | LED3 green (`led0`) | P2.04 | Disarmed: steady until the time sync, then 500 ms on / 2500 ms off |
 | nPM2100 GPIO0 / GPIO1 | P1.06 / P2.01 | Unused |
 | nPM2100 RESET | P2.00, active low | Unused |
-| nRF21540 SPI (`spi30`) | SCK P0.03, MOSI P0.02, MISO P0.01, CS P0.00 | MPSL FEM driver (as `alc_drawer_master`) |
+| nRF21540 SPI | SCK P0.03, MOSI P0.02, MISO P0.01, CS P0.00 | **Unused** — GPIO hogs hold CSN high, SCK/MOSI low; `spi30` disabled |
 | nRF21540 PDN / TX_EN / RX_EN / MODE | P0.04 / P1.09 / P1.10 / P1.11 | MPSL FEM driver |
 
 **LED scheme: `docs/superpowers/specs/2026-11-12-three-led-indication-design.md`**
@@ -240,6 +240,14 @@ Constraints from that analysis that are easy to violate by accident:
   power — making the LNA an app-set option is the sanctioned route
   (`docs/todo.md`). **POUTB (+10 dB) only** on transmit, for Irish EIRP
   compliance.
+- **The nRF21540 runs in MPSL's GPIO-only mode, never GPIO+SPI** (2026-11-16,
+  `docs/power-budget.md` §5.1). In GPIO+SPI mode MPSL wrote TX_GAIN 6–8 before
+  every transmission, so every MFS and the Drawer Master transmitted ~40 dB low
+  (−81…−85 dBm at 20 cm on a phone against −40 dBm fixed, −50 dBm for a bare DK
+  at +8 dBm) while receive worked — the hub never heard 00007 from the shed. In
+  GPIO-only mode MPSL holds MODE high, selecting the factory POUTB preset. Do not
+  restore `spi-if` or `CONFIG_MPSL_FEM_NRF21540_GPIO_SPI` without an RSSI check
+  against a bare-DK reference (`../link_beacon`).
 - **The counterpart's advertising interval is not ours to set.** Measured
   (2026-09-14, `docs/superpowers/specs/2026-09-14-scan-reliability-amendment.md`
   §1): **187.5 ms, steady**, from a Mac (`CoreBluetooth`, foreground); **~35 ms,
@@ -405,7 +413,7 @@ well-behaved advertiser never would.
 **CLASS serial: `MODEL-MMYY-NNNNN`** (owner decision 2026-09-15) — a 4-character model
 (`MFS1`), the month and year made (`MMYY`), and the number in that batch as **5 hex
 digits**. The bench unit is `MFS1-0926-00001`. It is one character longer in the model and
-one digit longer in the index than the ALC `HAH-MMYY-xxxx` format. Set in `credentials.conf`
+one digit longer in the index than the ALC `HAH-MMYY-xxxx` format. Set in `secrets/<serial>.conf`
 as `CONFIG_ALC_DEVICE_SERIAL`; `tools/gen_bench_credentials.py` rejects a serial that does
 not match. The serial is the human label only — the cryptographic identity is
 `CONFIG_MFS_DEVICE_ID` (a random 32-bit value bound into every day key).
@@ -427,36 +435,103 @@ Each application directory is its own git repository; the SDK trees are managed 
 
 ## Build commands
 
-Board target is the nRF54L15 DK running the nRF54L05 target. **Every normal build
-needs the bench credentials** (the device secret and provisioning key), kept out of
-`prj.conf` in gitignored `credentials.conf`:
+Board target is the nRF54L15 DK running the nRF54L05 target. **Every MFS device —
+bench unit, fleet, DK — is built and flashed with one script** (design
+`docs/superpowers/specs/2026-11-15-kmu-keys-and-debug-lock-design.md`):
 
 ```sh
-west build -b nrf54l15dk/nrf54l05/cpuapp -p always -- -DEXTRA_CONF_FILE=credentials.conf
-west flash --recover
+tools/flash_device.sh <serial> [--unlocked] [--extra-conf <file>] [--build] [--dry-run]
 ```
 
-**Fleet devices (`MFS1-1126-00001` … `0000A`):** build and flash one by serial with
-`tools/flash_device.sh <serial>` (add `--build` to build only). It loads
-`secrets/<serial>.conf` (gitignored, from `tools/gen_fleet_credentials.py`, with the
-spreadsheet `secrets/MFS1-1126-credentials.xlsx`), checks the image carries that
-serial, then flashes `--recover` to J-Link 853003346 (`MFS_DEV_ID` overrides). That
-**erases NVS** — the engineer slots' sequence counters and the day floor — so the device
-restarts at sequence 0 while the app's counters carry on: a slot with more than 16 Sends
-today then gets the counter mismatch (orange rapid flash on a disarmed device) until
-04:00 UTC. Use a fresh serial or slot, or wait. A power cycle never resets the counters.
+It loads `secrets/<serial>.conf` (gitignored, from `tools/gen_fleet_credentials.py`,
+with the spreadsheet `secrets/MFS1-1126-credentials.xlsx`), refuses all-zero or equal
+keys, builds with a derived conf holding only the serial and device ID, checks the
+image carries that serial and neither key, then runs **one nrfutil batch — recover →
+program (`ERASE_NONE`) → provision the KMU → lock the debug port → pin reset** — with a
+single `x-execute-batch` on J-Link 853003346 (`MFS_DEV_ID` overrides), and finally checks
+`protection-get` reports `status value: All`. The batch is judged as west judges it
+(`nrfutil --json`: exit 0 **and** a `batch_end` record with a null error) — never by
+the final `protection-get` alone, which a keyless device would pass because the firmware
+locks itself. **It must be one batch**: once `recover`
+erases the app nothing stops the nPM2100 boot monitor, so the MFS board power-cycles
+every ~11 s and each nRF54L cold boot re-locks the debug port; separate nrfutil calls
+straddled a power cycle and failed (2026-11-15; the bare DK, with no PMIC, hid it). A
+failed batch can leave the chip erased and power-cycling — re-run the script — unless
+the script says only the reset failed on a locked chip: then power-cycle and do the
+end-to-end check (sync + Disarm) instead. The batch
+file names the key file by path only. `--build` stops after the build checks;
+`--dry-run` prints every batch append and the execute instead of running anything; `--unlocked` leaves the debug port open for RTT
+(bench only, below); `--extra-conf` adds a diagnostic conf (`MFS_SCAN_DIAG` and the
+like). The J-Link of the live hub DK (**1057733814**) is always refused; the key-test
+DK is **1057755043**. `sh tools/test_flash_device.sh` is the host test of the script
+(dry-run only, fake keys) — run it **and** `make test` after touching the script
+(`make test` does not run it).
 
-**Always flash this board with `--recover`.** Plain `west flash` (the script's
-`--keep-nvs`) programmed and verified the image on 2026-11-14 while the old firmware
-kept running, and the new image did not boot even after a J-Link reset — the same
-failure that first made `--recover` mandatory. Unresolved (bench checklist §5j.1).
+`--keep-nvs` is **withdrawn**: every flash erases NVS — the engineer slots' sequence
+counters and the day floor — so the device restarts at sequence 0 while the app's
+counters carry on: a slot with more than 16 Sends today then gets the counter
+mismatch (orange rapid flash on a disarmed device) until 04:00 UTC. Use a fresh serial
+or slot, or wait. A power cycle never resets the counters.
+
+**Always flash this board through the script, which always recovers.** Plain `west
+flash` programmed and verified the image on 2026-11-14 while the old firmware kept
+running, and the new image did not boot even after a J-Link reset — the same failure
+that first made `--recover` mandatory. Unresolved (bench checklist §5j.1), but very
+likely the same boot-monitor power cycling that broke the separate-call flash.
+
+**Secrets never reach `west build`; never pass a secret with `-D`.** The script's
+temporary key file (`mktemp`, mode 600, keys on stdin, removed on exit) is the only
+place a key lives outside the KMU, and no key appears in any argv (`nrfutil` logs its
+argv to `~/.nrfutil/logs`). Never add `set -x` to the script.
 
 Useful variations used in this workspace:
 
 ```sh
-west build -b <board> -p always                                  # pristine rebuild, no credentials — boots Inactive, access control unavailable
+west build -b <board> -p always                                  # pristine rebuild, no secrets — locked, boots Inactive, commands refused until provisioned
 west build -t menuconfig                                         # inspect resolved Kconfig
 ```
+
+**Keys, the KMU and the debug lock** (design 2026-11-15; `docs/tan-scheme.md` §8):
+
+- **The two long-term keys are in the nRF54L05 KMU**, 256-bit HMAC-SHA256 (usage SIGN,
+  no export or copy flags), **RAW** scheme: `deviceSecret` slots **100–101**,
+  `provisionKey` slots **102–103**. The slot numbers are defined once, in
+  `src/kmu_slots.hpp`; the script reads them from that file. **RAW means the KMU
+  copies the key into CPU RAM while it is in use**, so it is readable by anything that
+  can run code or read RAM — the **debug lock is what protects the keys**, not the KMU
+  alone.
+- **Firmware never holds a secret in its image.** `CONFIG_MFS_DEVICE_SECRET` and
+  `CONFIG_MFS_PROVISION_KEY` survive only as tool-side symbols; `CMakeLists.txt` stops
+  any build that sets either with a `FATAL_ERROR`. `credentials.conf` is retired from
+  firmware builds (`credentials.conf.template` is tool-only); the bench identity moves
+  to `secrets/MFS1-0926-00001.conf`.
+- **Boot key check** (`src/key_check.*`, called from `App::initAccess()`): HMAC of
+  `"MFS-KCV" 0x07` under each KMU key and under an all-zero key. A missing key, two
+  equal keys, or a zero key refuses commands and syncs: `LOG_ERR` (`Device keys missing
+  or unusable in the KMU`) and the warning — `App::signalWarning()`, orange steady 3 s,
+  once at boot (`device keys missing or unusable - commands refused`; any other
+  `initAccess()` failure, the device ID included, raises the same warning). That orange
+  3 s at boot is the only sign a locked device can give, so `tools/flash_device.sh`
+  names it in its final message. Nothing derived from a key is logged. The mbedTLS heap
+  is 2048 B for this (`prj.conf`).
+- **Every build locks the debug port**: `prj.conf` sets `CONFIG_NRF_APPROTECT_LOCK=y`
+  and `CONFIG_NRF_SECURE_APPROTECT_LOCK=y`, and `CMakeLists.txt` fails a build that
+  does not. Only `debug-unlocked.conf` (`--unlocked`) turns both off and sets
+  `CONFIG_MFS_DEBUG_UNLOCKED=y`; any image booting with a lock off logs
+  `DEBUG PORT UNLOCKED - not for the field!`. A locked device has **no RTT and no SWD**.
+  Unlocked, anyone with a probe can read the keys, so an unlocked image never leaves
+  the bench.
+- **To unlock a device, re-run the script** (or `nrfutil device recover --serial-number
+  <probe>`): ERASEALL wipes the KMU and NVS along with the image, so the keys are gone
+  and must be re-provisioned — which the script does. Erase protection
+  (`UICR.ERASEPROTECT`) is **never set**, so this always works.
+- **The day rollover fails closed** (`AccessControl::prepareDay()`): the day keys, ID
+  tables and window sizes are wiped *before* anything that can fail, so a rollover that
+  cannot persist or derive leaves the device refusing commands, never accepting
+  yesterday's. Keep that order in any change.
+- **MFS1-1126-00007 is not migrated.** It stays on tag `trial-00007-2026-11-14`
+  (Kconfig keys) until the trial ends; build any trial fix from that tag. Reflash it
+  through the script afterwards.
 
 `compile_commands.json` is generated into `build/` — symlink or copy it to the project root so clangd (configured by `.clangd`) resolves includes.
 
@@ -466,6 +541,7 @@ The established pattern for driver classes in this workspace is a plain `g++` te
 
 ```sh
 make test          # compiles driver + tests/test_*.cpp into ./test_runner and runs it
+sh tools/test_flash_device.sh   # the flash script, dry-run only, fake keys
 make clean
 ```
 

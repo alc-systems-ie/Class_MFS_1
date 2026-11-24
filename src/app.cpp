@@ -1,5 +1,3 @@
-#include <cstring>
-
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -13,6 +11,8 @@
 #include "credentials.hpp"
 #include "crypto.hpp"
 #include "crypto_selftest.hpp"
+#include "key_check.hpp"
+#include "kmu_slots.hpp"
 #include "npm2100_zephyr.hpp"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
@@ -140,11 +140,10 @@ namespace alc
     // returns 1 when the pin is electrically LOW, i.e. when AWAKE is asserted.
     const struct gpio_dt_spec s_adxl_int1 = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), adxl_int1_gpios);
 
-    // BENCH credentials, parsed from Kconfig (credentials.conf) at boot. Production
-    // moves both keys into the KMU - see docs/tan-scheme.md section 8.
+    // The public device ID, parsed from Kconfig at boot. The two long-term keys are
+    // never in the image: they live in the KMU (src/kmu_slots.hpp), provisioned by
+    // tools/flash_device.sh, and the firmware uses them only by slot.
     uint32_t s_device_id { 0 };
-    uint8_t s_device_secret[access::M_SECRET_BYTES] {};
-    uint8_t s_provision_key[access::M_SECRET_BYTES] {};
 
     const char* verdictName(AccessControl::Verdict verdict)
     {
@@ -250,7 +249,7 @@ namespace alc
       , m_accelerometer(DEVICE_DT_GET(DT_NODELABEL(i2c22)))
       , m_scanner()
       , m_clock()
-      , m_access(0, s_device_secret, &access_store::Persist, nullptr)
+      , m_access(0, crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), &access_store::Persist, nullptr)
       , m_last_advance_secs(0)
       , m_access_ready(false)
       , m_output_switch()
@@ -297,6 +296,11 @@ namespace alc
 #endif
 
     LOG_INF("MFS_1 starting, serial %s.", CONFIG_ALC_DEVICE_SERIAL);
+    // Keyed on the lock itself, not on MFS_DEBUG_UNLOCKED, so any image that
+    // boots with the debug port open says so.
+#if !defined(CONFIG_NRF_APPROTECT_LOCK) || !defined(CONFIG_NRF_SECURE_APPROTECT_LOCK)
+    LOG_WRN("DEBUG PORT UNLOCKED - not for the field!");
+#endif
 
     k_timer_init(&m_delay_timer, nullptr, nullptr);
     k_timer_init(&m_led_timer, &App::ledTimerHandler, nullptr);
@@ -353,9 +357,15 @@ namespace alc
     if (result < 0) { return result; }
 
     // Not fatal. A device that cannot authenticate commands still boots, safe
-    // and Inactive, so its hardware can be diagnosed over RTT.
+    // and Inactive, so its hardware can be diagnosed over RTT. It refuses
+    // commands with the warning (design 2026-11-15 sections 4 and 5.3): the
+    // orange 3 s steady, once at boot, is the only sign a locked device without
+    // RTT can give. The LEDs are initialised above, so it plays at once.
     result = initAccess();
-    if (result < 0) { LOG_ERR("Access control unavailable (%d) - commands will be ignored this boot!", result); }
+    if (result < 0) {
+      LOG_ERR("Access control unavailable (%d) - commands will be ignored this boot!", result);
+      signalWarning("device keys missing or unusable - commands refused", result);
+    }
 
     // After initAccess(), which initialises the settings subsystem. Defaults stand
     // if nothing is stored or the record is invalid.
@@ -1360,18 +1370,8 @@ namespace alc
     int result { 0 };
     AccessState restored {};
 
-    if (!credentials::ParseDeviceId(CONFIG_MFS_DEVICE_ID, s_device_id) ||
-        !credentials::ParseHexBytes(CONFIG_MFS_DEVICE_SECRET, s_device_secret, sizeof(s_device_secret)) ||
-        !credentials::ParseHexBytes(CONFIG_MFS_PROVISION_KEY, s_provision_key, sizeof(s_provision_key))) {
-      LOG_ERR("Credentials missing or malformed - build with -DEXTRA_CONF_FILE=credentials.conf!");
-      return -EINVAL;
-    }
-
-    // An all-zero key is a template nobody filled in, and would be shared by every
-    // such build. The two keys must also differ, or the provisioner holds entry.
-    if (credentials::IsAllZero(s_device_secret, sizeof(s_device_secret)) || credentials::IsAllZero(s_provision_key, sizeof(s_provision_key)) ||
-        memcmp(s_device_secret, s_provision_key, sizeof(s_device_secret)) == 0) {
-      LOG_ERR("Device secret and provisioning key must be set and must differ!");
+    if (!credentials::ParseDeviceId(CONFIG_MFS_DEVICE_ID, s_device_id)) {
+      LOG_ERR("Device ID missing or malformed - build with tools/flash_device.sh!");
       return -EINVAL;
     }
 
@@ -1380,6 +1380,15 @@ namespace alc
 
     result = crypto::RunSelfTest();
     if (result < 0) { return result; }
+
+    // The keys are checked by what they compute, never read: both must be present
+    // in the KMU, not all zero, and distinct, or the provisioner holds entry
+    // (design 2026-11-15 section 5.3). Only the code is logged.
+    result = key_check::CheckLongTermKeys(crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), crypto::KeyRef::Kmu(kmu::M_PROVISION_SLOT));
+    if (result < 0) {
+      LOG_ERR("Device keys missing or unusable in the KMU (%d) - commands refused; reprovision with tools/flash_device.sh!", result);
+      return result;
+    }
 
     result = settings_subsys_init();
     if (result < 0) {
@@ -1461,10 +1470,11 @@ namespace alc
   {
     uint32_t unixSeconds { 0 };
     DeviceClock::SyncResult syncResult { DeviceClock::SyncResult::BeforeEpoch };
+    int result { 0 };
 
     // Almost every advert in range lands here and fails the tag. That is routine
     // and is not logged, or the RTT buffer would fill with other people's phones.
-    if (!access::OpenTimeSync(s_provision_key, s_device_id, candidate.bytes, unixSeconds)) { return; }
+    if (!access::OpenTimeSync(crypto::KeyRef::Kmu(kmu::M_PROVISION_SLOT), s_device_id, candidate.bytes, unixSeconds)) { return; }
 
     syncResult = m_clock.ApplyProvisionerSync(unixSeconds, uptimeSecs);
     if (syncResult != DeviceClock::SyncResult::Applied) {
@@ -1475,7 +1485,8 @@ namespace alc
     LOG_INF("Clock set by provisioner: unix %u, day %u, %02u:%02u UTC.", unixSeconds, m_clock.DayIndex(uptimeSecs),
             m_clock.MinuteOfDay(uptimeSecs) / 60U, m_clock.MinuteOfDay(uptimeSecs) % 60U);
 
-    if (m_access.Advance(m_clock, uptimeSecs) < 0) { LOG_ERR("Day rollover could not be persisted after the time sync!"); }
+    result = m_access.Advance(m_clock, uptimeSecs);
+    if (result < 0) { LOG_ERR("Day rollover failed: %d!", result); }
 
     // An applied time sync is an accepted, authenticated command: it clears the
     // device-disarmed latch and is confirmed by the orange triple. Green then
@@ -1552,12 +1563,14 @@ namespace alc
   void App::serviceDayRollover()
   {
     int64_t uptimeSecs { k_uptime_get() / MSEC_PER_SEC };
+    int result { 0 };
 
     if (!m_access_ready || !m_clock.IsValid()) { return; }
     if (uptimeSecs - m_last_advance_secs < M_ADVANCE_INTERVAL_SECS) { return; }
 
     m_last_advance_secs = uptimeSecs;
-    if (m_access.Advance(m_clock, uptimeSecs) < 0) { LOG_ERR("Day rollover could not be persisted!"); }
+    result              = m_access.Advance(m_clock, uptimeSecs);
+    if (result < 0) { LOG_ERR("Day rollover failed: %d!", result); }
   }
 
   void App::applyCommand(const AccessControl::Evaluation& evaluation, int64_t uptimeSecs)

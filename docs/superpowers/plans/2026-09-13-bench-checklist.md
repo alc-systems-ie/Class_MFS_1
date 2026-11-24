@@ -9,10 +9,14 @@ each item, and fix before moving on if an item marked **STOP** fails.
 `nrfutil device device-info --serial-number 853003346` must report an nRF54L.
 
 ```bash
-cd /Users/andy/nordic/ncs/v3.2.4/class_mfs_1
-west build -b nrf54l15dk/nrf54l05/cpuapp -p always -- -DEXTRA_CONF_FILE=credentials.conf
-west flash --dev-id 853003346 --recover
+cd /Users/andi/nordic/ncs/v3.2.4/class_mfs_1
+tools/flash_device.sh MFS1-0926-00001 --unlocked   # bench unit: build, recover, provision the KMU, program
 ```
+
+Since 2026-11-15 (§5l) every device is built, keyed and flashed only through
+`tools/flash_device.sh`; `credentials.conf` no longer reaches a firmware build. Any item
+here that reads RTT needs `--unlocked` (a locked device has no RTT); never deploy an
+unlocked device. The bench unit needs `secrets/MFS1-0926-00001.conf` first (§5l item 13).
 
 RTT: device `nRF54L05_M33`, SWD, 4000 kHz. App: `cd ../class_app && flutter run -d macos`
 (the Mac clock must be network-synced).
@@ -400,7 +404,7 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 
 ## 5j. Arming failure codes (2026-11-14, spec `docs/superpowers/specs/2026-11-14-arming-failure-codes-amendment.md`)
 
-- [x] 1. **Plain flash keeps NVS and takes — FAILED 2026-11-14.** `west flash` without `--recover` (now `--keep-nvs`) on MFS1-1126-00006: programmed and verified, but the RTT buffer showed the OLD firmware still running, and after `nrfutil device reset` and a J-Link `r`/`g` the new image wrote nothing to RTT before the board lost power. `--recover` restored as the default. To investigate: whether the image boots after a full power cycle; erase mode; whether the nRF54L05 needs `--erase`-style handling of UICR (`nfct-pins-as-gpios`).
+- [x] 1. **Plain flash keeps NVS and takes — FAILED 2026-11-14.** `west flash` without `--recover` (now `--keep-nvs`) on MFS1-1126-00006: programmed and verified, but the RTT buffer showed the OLD firmware still running, and after `nrfutil device reset` and a J-Link `r`/`g` the new image wrote nothing to RTT before the board lost power. `--recover` restored as the default. To investigate: whether the image boots after a full power cycle; erase mode; whether the nRF54L05 needs `--erase`-style handling of UICR (`nfct-pins-as-gpios`). **Likely cause (2026-11-15, not yet confirmed — keep open):** the nPM2100 boot monitor power-cycling the board every ~10.5–11 s while no running app stops it, with each nRF54L cold boot re-locking the debug port — the same cause that broke `flash_device.sh`'s separate recover/provision/program calls on the MFS board; the script now runs them as one nrfutil batch (§5l.15).
 - [x] 2. **Seen 2026-11-14 (owner):** MFS1-1126-00006 after a `--recover` flash, iPhone slot 3 at n 17 - orange rapid flash, nothing acted on. Still to check: the RTT line, once-per-n, and silence while armed. **Counter mismatch.** Flash a device whose slot has 17-63 Sends today, sync the clock, send Arm: orange **rapid flash** ~5 s, RTT `Counter mismatch: slot ... ahead of the window ... not acted on.`; the device stays Inactive. The same Send's continued advertising shows nothing more (once per n); a new Send flashes again. While armed: RTT `Counter mismatch not shown`, no LED.
 - [ ] 3. Arm from a fresh slot or device right after: accepted as normal (the mismatch changed nothing).
 - [ ] 4. **Low battery.** With a cell that cannot hold 3.2 V boosted (or the pass-through diagnostic build): Arm → red 10 s → orange steady 3 s → orange **slow flash** (1 Hz) that stays; RTT `Low battery - arming refused.` A Disarm from the app clears it to green.
@@ -411,6 +415,34 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 - [x] 1. RTT at boot: `Passive scan started: 100 ms window every 7245 ms.` (MFS1-1126-00006/7, 2026-11-14)
 - [x] 2. **103.4 µA, 2026-11-14** (MFS1-1126-00007, 60 s, armed, debugger unplugged and power-cycled; `docs/power-budget.md`). PPK2 (ammeter, CR123A), armed, settled, 60 s: scan bursts ~7.25 s apart, the small power-model spikes 5 s apart (were 2 s); average ~106 µA (was 126.7 µA). Record in `docs/power-budget.md`.
 - [ ] 3. Command reliability from each phone (iPhone, Mac, the production Android once available): 20 Sends each, Arm/Disarm alternating, all heard within one 30 s Send. Re-run `tools/scan_phase_check.py` with the Android's measured interval.
+
+## 5m. FEM in GPIO-only mode (2026-11-16, `docs/power-budget.md` §5.1)
+
+- [ ] 1. After flashing the fix, RSSI of the device's transmit at 20 cm is within a few dB of −40 dBm on the iPhone (nRF Connect). The production firmware never advertises, so use the FIRE confirmation burst (an nRF Connect scan shows it) or the hub's `rssi` on the daily report; the `../link_beacon` GPO build is the bench reference (−40 dBm on the Drawer Master).
+- [ ] 2. The hub receives MFS1-1126-00007's 03:00 daily report from the shed once 00007 carries the fix (trial tag build).
+- [ ] 3. Commands still heard as before (LNA unchanged): 10 Arm/Disarm Sends from the iPhone at the usual distances.
+- [ ] 4. PPK2, armed, 60 s: the 5 s power-model spikes are gone; average at or slightly below 103.4 µA.
+
+## 5l. Keys in the KMU and the fleet debug lock (2026-11-15, design `docs/superpowers/specs/2026-11-15-kmu-keys-and-debug-lock-design.md`)
+
+- [ ] 1. **First key-test DK run is `--unlocked` — STOP if it fails.** `MFS_DEV_ID=1057755043 tools/flash_device.sh <dk serial> --unlocked` with the DK's own `secrets/<serial>.conf` (throwaway keys). RTT: `DEBUG PORT UNLOCKED - not for the field!`, then the boot key check passing — `Device 0x... ready. Clock INVALID until a provisioner time sync.` and no `Device keys missing or unusable`; no orange 3 s warning at boot.
+- [ ] 2. **Logs hold no key — STOP if any count is non-zero; before any fleet key is provisioned.** Straight after item 1 (the first real provisioning), count both key hex strings in nrfutil's and J-Link's logs, never printing them (the owner runs this; agents never read `secrets/`):
+  `grep -r -c -i -F -f <(sed -nE 's/^CONFIG_MFS_(DEVICE_SECRET|PROVISION_KEY)="(.*)"$/\2/p' secrets/<dk serial>.conf) ~/.nrfutil/logs /opt/nordic/ncs/toolchains/*/nrfutil/home ~/Library/Application\ Support/SEGGER ~/Library/Logs 2>/dev/null | grep -v ':0$'`
+  prints nothing. Record the directories searched (add any J-Link log file configured in J-Link settings).
+- [ ] 3. **The key-check failure — STOP if it fails. DK ONLY (no PMIC):** on an MFS board these separate calls hit the boot-monitor power-cycle trap (§5l.15) — do not run them there. `nrfutil device recover --serial-number 1057755043` (erases the KMU), then program the same unlocked image without provisioning: `nrfutil device program --firmware build/merged.hex --serial-number 1057755043 --options chip_erase_mode=ERASE_RANGES_TOUCHED_BY_FIRMWARE,verify=VERIFY_READ`, then `nrfutil device reset --serial-number 1057755043`. RTT: `Device keys missing or unusable in the KMU (...)` and `WARNING (light TBC): device keys missing or unusable - commands refused (...)`; the orange LED steady for 3 s at boot; a Disarm from the app gives no orange triple.
+- [ ] 4. **Only then the locked run.** `MFS_DEV_ID=1057755043 tools/flash_device.sh <dk serial>`. The script ends `Debug port verified locked (protection-get: All).`; RTT is unavailable. Record `protection-get`'s actual locked output line: the script reads only the value after `status value:` on the `access status` line (real unlocked output 2026-11-15: `access status: Debug access is enabled (status value: None)`) — fix the parse if the locked line differs.
+- [ ] 5. ~~If protect fails, check `protection-get` before re-running.~~ Superseded 2026-11-15: `protection-set All` now runs inside the batch, before the reset, so the new firmware has not locked the port yet; a failed batch means re-run the script.
+- [ ] 6. `nrfutil device recover --serial-number 1057755043` unlocks it (keys gone).
+- [ ] 7. Does `protection-set All` also need `SecureRegions` on this SoC? (Confirm `protection-get` covers Secure AP-Protect.)
+- [ ] 8. Does the batch's `reset --reset-kind RESET_PIN` work straight after its `protection-set All`, on a just-locked chip? If it does not, the script now says so itself: when `batch_end`'s error names the reset and the diagnostic `protection-get` reports All, it prints "programmed, provisioned and locked; only the reset failed — power-cycle the board and do the end-to-end check (sync + Disarm)". If that happens on every run, move or drop the reset step.
+- [ ] 9. mbedTLS heap 2048 B with KMU keys: the boot key check passes (a heap failure reads as -ENOKEY).
+- [ ] 10. **First fleet device (not 00007; real nRF54L05 silicon):** run the script; sync the clock from the app and send one Disarm: after the sync the green LED changes from steady to 500 ms on / 2500 ms off, and the Disarm gives the orange triple. An orange 3 s warning at boot, or no confirmation, means re-run the script.
+- [ ] 11. The rest of the fleet, one at a time, the same sync and Disarm check.
+- [ ] 12. Delete old `build/` directories that held Kconfig keys.
+- [ ] 13. Owner: copy the bench identity from `credentials.conf` into `secrets/MFS1-0926-00001.conf` (agents never read either file), then flash the bench unit through the script.
+- [ ] 14. MFS1-1126-00007 stays on tag `trial-00007-2026-11-14` until the trial ends, then is reflashed through the script.
+- [ ] 15. **One batch on the MFS board (2026-11-15).** The separate recover / x-provision-keys / program calls failed on the MFS board (boot monitor power cycling ~11 s, cold-boot re-lock). Run by hand as one batch (recover → program `ERASE_NONE` → x-provision-keys → reset `RESET_PIN`) it worked: the app booted, stopped the boot monitor, and the KMU boot key check passed; `protection-get` on the unlocked chip: `access status: Debug access is enabled (status value: None)`. Still to run: the script itself `--unlocked` on J-Link 853003346, then locked (with `protection-set All` inside the batch, before the reset), recording the locked `protection-get` line. **When the board is already cycling** (after a failed run), the whole batch must finish inside one ~11 s window: record the `Device batch completed ... in N s` time the script prints on the first run (the manual batch took ~4 s by nrfutil's log). Also record the shape of the `nrfutil --json` NDJSON on a failure if one occurs (the script relies on `type`, `batch_end` `data.error`, and the `batch_update` `operationId` / progress `description` — §5.5 of the design).
+- [ ] 16. **Batch file holds no key — on the first real run.** The harness's batch-file check is dry-run only. Build one real batch by hand with a FAKE key file (`printf '%s\n%s\n' <fake> <fake> | sh tools/kmu_key_file.sh /tmp/x/k.json 100 102`, then `nrfutil device x-provision-keys --key-file /tmp/x/k.json --x-family nrf54l --x-append-batch /tmp/x/b.json`, no serial number) and `grep -c -i -F <fake key> /tmp/x/b.json` — expect 0 (done once in an agent scratchpad 2026-11-15: 0; repeat on the bench machine's nrfutil).
 
 ## 9. Bench log
 

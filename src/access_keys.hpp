@@ -33,8 +33,12 @@ namespace alc::access
 
   constexpr uint8_t M_TIME_SYNC_TAG_BYTES { 12 };
 
-  /** @brief dayKey = HMAC-SHA256(secret, id BE32 | day BE16 | slot | 0x02). */
-  int DeriveDayKey(const uint8_t* secret, uint32_t deviceId, uint16_t day, uint8_t slot, uint8_t* dayKey);
+  /**
+   * @brief dayKey = HMAC-SHA256(secret, id BE32 | day BE16 | slot | 0x02).
+   * @param secret The device secret: a KMU slot on target, raw bytes in tests and the self-test.
+   * @return 0; -ENOKEY if a KMU secret is not provisioned; other negative errno on a backend fault.
+   */
+  int DeriveDayKey(const crypto::KeyRef& secret, uint32_t deviceId, uint16_t day, uint8_t slot, uint8_t* dayKey);
 
   /** @brief encKey = first 16 bytes of HMAC-SHA256(dayKey, 0x03). */
   int DeriveEncKey(const uint8_t* dayKey, uint8_t* encKey);
@@ -68,8 +72,10 @@ namespace alc::access
   /**
    * @brief Verify a time sync. Says nothing about whether the time is acceptable -
    *        that is DeviceClock::ApplyProvisionerSync().
+   * @param provisionKey A KMU slot on target, raw bytes in tests and the self-test.
    * @return True only if the tag verifies; `unixSeconds` is written only then.
+   *         False, too, if the key cannot be used.
    */
-  bool OpenTimeSync(const uint8_t* provisionKey, uint32_t deviceId, const uint8_t* onAir, uint32_t& unixSeconds);
+  bool OpenTimeSync(const crypto::KeyRef& provisionKey, uint32_t deviceId, const uint8_t* onAir, uint32_t& unixSeconds);
 
 }

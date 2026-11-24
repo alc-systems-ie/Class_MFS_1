@@ -227,23 +227,46 @@ config MFS_DEVICE_ID
 	  up by it. See docs/tan-scheme.md section 3.
 
 config MFS_DEVICE_SECRET
-	string "Device secret (64-char hex string)"
+	string "Device secret (64-char hex string) - MUST STAY EMPTY"
 	default ""
 	help
-	  32-byte per-device secret from which every day key is derived.
-	  Loaded from credentials.conf (gitignored) for bench work only.
-	  PRODUCTION MUST USE THE nRF54L05 KMU - a secret in the image is
-	  readable, and a readable secret yields every day key for this device
-	  forever. See docs/tan-scheme.md section 8.
+	  MUST STAY EMPTY in every firmware build: keys are provisioned into
+	  the KMU by tools/flash_device.sh, and the build fails (CMakeLists.txt)
+	  if this is set. The firmware never reads it.
+
+	  The 32-byte per-device secret from which every day key is derived.
+	  The symbol remains only so secrets/<serial>.conf keeps one format for
+	  the host tools that read it (tools/flash_device.sh,
+	  tools/gen_bench_credentials.py). A secret in the image is readable,
+	  and a readable secret yields every day key for this device forever.
+	  See docs/tan-scheme.md section 8.
 
 config MFS_PROVISION_KEY
-	string "Provisioning key (64-char hex string)"
+	string "Provisioning key (64-char hex string) - MUST STAY EMPTY"
 	default ""
 	help
-	  32-byte per-device key authorising a time sync while the clock is
-	  invalid, and nothing else. Must differ from MFS_DEVICE_SECRET so that a
-	  compromised provisioner can cause denial of service but not entry. The
-	  firmware refuses to enable commands if the two are equal. See
-	  docs/tan-scheme.md section 8.1.
+	  MUST STAY EMPTY in every firmware build: keys are provisioned into
+	  the KMU by tools/flash_device.sh, and the build fails (CMakeLists.txt)
+	  if this is set. The firmware never reads it.
+
+	  The 32-byte per-device key authorising a time sync while the clock is
+	  invalid, and nothing else. Must differ from the device secret so that
+	  a compromised provisioner can cause denial of service but not entry;
+	  the firmware's boot key check refuses commands if the two KMU keys are
+	  equal. See docs/tan-scheme.md section 8.1.
+
+config MFS_DEBUG_UNLOCKED
+	bool "Debug port unlocked (bench only - set by debug-unlocked.conf)"
+	default n
+	help
+	  BENCH ONLY - never in a field device. Set only by debug-unlocked.conf,
+	  which also replaces the debug-port locks in prj.conf with
+	  NRF_APPROTECT_DISABLE and NRF_SECURE_APPROTECT_DISABLE so RTT works.
+	  It is the build's permission to be unlocked: CMakeLists.txt fails any
+	  build whose debug-port locks are off without it, and any build that
+	  sets it while a lock is still on. The boot warning "DEBUG PORT
+	  UNLOCKED - not for the field!" is keyed on the lock symbols
+	  themselves, so every unlocked image logs it. Design 2026-11-15
+	  section 5.4.
 
 source "Kconfig.zephyr"

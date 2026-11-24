@@ -25,7 +25,7 @@ namespace alc
     constexpr uint8_t M_MAX_CANDIDATES { 4 };
   }
 
-  AccessControl::AccessControl(uint32_t deviceId, const uint8_t* secret, PersistFn persist, void* context)
+  AccessControl::AccessControl(uint32_t deviceId, const crypto::KeyRef& secret, PersistFn persist, void* context)
       : m_device_id(deviceId)
       , m_secret(secret)
       , m_persist(persist)
@@ -85,12 +85,10 @@ namespace alc
     persistFailed = false;
     if (m_tables_ready && today == m_state.day) { return 0; }
 
-    // FAIL CLOSED before anything that can fail. The tables still hold the
-    // previous day's keys and IDs; were a persist, derivation or rebuild below
-    // to fail with them marked ready, the next call would take the early exit
-    // above and authenticate yesterday's commands under today's nonce - a code
-    // outliving its day boundary. Empty tables match nothing, and only a
-    // complete rebuild marks them ready again.
+    // Invalidate BEFORE anything that can fail. A rollover that persists and
+    // then cannot derive must not leave the previous day's keys and IDs live
+    // under the new day: every code expires at the day boundary. Wiping the
+    // tables means a part-built rebuild holds no stale key material either.
     m_tables_ready = false;
     memset(m_day_keys, 0, sizeof(m_day_keys));
     memset(m_expected_ids, 0, sizeof(m_expected_ids));
@@ -171,8 +169,6 @@ namespace alc
 
     result = prepareDay(today, clock, persistFailed);
     if (result < 0) {
-      // Either way nothing is accepted. Only a failed save is PersistFailed; a
-      // key derivation or rebuild fault is the backend's.
       evaluation.verdict = persistFailed ? Verdict::PersistFailed : Verdict::CryptoError;
       return evaluation;
     }

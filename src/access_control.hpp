@@ -79,10 +79,11 @@ namespace alc
 
       /**
        * @param deviceId Public 32-bit identity used in every derivation.
-       * @param secret   M_SECRET_BYTES. Must outlive this object.
+       * @param secret   The device secret, held by value: a KMU slot on target. A raw
+       *                 reference's bytes (host tests only) must outlive this object.
        * @param persist  Called before any command is acted on.
        */
-      AccessControl(uint32_t deviceId, const uint8_t* secret, PersistFn persist, void* context);
+      AccessControl(uint32_t deviceId, const crypto::KeyRef& secret, PersistFn persist, void* context);
 
       /** @brief Adopt a state loaded from NVS. Call before the first Evaluate(). */
       void Restore(const AccessState& state);
@@ -122,22 +123,17 @@ namespace alc
        * power cut, accept an old captured provisioner sync that revives that day's
        * keys. Call after a sync and periodically.
        *
-       * @return 0, or negative errno if the rollover could not be persisted (state unchanged) or
-       *         the day keys could not be derived (no command is then accepted until a later call succeeds).
+       * @return 0, or negative errno if the rollover could not be persisted (state unchanged).
        */
       int Advance(DeviceClock& clock, int64_t uptimeSecs);
 
     private:
-      /**
-       * @brief Adopt today and build its tables, or leave the tables empty and not ready.
-       * @param persistFailed Set true only when the rollover could not be saved.
-       */
       int prepareDay(uint16_t today, DeviceClock& clock, bool& persistFailed);
       int rebuildSlot(uint8_t slot);
       void recordFailure(int64_t uptimeSecs);
 
       uint32_t m_device_id;
-      const uint8_t* m_secret;
+      crypto::KeyRef m_secret;
       PersistFn m_persist;
       void* m_persist_context;
 

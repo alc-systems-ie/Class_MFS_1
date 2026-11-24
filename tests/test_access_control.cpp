@@ -5,7 +5,8 @@
 
 #include "access_control.hpp"
 #include "access_vectors.hpp"
-#include "crypto_fault.hpp"
+#include "host_kmu.hpp"
+#include "kmu_slots.hpp"
 
 namespace
 {
@@ -33,6 +34,25 @@ namespace
     return 0;
   }
 
+  crypto::KeyRef secretRef()
+  { return crypto::KeyRef::Raw(access::vectors::M_SECRET, sizeof(access::vectors::M_SECRET)); }
+
+  // A command sealed under one day's key but carrying another day in its nonce:
+  // what a holder of yesterday's key could build for today.
+  void buildCrossDayCommand(uint16_t keyDay, uint16_t nonceDay, uint8_t slot, uint32_t n, uint8_t* onAir)
+  {
+    uint8_t dayKey[access::M_DAY_KEY_BYTES] {};
+    uint8_t plaintext[protocol::M_PLAINTEXT_BYTES] {};
+    protocol::Command command;
+
+    command.type        = protocol::CommandType::Arm;
+    command.activations = 3;
+    command.minuteOfDay = 300;
+    protocol::EncodeCommand(command, plaintext);
+    assert(access::DeriveDayKey(secretRef(), access::vectors::M_DEVICE_ID, keyDay, slot, dayKey) == 0);
+    assert(access::SealCommand(dayKey, access::vectors::M_DEVICE_ID, nonceDay, slot, n, plaintext, onAir) == 0);
+  }
+
   // Builds what the engineer's app would send.
   void buildCommand(uint16_t day, uint8_t slot, uint32_t n, protocol::CommandType type, uint16_t minute, uint8_t* onAir)
   {
@@ -44,24 +64,8 @@ namespace
     command.activations = 3;
     command.minuteOfDay = minute;
     protocol::EncodeCommand(command, plaintext);
-    assert(access::DeriveDayKey(access::vectors::M_SECRET, access::vectors::M_DEVICE_ID, day, slot, dayKey) == 0);
+    assert(access::DeriveDayKey(secretRef(), access::vectors::M_DEVICE_ID, day, slot, dayKey) == 0);
     assert(access::SealCommand(dayKey, access::vectors::M_DEVICE_ID, day, slot, n, plaintext, onAir) == 0);
-  }
-
-  // A command sealed under one day's key but carrying another day in its nonce:
-  // what a device still holding yesterday's tables after 04:00 would accept.
-  void buildCrossDayCommand(uint16_t keyDay, uint16_t nonceDay, uint8_t slot, uint32_t n, uint16_t minute, uint8_t* onAir)
-  {
-    uint8_t dayKey[access::M_DAY_KEY_BYTES] {};
-    uint8_t plaintext[protocol::M_PLAINTEXT_BYTES] {};
-    protocol::Command command;
-
-    command.type        = protocol::CommandType::Arm;
-    command.activations = 3;
-    command.minuteOfDay = minute;
-    protocol::EncodeCommand(command, plaintext);
-    assert(access::DeriveDayKey(access::vectors::M_SECRET, access::vectors::M_DEVICE_ID, keyDay, slot, dayKey) == 0);
-    assert(access::SealCommand(dayKey, access::vectors::M_DEVICE_ID, nonceDay, slot, n, plaintext, onAir) == 0);
   }
 
   DeviceClock syncedClock()
@@ -79,17 +83,131 @@ void run_access_control_tests()
   // No clock, no access - even for an authentic command.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock;
     buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::ClockInvalid);
     assert(spy.calls == 0);
   }
 
+  // The production shape: the secret is a KMU slot reference, never bytes in
+  // RAM. With the host KMU holding the vector secret, the vector command is
+  // accepted exactly as under the raw key.
+  {
+    PersistSpy spy;
+    crypto::host_kmu::Clear();
+    crypto::host_kmu::Provision(kmu::M_SECRET_SLOT, access::vectors::M_SECRET, sizeof(access::vectors::M_SECRET));
+    AccessControl access(access::vectors::M_DEVICE_ID, crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    AccessControl::Evaluation evaluation { access.Evaluate(onAir, sizeof(onAir), clock, 0) };
+    assert(evaluation.verdict == Verdict::Accepted);
+    assert(evaluation.slot == 1 && evaluation.n == 0);
+    crypto::host_kmu::Clear();
+  }
+
+  // An empty KMU slot accepts nothing: no day key can be derived. That is a
+  // crypto fault, not a persistence one, and is reported as such.
+  {
+    PersistSpy spy;
+    crypto::host_kmu::Clear();
+    AccessControl access(access::vectors::M_DEVICE_ID, crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::CryptoError);
+    assert(access.State().next[1] == 0);
+  }
+
+  // SECURITY: a key failure at the day rollover must not leave the previous
+  // day's tables live. Every code expires at the day boundary.
+  {
+    constexpr int64_t M_NEXT_DAY_UPTIME_SECS { DeviceClock::M_SECONDS_PER_DAY };
+    PersistSpy spy;
+    crypto::host_kmu::Clear();
+    crypto::host_kmu::Provision(kmu::M_SECRET_SLOT, access::vectors::M_SECRET, sizeof(access::vectors::M_SECRET));
+    AccessControl access(access::vectors::M_DEVICE_ID, crypto::KeyRef::Kmu(kmu::M_SECRET_SLOT), &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+
+    // Tables built for day 256.
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted);
+
+    // The key vanishes across the rollover: the rollover persists, the tables cannot be built.
+    crypto::host_kmu::Clear();
+    assert(access.Advance(clock, M_NEXT_DAY_UPTIME_SECS) == -ENOKEY);
+    assert(access.State().day == 257);
+
+    // Day 256's key with day 257 in the nonce is NOT accepted.
+    buildCrossDayCommand(256, 257, 1, 1, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict == Verdict::CryptoError);
+    assert(access.State().next[1] == 0);
+
+    // The key comes back: the device recovers, still refuses day 256's key, and
+    // accepts a correct day-257 command.
+    crypto::host_kmu::Provision(kmu::M_SECRET_SLOT, access::vectors::M_SECRET, sizeof(access::vectors::M_SECRET));
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict != Verdict::Accepted);
+    buildCommand(257, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    AccessControl::Evaluation evaluation { access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS) };
+    assert(evaluation.verdict == Verdict::Accepted && evaluation.slot == 1 && evaluation.n == 0);
+    crypto::host_kmu::Clear();
+  }
+
+  // SECURITY: a fault part-way through the day-257 rebuild leaves no day-256 key
+  // material in the slots not yet rebuilt, and accepts no day-256 key anywhere.
+  {
+    constexpr int64_t M_NEXT_DAY_UPTIME_SECS { DeviceClock::M_SECONDS_PER_DAY };
+    // One day key plus M_LOOKAHEAD rotating IDs per slot; fail inside slot 3.
+    constexpr int32_t M_HMACS_PER_SLOT { 1 + AccessControl::M_LOOKAHEAD };
+    constexpr uint8_t M_FAULT_SLOT { 3 };
+    constexpr int32_t M_CALLS_BEFORE_FAULT { M_HMACS_PER_SLOT * M_FAULT_SLOT + 10 };
+    constexpr uint8_t M_ZERO_DAY_KEY[access::M_DAY_KEY_BYTES] {};
+    uint8_t oldDayKeys[access::M_SLOT_COUNT][access::M_DAY_KEY_BYTES] {};
+    PersistSpy spy;
+
+    crypto::host_kmu::Clear();
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+
+    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted);
+    for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
+      memcpy(oldDayKeys[slot], access.DayKey(slot), access::M_DAY_KEY_BYTES);
+    }
+
+    crypto::host_kmu::FailHmacAfter(M_CALLS_BEFORE_FAULT);
+    assert(access.Advance(clock, M_NEXT_DAY_UPTIME_SECS) == -EIO);
+    assert(access.State().day == 257);
+
+    // No slot holds day 256's key; those not yet rebuilt hold nothing at all.
+    for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
+      assert(memcmp(access.DayKey(slot), oldDayKeys[slot], access::M_DAY_KEY_BYTES) != 0);
+      if (slot > M_FAULT_SLOT) { assert(memcmp(access.DayKey(slot), M_ZERO_DAY_KEY, access::M_DAY_KEY_BYTES) == 0); }
+    }
+
+    // While the fault persists, no day-256 key is accepted in any slot.
+    for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
+      crypto::host_kmu::FailHmacAfter(-1);
+      buildCrossDayCommand(256, 257, slot, 1, onAir);
+      crypto::host_kmu::FailHmacAfter(0);
+      assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict == Verdict::CryptoError);
+    }
+
+    // Fault cleared: still no day-256 key, and day 257 works.
+    crypto::host_kmu::Clear();
+    for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
+      buildCrossDayCommand(256, 257, slot, 1, onAir);
+      assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict != Verdict::Accepted);
+    }
+    buildCommand(257, 5, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict == Verdict::Accepted);
+  }
+
   // Happy path, sequence handling and replay.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
 
     buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
@@ -134,7 +252,7 @@ void run_access_control_tests()
   // Yesterday's key is dead, and a new day resets every slot.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
     AccessState restored {};
     restored.day     = 256;
@@ -159,7 +277,7 @@ void run_access_control_tests()
   // Freshness: authentic but held for 11 minutes is rejected AND NOT CONSUMED.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
     buildCommand(256, 3, 0, protocol::CommandType::Arm, M_MINUTE_0500 - 11, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Stale);
@@ -170,7 +288,7 @@ void run_access_control_tests()
   // Persist before acting: a failed save is NOT an acceptance, and does not advance.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
     buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted); // rolls the day in
@@ -185,7 +303,7 @@ void run_access_control_tests()
   // Garbage never counts. Only an expected ID with a bad tag does.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
     uint8_t garbage[protocol::M_UUID_BYTES] {};
 
@@ -202,7 +320,7 @@ void run_access_control_tests()
   // towards the lockout, which only counts once per distinct ID.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
     AccessControl::Evaluation evaluation {};
     buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
@@ -246,7 +364,7 @@ void run_access_control_tests()
   // Lockout requires 20 distinct expected IDs: slot 1 (n=0..15) + slot 2 (n=0..3), each with tag bit flipped.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
 
     // Corrupt slot 1, n = 0..15 (16 failures).
@@ -270,7 +388,7 @@ void run_access_control_tests()
   // The lockout doubles and caps at four hours (with 20 fresh distinct IDs each round).
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
     int64_t now { 0 };
     const uint32_t expectedSecs[] { 600, 1200, 2400, 4800, 9600, 14400, 14400 };
@@ -308,7 +426,7 @@ void run_access_control_tests()
   // Failed rollover persist: state reverts, floor advances anyway.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
     AccessState restored {};
     restored.day     = 255;
@@ -328,7 +446,7 @@ void run_access_control_tests()
   // today < state.day: clock is behind persisted day.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     AccessState restored {};
     restored.day = 257;
     access.Restore(restored);
@@ -341,7 +459,7 @@ void run_access_control_tests()
   // Sequence limit: next[1] = UINT32_MAX - 16, window size 0 beyond limit.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
     AccessState restored {};
     restored.day     = 256;
@@ -360,12 +478,12 @@ void run_access_control_tests()
   // Malformed plaintext not consumed: build a command with an invalid minute (1440 > 1439).
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
 
     uint8_t dayKey[access::M_DAY_KEY_BYTES] {};
     uint8_t plaintext[protocol::M_PLAINTEXT_BYTES] {};
-    assert(access::DeriveDayKey(access::vectors::M_SECRET, access::vectors::M_DEVICE_ID, 256, 1, dayKey) == 0);
+    assert(access::DeriveDayKey(secretRef(), access::vectors::M_DEVICE_ID, 256, 1, dayKey) == 0);
 
     // Encode a command with minute 1440 (invalid). Plaintext[4:6] = 0xA0 0x05 (LE) = 1440.
     plaintext[0] = 0;    // reserved bit 0, delay = 0
@@ -387,12 +505,12 @@ void run_access_control_tests()
   // all-zero plaintext does nothing.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
     uint8_t dayKey[access::M_DAY_KEY_BYTES] {};
     uint8_t plaintext[protocol::M_PLAINTEXT_BYTES] {};
 
-    assert(access::DeriveDayKey(access::vectors::M_SECRET, access::vectors::M_DEVICE_ID, 256, 1, dayKey) == 0);
+    assert(access::DeriveDayKey(secretRef(), access::vectors::M_DEVICE_ID, 256, 1, dayKey) == 0);
     plaintext[4] = static_cast<uint8_t>(M_MINUTE_0500 & 0xFF);
     plaintext[5] = static_cast<uint8_t>(M_MINUTE_0500 >> 8);
     assert(access::SealCommand(dayKey, access::vectors::M_DEVICE_ID, 256, 1, 0, plaintext, onAir) == 0);
@@ -404,7 +522,7 @@ void run_access_control_tests()
   // Advance(): an invalid clock is a no-op - nothing to adopt yet.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock;
 
     assert(access.Advance(clock, 0) == 0);
@@ -415,7 +533,7 @@ void run_access_control_tests()
   // call at the same uptime does not persist again.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() }; // Day 256 at uptime 0.
     AccessState restored {};
     restored.day     = 250;
@@ -447,7 +565,7 @@ void run_access_control_tests()
   // Advance(): a failed persist leaves the state unchanged and reports the error.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() }; // Day 256.
     AccessState restored {};
     restored.day = 250;
@@ -465,7 +583,7 @@ void run_access_control_tests()
   // unchanged.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
     AccessControl::Evaluation evaluation {};
 
@@ -517,7 +635,7 @@ void run_access_control_tests()
   // ahead ID still burns that ID after M_MAX_ID_FAILURES.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
 
     for (uint32_t n = AccessControl::M_WINDOW; n < AccessControl::M_LOOKAHEAD; n++) {
@@ -548,7 +666,7 @@ void run_access_control_tests()
   // must not make the device flash again and again.
   {
     PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
     DeviceClock clock { syncedClock() };
 
     buildCommand(256, 5, 20, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
@@ -567,116 +685,32 @@ void run_access_control_tests()
     assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::AheadOfWindow);
   }
 
-  // A FAILED ROLLOVER NEVER LEAVES THE PREVIOUS DAY'S KEYS LIVE. Day 256's
-  // tables are built; the rollover to day 257 then fails in key derivation
-  // (a backend fault, e.g. a PSA import failure). A command sealed under the
-  // day-256 key with 257 in its nonce must be refused, while the fault lasts
-  // and after it clears - every code expires at the day boundary.
+  // A rollover that cannot be persisted reports PersistFailed and accepts
+  // nothing - neither today's command nor a day-256 key under day 257's nonce.
+  // Once persistence returns, yesterday's key is still refused.
   {
-    constexpr int64_t M_TOMORROW { DeviceClock::M_SECONDS_PER_DAY };
+    constexpr int64_t M_NEXT_DAY_UPTIME_SECS { DeviceClock::M_SECONDS_PER_DAY };
     constexpr uint8_t M_SLOT { 1 };
-    PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
-    DeviceClock clock { syncedClock() };
     uint8_t staleOnAir[protocol::M_UUID_BYTES] {};
-    Verdict verdict { Verdict::NotForUs };
+    PersistSpy spy;
 
-    crypto::host_fault::Clear();
+    crypto::host_kmu::Clear();
+    AccessControl access(access::vectors::M_DEVICE_ID, secretRef(), &persistSpy, &spy);
+    DeviceClock clock { syncedClock() };
+
     assert(access.Advance(clock, 0) == 0);
-    assert(access.State().day == 256);
-    buildCrossDayCommand(256, 257, M_SLOT, 0, M_MINUTE_0500, staleOnAir);
+    buildCrossDayCommand(256, 257, M_SLOT, 0, staleOnAir);
     buildCommand(257, M_SLOT, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
 
-    // (1) The derivation fails at the first HMAC of the rollover.
-    crypto::host_fault::FailHmacAfter(0);
-    assert(access.Advance(clock, M_TOMORROW) < 0);
-    assert(access.Evaluate(staleOnAir, sizeof(staleOnAir), clock, M_TOMORROW).verdict == Verdict::CryptoError);
-
-    // (2) The fault clears: the tables are rebuilt for day 257, yesterday's key
-    // is still refused, and today's is accepted.
-    crypto::host_fault::Clear();
-    verdict = access.Evaluate(staleOnAir, sizeof(staleOnAir), clock, M_TOMORROW).verdict;
-    assert(verdict != Verdict::Accepted);
-    assert(verdict == Verdict::NotForUs);
-    assert(access.State().day == 257 && access.State().next[M_SLOT] == 0);
-    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_TOMORROW).verdict == Verdict::Accepted);
-    assert(access.State().next[M_SLOT] == 1);
-    crypto::host_fault::Clear();
-  }
-
-  // A derivation fault before any table exists is a CryptoError, not a
-  // PersistFailed: nothing failed to persist.
-  {
-    PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
-    DeviceClock clock { syncedClock() };
-
-    crypto::host_fault::Clear();
-    buildCommand(256, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
-    crypto::host_fault::FailHmacAfter(0);
-    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::CryptoError);
-    crypto::host_fault::Clear();
-    assert(access.Evaluate(onAir, sizeof(onAir), clock, 0).verdict == Verdict::Accepted);
-  }
-
-  // (3) The fault strikes part-way through the rebuild - slots 0 to 2 done
-  // under day 257, slot 3 part-derived, slots 4 to 7 untouched. No slot may
-  // accept a day-256 key, during the fault or after it clears.
-  {
-    constexpr int64_t M_TOMORROW { DeviceClock::M_SECONDS_PER_DAY };
-    // One HMAC for the day key, then one per derived rotating ID.
-    constexpr int M_HMACS_PER_SLOT { 1 + AccessControl::M_LOOKAHEAD };
-    constexpr int M_SLOTS_REBUILT { 3 };
-    constexpr int M_IDS_INTO_SLOT { 10 };
-    PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
-    DeviceClock clock { syncedClock() };
-    uint8_t staleOnAir[access::M_SLOT_COUNT][protocol::M_UUID_BYTES] {};
-
-    crypto::host_fault::Clear();
-    assert(access.Advance(clock, 0) == 0);
-    for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
-      buildCrossDayCommand(256, 257, slot, 0, M_MINUTE_0500, staleOnAir[slot]);
-    }
-
-    crypto::host_fault::FailHmacAfter(M_HMACS_PER_SLOT * M_SLOTS_REBUILT + 1 + M_IDS_INTO_SLOT);
-    assert(access.Advance(clock, M_TOMORROW) < 0);
-    for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
-      assert(access.Evaluate(staleOnAir[slot], sizeof(staleOnAir[slot]), clock, M_TOMORROW).verdict != Verdict::Accepted);
-    }
-
-    crypto::host_fault::Clear();
-    for (uint8_t slot = 0; slot < access::M_SLOT_COUNT; slot++) {
-      Verdict verdict { access.Evaluate(staleOnAir[slot], sizeof(staleOnAir[slot]), clock, M_TOMORROW).verdict };
-      assert(verdict != Verdict::Accepted);
-      assert(verdict == Verdict::NotForUs);
-    }
-    assert(access.ConsecutiveFailures() == 0);
-    crypto::host_fault::Clear();
-  }
-
-  // (4) A rollover that cannot be persisted still reports PersistFailed.
-  {
-    constexpr int64_t M_TOMORROW { DeviceClock::M_SECONDS_PER_DAY };
-    PersistSpy spy;
-    AccessControl access(access::vectors::M_DEVICE_ID, access::vectors::M_SECRET, &persistSpy, &spy);
-    DeviceClock clock { syncedClock() };
-    uint8_t staleOnAir[protocol::M_UUID_BYTES] {};
-
-    crypto::host_fault::Clear();
-    assert(access.Advance(clock, 0) == 0);
-    buildCrossDayCommand(256, 257, 1, 0, M_MINUTE_0500, staleOnAir);
-    buildCommand(257, 1, 0, protocol::CommandType::Arm, M_MINUTE_0500, onAir);
-
     spy.failWith = -EIO;
-    assert(access.Advance(clock, M_TOMORROW) == -EIO);
+    assert(access.Advance(clock, M_NEXT_DAY_UPTIME_SECS) == -EIO);
     assert(access.State().day == 256);
-    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_TOMORROW).verdict == Verdict::PersistFailed);
-    assert(access.Evaluate(staleOnAir, sizeof(staleOnAir), clock, M_TOMORROW).verdict == Verdict::PersistFailed);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict == Verdict::PersistFailed);
+    assert(access.Evaluate(staleOnAir, sizeof(staleOnAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict == Verdict::PersistFailed);
 
     spy.failWith = 0;
-    assert(access.Evaluate(staleOnAir, sizeof(staleOnAir), clock, M_TOMORROW).verdict == Verdict::NotForUs);
-    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_TOMORROW).verdict == Verdict::Accepted);
+    assert(access.Evaluate(staleOnAir, sizeof(staleOnAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict == Verdict::NotForUs);
+    assert(access.Evaluate(onAir, sizeof(onAir), clock, M_NEXT_DAY_UPTIME_SECS).verdict == Verdict::Accepted);
   }
 
   printf("access control: OK\n");
