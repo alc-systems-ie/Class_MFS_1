@@ -102,8 +102,9 @@ namespace alc
        *
        * Only valid for a slot an Accepted Evaluate() just named: the tables are
        * rebuilt on day rollover, so a key read for any other purpose could be
-       * stale. Added for the FIRE confirmation burst (task 8), which needs the
-       * same key material the command authenticated with to derive confirmId.
+       * stale. Firmware no longer reads it - the FIRE confirmation burst it was
+       * added for is retired (event reports design section 5.2) - and it remains
+       * for the host tests that check the rollover wipe.
        */
       const uint8_t* DayKey(uint8_t slot) const { return m_day_keys[slot]; }
 

@@ -37,6 +37,7 @@ namespace alc
       uint8_t DelayCode() const { return m_delay_code; }
       uint16_t DelaySeconds() const { return protocol::DelayToSeconds(m_delay_code); }
       protocol::Mode OperatingMode() const { return m_mode; }
+      uint8_t ReportSuppress() const { return m_report_suppress; }
 
     private:
       int save();
@@ -46,6 +47,7 @@ namespace alc
       uint8_t m_sensitivity_byte;
       uint8_t m_delay_code;
       protocol::Mode m_mode;
+      uint8_t m_report_suppress;
   };
 
 }

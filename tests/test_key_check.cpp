@@ -5,6 +5,7 @@
 
 #include "access_keys.hpp"
 #include "access_vectors.hpp"
+#include "report_keys.hpp"
 #include "crypto.hpp"
 #include "host_kmu.hpp"
 #include "key_check.hpp"
@@ -26,8 +27,8 @@ void run_key_check_tests()
   for (size_t index = 0; index < sizeof(M_EXPECTED_MESSAGE); index++) {
     assert(key_check::M_CHECK_MESSAGE[index] == M_EXPECTED_MESSAGE[index]);
   }
-  for (const uint8_t label :
-       { access::M_LABEL_DAY_KEY, access::M_LABEL_ENC_KEY, access::M_LABEL_ROTATING_ID, access::M_LABEL_TIME_SYNC, access::M_LABEL_CONFIRM }) {
+  for (const uint8_t label : { access::M_LABEL_DAY_KEY, access::M_LABEL_ENC_KEY, access::M_LABEL_ROTATING_ID, access::M_LABEL_TIME_SYNC,
+                               report::M_LABEL_REPORT_KEY, report::M_LABEL_REPORT_ENC_KEY, report::M_LABEL_REPORT_ID }) {
     assert(key_check::M_CHECK_MESSAGE[sizeof(key_check::M_CHECK_MESSAGE) - 1] != label);
   }
 

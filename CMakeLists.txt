@@ -66,5 +66,10 @@ target_sources(app PRIVATE
   src/detection_engine.cpp
   src/arming_sequence.cpp
   src/fire_sequence.cpp
+  src/fire_gate.cpp
   src/key_check.cpp
+  src/report_keys.cpp
+  src/report_counter.cpp
+  src/report_policy.cpp
+  src/report_store.cpp
 )

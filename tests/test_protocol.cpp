@@ -191,5 +191,37 @@ void run_fire_command_tests()
     assert(decoded.minuteOfDay == 542);
   }
 
+  // Settings byte 6: the four report switches (low nibble only, Settings only).
+  {
+    uint8_t plaintext[8] {};
+    Command command;
+    command.type = CommandType::Settings;
+    EncodeCommand(command, plaintext);
+    plaintext[M_PT_REPORTS] = 0xFA;
+    assert(DecodeCommand(plaintext, decoded));
+    assert(decoded.reportSuppress == 0x0A);
+
+    command.reportSuppress = 0x05;
+    EncodeCommand(command, plaintext);
+    assert(plaintext[M_PT_REPORTS] == 0x05);
+    assert(plaintext[7] == 0);
+
+    for (CommandType type : { CommandType::Arm, CommandType::Disarm }) {
+      command      = Command {};
+      command.type = type;
+      EncodeCommand(command, plaintext);
+      plaintext[M_PT_REPORTS] = 0xFF;
+      assert(DecodeCommand(plaintext, decoded));
+      assert(decoded.reportSuppress == 0);
+    }
+
+    command        = Command {};
+    command.isFire = true;
+    EncodeCommand(command, plaintext);
+    plaintext[M_PT_REPORTS] = 0xFF;
+    assert(DecodeCommand(plaintext, decoded));
+    assert(decoded.isFire && decoded.reportSuppress == 0);
+  }
+
   printf("fire command: OK\n");
 }

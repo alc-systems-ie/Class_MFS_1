@@ -334,6 +334,12 @@ fire line **is low / is not high**.
 
 ## 5f. FIRE command (plan 2026-09-15, spec `docs/superpowers/specs/2026-09-15-fire-command-amendment.md`)
 
+> **Superseded 2026-11-24** by §5n: FIRE now fires at once, with no countdown and no
+> confirmId burst; a Disarm or scanner loss cancels it before it asserts only when its
+> supply was already up (a pending trigger delay) — otherwise it asserts in the announce tick.
+> Items 1–6 below describe the old firmware and cannot pass on it; item 7 (Arming
+> FIRE ignored) still holds, minus the countdown.
+
 1. [ ] **Armed FIRE fires after 10 s.** Arm the device; send FIRE from a slot.
    Expect the confirmId burst (§5f.6), then the fire pins assert at the 10 s
    mark and the device latches Inactive, exactly as a motion trigger does.
@@ -370,7 +376,7 @@ fire line **is low / is not high**.
 - [ ] 1. Boot is clean with the FEM declared: no MPSL/FEM error, `Passive scan started` as before.
 - [ ] 2. Commands are heard at range: Arm and Disarm from the phone at 20 m+, board on the ground.
 - [ ] 3. Idle current on the PPK II over 10 min: expect ~117 µA at 3.0 V (was 68–75 µA without the LNA).
-- [ ] 4. FIRE confirmation burst still received by `tools/uuid_observer` (now +10 dBm through the PA).
+- [ ] 4. ~~FIRE confirmation burst still received by `tools/uuid_observer` (now +10 dBm through the PA).~~ Superseded 2026-11-24: the confirmation burst is retired; use an event report (§5n.1) instead.
 
 ## 5h. Three-LED indication (2026-11-12, spec `docs/superpowers/specs/2026-11-12-three-led-indication-design.md`)
 
@@ -386,7 +392,7 @@ Every step holds in a production build too - no LED differs between builds.
 - [ ] 8. Armed trigger (motion past activations/delay): output fires; afterwards orange **steady** and stays on. A failed-authentication or replayed command leaves it on; the next accepted command (any type) clears it.
 - [ ] 9. Arm refused on receipt (scanner stopped): orange steady ~3 s, then green. No red. Arming that fails at the END of the exit delay (e.g. a battery that cannot hold 3.2 V for the fire supply): red for 10 s, then orange **stays on**; a Disarm from the app turns it green.
 - [ ] 10. Disarmed test trigger: red lights for the would-be output window (~5 s), green dark meanwhile; RTT `Detection met (test).`
-- [ ] 11. Disarmed rehearsal FIRE: red for its assertion window after the 10 s countdown. Then a rehearsal FIRE immediately followed by an Arm: **no** simulated red during Arming or Active.
+- [ ] 11. Disarmed rehearsal FIRE: red for its assertion window, at once (no countdown since 2026-11-24). Then a rehearsal FIRE immediately followed by an Arm: **no** simulated red during Arming or Active.
 - [ ] 12. Battery-test build (`CONFIG_MFS_BATTERY_TEST=y`): green is the liveness blink only; with `CONFIG_MFS_BLINK_MS=0` green never lights.
 
 ## 5i. Fire supply on demand (2026-11-14, spec `docs/superpowers/specs/2026-11-14-fire-supply-on-demand-amendment.md`)
@@ -397,7 +403,7 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 - [ ] 2. PPK2 (ammeter), armed, settled, 60 s window: the boost switching spikes between scans are gone or sparse; average down from ~161 µA towards ~120 µA. Record it in `docs/power-budget.md`.
 - [ ] 3. Armed trigger with a delay: VOUT rises to 3.3 V when `TRIGGER PENDING` logs, the output asserts at expiry, then disarm (orange latch) and VOUT returns to battery voltage (pass-through).
 - [ ] 4. Armed trigger without a delay (delay 0): the output asserts ~100 ms after detection; VOUT is 3.3 V at assertion. With an e-match: it fires.
-- [ ] 5. Live FIRE: VOUT rises at the top of the 10 s countdown, fires at its end, then returns to battery voltage. Rehearsal FIRE (disarmed): VOUT never rises.
+- [ ] 5. Live FIRE: VOUT rises at once, under the fired report's burst (no countdown since 2026-11-24), the output asserts ~100 ms after the FIRE, then VOUT returns to battery voltage. Rehearsal FIRE (disarmed): VOUT never rises.
 - [ ] 6. Disarm during an armed delay: VOUT returns to battery voltage with the pins disabled.
 - [ ] 7. Optional, with a depleted cell that cannot hold 3.2 V boosted: arming is refused at the battery test (orange stays on, as §5h.9). Fire-anyway at fire time is a code path only: not bench-forced.
 - [x] 8. **126.7 µA, 2026-11-14** (MFS1-1126-00006, 60 s window, armed; `docs/power-budget.md`). PPK2 (ammeter, CR123A), armed, settled, one full scan period: ~0.8 mC per scan with a flat ~7.6 mA plateau (not pulses), average ~140 µA. Record in `docs/power-budget.md`.
@@ -418,7 +424,7 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 
 ## 5m. FEM in GPIO-only mode (2026-11-16, `docs/power-budget.md` §5.1)
 
-- [ ] 1. After flashing the fix, RSSI of the device's transmit at 20 cm is within a few dB of −40 dBm on the iPhone (nRF Connect). The production firmware never advertises, so use the FIRE confirmation burst (an nRF Connect scan shows it) or the hub's `rssi` on the daily report; the `../link_beacon` GPO build is the bench reference (−40 dBm on the Drawer Master).
+- [ ] 1. After flashing the fix, RSSI of the device's transmit at 20 cm is within a few dB of −40 dBm on the iPhone (nRF Connect). Use an event report (§5n; an nRF Connect scan shows its burst — the FIRE confirmation burst this item first named is retired) or the hub's `rssi` on the daily report; the `../link_beacon` GPO build is the bench reference (−40 dBm on the Drawer Master).
 - [ ] 2. The hub receives MFS1-1126-00007's 03:00 daily report from the shed once 00007 carries the fix (trial tag build).
 - [ ] 3. Commands still heard as before (LNA unchanged): 10 Arm/Disarm Sends from the iPhone at the usual distances.
 - [ ] 4. PPK2, armed, 60 s: the 5 s power-model spikes are gone; average at or slightly below 103.4 µA.
@@ -443,6 +449,31 @@ On the bench unit the fire pins drive LEDs; use an e-match only where noted.
 - [ ] 14. MFS1-1126-00007 stays on tag `trial-00007-2026-11-14` until the trial ends, then is reflashed through the script.
 - [ ] 15. **One batch on the MFS board (2026-11-15).** The separate recover / x-provision-keys / program calls failed on the MFS board (boot monitor power cycling ~11 s, cold-boot re-lock). Run by hand as one batch (recover → program `ERASE_NONE` → x-provision-keys → reset `RESET_PIN`) it worked: the app booted, stopped the boot monitor, and the KMU boot key check passed; `protection-get` on the unlocked chip: `access status: Debug access is enabled (status value: None)`. Still to run: the script itself `--unlocked` on J-Link 853003346, then locked (with `protection-set All` inside the batch, before the reset), recording the locked `protection-get` line. **When the board is already cycling** (after a failed run), the whole batch must finish inside one ~11 s window: record the `Device batch completed ... in N s` time the script prints on the first run (the manual batch took ~4 s by nrfutil's log). Also record the shape of the `nrfutil --json` NDJSON on a failure if one occurs (the script relies on `type`, `batch_end` `data.error`, and the `batch_update` `operationId` / progress `description` — §5.5 of the design).
 - [ ] 16. **Batch file holds no key — on the first real run.** The harness's batch-file check is dry-run only. Build one real batch by hand with a FAKE key file (`printf '%s\n%s\n' <fake> <fake> | sh tools/kmu_key_file.sh /tmp/x/k.json 100 102`, then `nrfutil device x-provision-keys --key-file /tmp/x/k.json --x-family nrf54l --x-append-batch /tmp/x/b.json`, no serial number) and `grep -c -i -F <fake key> /tmp/x/b.json` — expect 0 (done once in an agent scratchpad 2026-11-15: 0; repeat on the bench machine's nrfutil).
+
+## 5n. Event reports (2026-11-24, design `docs/superpowers/specs/2026-11-24-event-reports-design.md`)
+
+Flash the bench unit with `tools/flash_device.sh <serial> --unlocked` (RTT needed; a real
+flash, so the report generation is non-zero). Until the hub and the Network Manager
+stand-in exist, watch the air with `tools/uuid_observer` on a second DK: it cannot decrypt
+a report, so these items check **when** and **how many** — a burst of ~5 identical
+random-looking 128-bit UUIDs ~20 ms apart (100 ms), one UUID per report, a new UUID for
+the next report — and RTT gives which (`Report <event> sent (r N).`). Decoding each
+event end to end (MFS → hub → NM → CLASS broker), a bridge outage and the NM's
+generation handling are checked with the hub and NM plans. Every report needs **no**
+clock sync. RTT at boot: `Event reports ready: generation N, counter from 0.`
+
+- [ ] 1. **Arm → one report on Active.** Send Arm: nothing on air during the 10 s exit delay; then one burst as the device reaches Active (~10 s after the Arm), RTT `Report activated sent`. A refused arming (scanner, battery) sends nothing.
+- [ ] 2. **Disarm → one report.** From Active, send Disarm: one burst, `Report deactivated sent`. A Disarm while Arming (cancelling the exit delay) or while Inactive sends nothing.
+- [ ] 3. **Armed motion → report, then fire ~100 ms later.** Logic analyser on FIRE_1 and on the radio (the FEM's TX_EN, P1.09, marks each advert). Delay 0: the burst starts, the fire supply's 100 ms settle overlaps it, FIRE_1 rises ~100 ms after the burst's first advert (RTT `Report fired from motion sent` timestamp against the rising edge). With a delay: FIRE_1 rises up to 100 ms after the delay's expiry (one loop tick), the supply already up. Then the device latches Inactive and **no** `deactivated` report follows.
+- [ ] 4. **Armed FIRE → report, then fire within ~100 ms of the command.** RTT `FIRE received ... LIVE`, then `Report fired from command sent`, `Fire supply raised`, and FIRE_1 rises ~100 ms after the FIRE's RTT line (was 10 s). No `deactivated` afterwards.
+- [ ] 5. **Disarmed FIRE → red LED, no advert.** With the device Inactive, send FIRE: red for its assertion window at once, `rehearsal` in RTT, the fire lines never move, and `uuid_observer` sees **nothing** from the device. Repeat while Arming: FIRE ignored, nothing on air.
+- [ ] 6. **Switches off → no reports.** While Inactive, send Settings with all four report switches off (app's second settings page; byte 6 = `0x0F`). Repeat items 1–4: the device behaves the same, but `uuid_observer` sees nothing and no `Report ... sent` line appears. Item 3 and 4's fire then asserts without waiting for a burst (the supply settle only). Then switch each back on, one at a time, and check only that event comes back. A power cycle keeps the switches (`params/v1`).
+- [ ] 7. **Disarm inside the 100 ms window cancels the fire (best effort).** Hard to hit by hand: with a delay set, time a Disarm (phone already advertising it) to land on the scan just before the delay's expiry, or repeat until one lands inside the window between `Report fired from motion sent` and the assertion. Expect FIRE_1 never to rise, then `Report deactivated sent` (the fired report already went out, but the output never asserted). Record whether the window was hit; failing to hit it is not a failure.
+- [ ] 8. **Low battery while armed → one report.** Bench supply in place of the cell at 2.6 V (the boost still reaches 3.3 V for the arming battery test; if it refuses arming, raise to 2.65 V). Arm: the battery is read after the battery test (`Battery ... mV.` if it changed), then on Active `Report activated sent` and, once the radio is quiet, `Report low battery sent`. Disarm and re-arm at the same voltage: `activated` again but **no** second `low battery`. Reset the warning (a power cycle, or an arming at ≥ 2.8 V, whose post-test read clears it), then arm at 2.6 V again: `low battery` once more. Disarmed at 2.6 V: nothing is sent until the device is next Active.
+- [ ] 9. **Generation bump.** Note `CONFIG_MFS_REPORT_GENERATION` in `secrets/<serial>.conf` (owner — agents never read `secrets/`; that one line holds no key). Run `tools/flash_device.sh <serial> --unlocked` twice: the script prints `Report generation: N -> N+1` each time and the file holds N+2 afterwards; RTT `Event reports ready: generation N+2, counter from 0.`; item 1 still sends. `--build` or `--dry-run` prints `(not saved)` and leaves the file alone.
+- [ ] 10. **Generation 0 sends nothing.** A plain `west build` cannot show this: its `CONFIG_MFS_DEVICE_ID` is empty, so `initAccess()` stops at `Device ID missing or malformed` before the key check and before reports are set up; a script build always carries a non-zero generation. So build the gap by hand, key-test DK only (no PMIC). First run `MFS_DEV_ID=1057755043 tools/flash_device.sh <dk serial> --unlocked` (provisions its KMU). Then write a bench conf holding **only** the two non-secret identity lines the script derives — `CONFIG_ALC_DEVICE_SERIAL="<dk serial>"` and `CONFIG_MFS_DEVICE_ID="<its 8-hex ID>"` (owner copies them; agents never read `secrets/`) — and **no** `CONFIG_MFS_REPORT_GENERATION`, so it stays 0. Build as the script does, `west build -b nrf54l15dk/nrf54l05/cpuapp -p always -- -DEXTRA_CONF_FILE="<bench conf>;debug-unlocked.conf"`, check `build/*/zephyr/.config` shows the ID, `CONFIG_MFS_REPORT_GENERATION=0` and `CONFIG_MFS_DEBUG_UNLOCKED=y`, and program it with §5l.3's `ERASE_RANGES_TOUCHED_BY_FIRMWARE` command, which keeps the KMU. RTT: the boot key check passes (no `Device keys missing`), then `Report generation 0 - event reports disabled (flash with tools/flash_device.sh).`; items 1–4 act as usual but nothing goes on air. Re-run the script afterwards.
+- [ ] 11. **A FIRE cut short never re-fires on a quick re-arm.** Every path to Inactive cancels a live FIRE window (host test `testScannerLossCancelsLiveFire`). The bench cannot force a scanner loss (§8 — do not add a hook), and a Disarm takes the same `RestartDetection(false)` path, so exercise it with a Disarm. The default hold period (`CONFIG_MFS_ADXL_INACTIVITY_SECS`, 5 s) is shorter than the 10 s exit delay, so the window has always ended before a re-arm can reach Active: build with `--extra-conf` holding `CONFIG_MFS_ADXL_INACTIVITY_SECS=30` (bench only). Armed FIRE; when FIRE_1 rises, send Disarm at once (pins isolated, `deactivated` **not** sent — the device fired), then Arm straight away. On Active (~10 s later, inside the old 30 s window) FIRE_1 must **stay low** and only `activated` is sent. Reflash the normal image afterwards.
+- [ ] 12. **A FIRE cancelled before it asserts reports fired, then deactivated (best effort).** Only possible with the supply already up: a FIRE whose supply still has to rise asserts in the same tick as its report (the 100 ms settle blocks), so no Disarm can land in between. So set a trigger delay, arm, and move the device to start it (`TRIGGER PENDING`, supply raised); then send FIRE, with a Disarm already advertising from a second phone, so it is heard in the ~100 ms between the FIRE's report and the assertion on the next tick. If the window is hit: `Report fired from command sent`, FIRE_1 never rises, then `Report deactivated sent`. If the Disarm lands after the assertion: the device fired (FIRE_1 rose and fell) and no `deactivated` follows. Record which was seen.
 
 ## 9. Bench log
 

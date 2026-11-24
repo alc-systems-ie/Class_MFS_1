@@ -1,5 +1,19 @@
 # MFS_1 FIRE Command — Design Amendment
 
+> **Superseded in part 2026-11-24** by `docs/superpowers/specs/2026-11-24-event-reports-design.md`
+> §5.2. **FIRE fires at once**: the 10 s countdown, its "unstoppable by Disarm" carve-out
+> and its scanner-loss exemption are gone, and so is the receipt confirmation (the
+> `confirmId` burst, label `0x06`, retired and never reused). An armed FIRE now sends a
+> *fired from command* event report and asserts ~100 ms after receipt, in the same tick
+> as its supply settle when the supply was not yet raised — so a Disarm can cancel it only
+> when the supply was already up (a FIRE during a pending trigger delay), where the
+> assertion falls on the next tick. Always-fail-safe has no exception: a fault or Disarm
+> during the assertion window still ends it. A
+> disarmed FIRE rehearses on the red LED and sends nothing. §3–§4 below, and every
+> countdown or confirmation detail elsewhere in this document (owner decisions 2–4 in
+> §1, the `confirmId` vectors), are replaced by that section. The FIRE payload (§2) is
+> unchanged; `protocolVersion` is now `0x05`.
+
 > **LEDs superseded 2026-11-12.** Every LED A / LED B behaviour in this document is
 > replaced by `docs/superpowers/specs/2026-11-12-three-led-indication-design.md` (red /
 > orange / green, the same in every build). The rest of this document stands.

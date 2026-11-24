@@ -6,6 +6,7 @@
 #include "access_keys.hpp"
 #include "access_vectors.hpp"
 #include "crypto_selftest.hpp"
+#include "report_keys.hpp"
 
 LOG_MODULE_REGISTER(crypto_selftest, LOG_LEVEL_INF);
 
@@ -56,7 +57,36 @@ namespace alc::crypto
       return -EBADMSG;
     }
 
-    LOG_INF("Crypto self-test passed: %u command vectors and the time-sync vector match.", index);
+    index = 0;
+    for (const vectors::ReportVector& vector : vectors::M_REPORTS) {
+      uint8_t reportKey[report::M_REPORT_KEY_BYTES] {};
+
+      if (report::DeriveReportKey(secret, vectors::M_DEVICE_ID, vector.generation, reportKey) != 0 ||
+          memcmp(reportKey, vector.reportKey, sizeof(reportKey)) != 0) {
+        LOG_ERR("Self-test report vector %u: report key mismatch!", index);
+        return -EBADMSG;
+      }
+      if (report::SealReport(reportKey, vectors::M_DEVICE_ID, vector.generation, vector.counter, vector.plaintext, onAir) != 0 ||
+          memcmp(onAir, vector.onAir, sizeof(onAir)) != 0) {
+        LOG_ERR("Self-test report vector %u: sealed report mismatch - CCM disagrees with the Network Manager!", index);
+        return -EBADMSG;
+      }
+      if (report::OpenReport(reportKey, vectors::M_DEVICE_ID, vector.generation, vector.counter, vector.onAir, plaintext) != 0 ||
+          memcmp(plaintext, vector.plaintext, sizeof(plaintext)) != 0) {
+        LOG_ERR("Self-test report vector %u: open failed!", index);
+        return -EBADMSG;
+      }
+
+      memcpy(onAir, vector.onAir, sizeof(onAir));
+      onAir[report::M_OFFSET_TAG] ^= 0x01;
+      if (report::OpenReport(reportKey, vectors::M_DEVICE_ID, vector.generation, vector.counter, onAir, plaintext) != -EBADMSG) {
+        LOG_ERR("Self-test report vector %u: a corrupted tag was not rejected!", index);
+        return -EBADMSG;
+      }
+      index++;
+    }
+
+    LOG_INF("Crypto self-test passed: the command, report and time-sync vectors match.");
     return 0;
   }
 

@@ -29,7 +29,9 @@ namespace alc::protocol
   // 0x04 since 2026-09-15: FIRE recognition (docs/superpowers/specs/2026-09-15-
   // fire-command-amendment.md section 2). A 0x03 payload fails authentication
   // rather than being reinterpreted as FIRE.
-  constexpr uint8_t M_PROTOCOL_VERSION { 0x04 };
+  // 0x05 since 2026-11-24: event reports (docs/superpowers/specs/2026-11-24-event-reports-
+  // design.md); the FIRE confirmId burst is retired. A 0x04 command fails authentication.
+  constexpr uint8_t M_PROTOCOL_VERSION { 0x05 };
 
   // Plaintext layout, after decryption.
   constexpr uint8_t M_PT_ARM_DELAY { 0 };        // bit 0 reserved (was arm), bits 1-7 delay code
@@ -37,8 +39,15 @@ namespace alc::protocol
   constexpr uint8_t M_PT_COOLDOWN { 2 };
   constexpr uint8_t M_PT_SENSITIVITY { 3 };
   constexpr uint8_t M_PT_MINUTE { 4 }; // uint16 LE, bits 0-10 UTC minute of day
-  // Plaintext bytes 6-7 are per-variant extension space. MFS_1 MUST IGNORE THEM
-  // and must never require them to be zero.
+  // Settings commands only: bits 0-3 SUPPRESS an event report (set = silent, zero = all on).
+  // Bits 4-7 are ignored. Byte 7 is per-variant extension space: MFS_1 MUST IGNORE IT
+  // and must never require it to be zero.
+  constexpr uint8_t M_PT_REPORTS { 6 };
+  constexpr uint8_t M_REPORT_SUPPRESS_MASK { 0x0F };
+  constexpr uint8_t M_SUPPRESS_LOW_BATTERY { 1U << 0 };
+  constexpr uint8_t M_SUPPRESS_ACTIVATED { 1U << 1 };
+  constexpr uint8_t M_SUPPRESS_DEACTIVATED { 1U << 2 };
+  constexpr uint8_t M_SUPPRESS_FIRED { 1U << 3 };
 
   // FIRE magic ("OMG") - distinguishes a FIRE command from a bare reserved
   // (type 00) payload. Lives in bytes 0, 2, 3 with byte 1 held at 0x00 (a
@@ -103,6 +112,8 @@ namespace alc::protocol
       uint8_t cooldownByte { 0 };
       uint8_t sensitivityByte { 0 };
       uint16_t minuteOfDay { 0 };
+      // Settings only: the four report suppress bits (M_SUPPRESS_*). Zero = all reports on.
+      uint8_t reportSuppress { 0 };
       // True for a distinguished type-00 FIRE payload (the "OMG" magic).
       // type stays CommandType::Reserved; only this flag marks it as FIRE.
       bool isFire { false };

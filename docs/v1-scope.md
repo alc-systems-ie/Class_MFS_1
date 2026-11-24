@@ -164,8 +164,12 @@ must use the gated `triggered`, never the raw INT1 level.
 
 ### 1.1 Explicitly deferred
 
-No alarm transmission, no nightly status, no fuel gauge reporting, no
-Coded PHY fallback. (The FEM was listed here until 2026-11-12, when it turned out
+No nightly status, no fuel gauge reporting, no
+Coded PHY fallback. (Alarm transmission was listed here until 2026-11-24: an armed
+device now sends **event reports** — activated, deactivated, fired, low battery —
+as one-way encrypted adverts, `docs/superpowers/specs/2026-11-24-event-reports-design.md`.
+The fired report is sent from inside `updateOutputState()`, on the output's rising
+edge, so it is not a second reader of the condition — §1.0's rules hold.) (The FEM was listed here until 2026-11-12, when it turned out
 to be fitted: it is now driven by MPSL, LNA on for every scan — `docs/power-budget.md` §5.) The BLE **connection** is also deferred — see §4.
 
 ## 2. Hardware hazard — ADXL367 INT2 and PMIC SHPHLD
@@ -345,7 +349,10 @@ The command is a single authenticated assertion of arm state and settings togeth
 the provisioner time sync (`docs/tan-scheme.md` §6.1).
 
 So v1 is **advert-only**: the device scans, authenticates the command, applies it,
-and never transmits. This removes the entire connection stack from the first build.
+and never transmits in reply. This removes the entire connection stack from the first build.
+(Since 2026-11-24 an **armed** device does transmit — one-way event reports, a 100 ms
+burst of one 16-byte service UUID to the hub, never acknowledged and never addressed to the phone;
+a disarmed device still sends nothing. `docs/superpowers/specs/2026-11-24-event-reports-design.md`.)
 
 **Trade-off:** no acknowledgement to the phone over the radio — **the orange
 triple is the acknowledgement**. It plays once an accepted command has taken

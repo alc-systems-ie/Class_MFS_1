@@ -69,7 +69,22 @@ nonce(n)              = id(4) ‖ day(2) ‖ slot(1) ‖ n(4)                  (
 aad(n)                = rotatingId(n) ‖ protocolVersion(1)                (5 bytes)
 command(n)            = rotatingId(n) ‖ AES-128-CCM(encKey, nonce, aad, plaintext(8), tag 4)
 timeSync(t)           = t(4, LE) ‖ HMAC( provisionKey, id(4) ‖ t(4) ‖ 0x05 )[0..11]
+
+reportKey(id, g)      = HMAC( deviceSecret,  id(4) ‖ g(2) ‖ 0x08 )
+reportEncKey          = HMAC( reportKey, 0x09 )[0..15]
+reportId(r)           = HMAC( reportKey, r(4) ‖ 0x0A )[0..3]
+nonce(r)              = id(4) ‖ g(2) ‖ 0xFF(1) ‖ r(4)                    (11 bytes)
+aad(r)                = reportId(r) ‖ reportVersion(1)                    (5 bytes)
+report(r)             = reportId(r) ‖ AES-128-CCM(reportEncKey, nonce, aad, plaintext(8), tag 4)
 ```
+
+The last six lines are the device's **event reports** (2026-11-24,
+`docs/superpowers/specs/2026-11-24-event-reports-design.md` §4): one-way, device →
+hub → Network Manager. `reportKey` is fixed per device and **generation** `g`, not per
+day, so a report needs no valid clock. `r` is a never-reused 32-bit counter persisted
+in blocks (`report/v1`); `g` is bumped by `tools/flash_device.sh` on every flash, because
+a flash erases `r`. `0xFF` sits where a command nonce carries its slot (0–7), so a report
+nonce can never equal a command nonce.
 
 | Symbol | Size | Notes |
 |---|---|---|
@@ -79,10 +94,16 @@ timeSync(t)           = t(4, LE) ‖ HMAC( provisionKey, id(4) ‖ t(4) ‖ 0x05
 | `day` | 16 bits | Day index (§4) |
 | `slot` | 8 bits | 0–7. **Slot 0 is the Network Manager's**; 1–7 are engineers (§5) |
 | `n` | 32 bits | Sequence number within (device, day, slot) |
-| `protocolVersion` | 8 bits | `0x03` since 2026-09-14 (command types amendment, was `0x02`). Never on air — both sides supply it, so a payload from another version fails authentication instead of mis-parsing |
+| `protocolVersion` | 8 bits | `0x05` since 2026-11-24 (event reports: FIRE fires at once, Settings byte 6 gained the report switches; `0x04` was the FIRE command, `0x03` the command types amendment, `0x02` before). Never on air — both sides supply it, so a payload from another version fails authentication instead of mis-parsing |
+| `g` | 16 bits | Report generation, from `CONFIG_MFS_REPORT_GENERATION`; master copy in `secrets/<serial>.conf`. **0 disables reports** (a plain `west build`) |
+| `r` | 32 bits | Report counter, never reused under one `reportKey` |
+| `reportVersion` | 8 bits | `0x01`. Never on air, like `protocolVersion` |
 
-**Labels `0x02`–`0x05` give domain separation.** `0x00` and `0x01` were the retired
-paper-TAN and session-key labels and **must not be reused**.
+**Labels `0x02`–`0x05` and `0x07`–`0x0A` give domain separation.** `0x07` is the boot
+key check (`"MFS-KCV" ‖ 0x07`, §8); `0x08`–`0x0A` are the report labels above. `0x00` and
+`0x01` were the retired paper-TAN and session-key labels, and `0x06` was the FIRE
+command's `confirmId` (retired 2026-11-24 with the receipt confirmation); none of the
+three **may be reused**.
 
 **Why CCM.** It encrypts and authenticates in one standard step, the 4-byte tag
 fits the payload, and PSA supports it directly as
@@ -180,7 +201,7 @@ The device is scan-only. The phone advertises one 128-bit service UUID carrying 
 
 ### 6.1 Wire format
 
-**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section (including `protocolVersion` `0x03`) where they disagree.
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree. (It set `protocolVersion` `0x03`; the current value is `0x05` — §3's `protocolVersion` row. Byte 6 bits 0–3 are the event-report switches since 2026-11-24, amendment §2.1.)
 
 
 On-air order (a scanner's hex dump; the app builds the UUID string reversed):

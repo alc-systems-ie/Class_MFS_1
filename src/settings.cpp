@@ -25,6 +25,9 @@ namespace alc
     // suddenly acquire a delay or start advertising.
     constexpr uint8_t M_DEFAULT_DELAY_CODE { 0 };
     constexpr protocol::Mode M_DEFAULT_MODE { protocol::Mode::TriggerOnly };
+
+    // Zero suppresses nothing: every report is on.
+    constexpr uint8_t M_DEFAULT_REPORT_SUPPRESS { 0 };
   }
 
   Settings::Settings()
@@ -33,6 +36,7 @@ namespace alc
       , m_sensitivity_byte(M_DEFAULT_SENSITIVITY_BYTE)
       , m_delay_code(M_DEFAULT_DELAY_CODE)
       , m_mode(M_DEFAULT_MODE)
+      , m_report_suppress(M_DEFAULT_REPORT_SUPPRESS)
   {}
 
   bool Settings::ApplyFrom(const protocol::Command& command, bool allowModeChange)
@@ -40,7 +44,7 @@ namespace alc
     protocol::Mode mode { allowModeChange ? command.mode : m_mode };
 
     if (command.activations == m_activations && command.cooldownByte == m_cooldown_byte && command.sensitivityByte == m_sensitivity_byte &&
-        command.delayCode == m_delay_code && mode == m_mode) {
+        command.delayCode == m_delay_code && mode == m_mode && command.reportSuppress == m_report_suppress) {
       return false;
     }
 
@@ -49,6 +53,7 @@ namespace alc
     m_sensitivity_byte = command.sensitivityByte;
     m_delay_code       = command.delayCode;
     m_mode             = mode;
+    m_report_suppress  = command.reportSuppress;
     save();
     return true;
   }
@@ -57,8 +62,12 @@ namespace alc
 
   namespace
   {
-    // activations, cooldown, sensitivity, delay, mode.
-    constexpr uint8_t M_RECORD_BYTES { 5 };
+    // activations, cooldown, sensitivity, delay, mode, reportSuppress.
+    // A 5-byte record (before the report switches existed) still loads, with
+    // reportSuppress = 0.
+    constexpr uint8_t M_RECORD_BYTES { 6 };
+    constexpr uint8_t M_RECORD_BYTES_V1 { 5 };
+    constexpr uint8_t M_RECORD_REPORT_INDEX { 5 };
 
     // The static handler has no instance, so loaded bytes land here and Load()
     // copies them into the object.
@@ -71,10 +80,12 @@ namespace alc
       ssize_t readLength { 0 };
 
       if (!settings_name_steq(key, "v1", &next) || next != nullptr) { return -ENOENT; }
-      if (length != sizeof(s_loaded_record)) { return -EINVAL; }
+      if (length != M_RECORD_BYTES && length != M_RECORD_BYTES_V1) { return -EINVAL; }
 
-      readLength = readCallback(callbackArgument, s_loaded_record, sizeof(s_loaded_record));
-      if (readLength != static_cast<ssize_t>(sizeof(s_loaded_record))) { return -EIO; }
+      // Zero first, so a short (5-byte) record leaves reportSuppress = 0.
+      memset(s_loaded_record, 0, sizeof(s_loaded_record));
+      readLength = readCallback(callbackArgument, s_loaded_record, length);
+      if (readLength != static_cast<ssize_t>(length)) { return -EIO; }
 
       s_record_loaded = true;
       return 0;
@@ -106,6 +117,7 @@ namespace alc
     m_sensitivity_byte = s_loaded_record[2];
     m_delay_code       = s_loaded_record[3] & protocol::M_DELAY_MASK;
     m_mode             = static_cast<protocol::Mode>(s_loaded_record[4]);
+    m_report_suppress  = s_loaded_record[M_RECORD_REPORT_INDEX] & protocol::M_REPORT_SUPPRESS_MASK;
 
     // Reporting is not implemented yet (Task 18). A bench device configured
     // before this firmware may have a report mode stored - coerce it to
@@ -121,7 +133,8 @@ namespace alc
 
   int Settings::save()
   {
-    const uint8_t record[M_RECORD_BYTES] { m_activations, m_cooldown_byte, m_sensitivity_byte, m_delay_code, static_cast<uint8_t>(m_mode) };
+    const uint8_t record[M_RECORD_BYTES] { m_activations,    m_cooldown_byte, m_sensitivity_byte, m_delay_code, static_cast<uint8_t>(m_mode),
+                                           m_report_suppress };
     int result { settings_save_one("params/v1", record, sizeof(record)) };
 
     if (result < 0) { LOG_ERR("Failed to persist settings: %d!", result); }

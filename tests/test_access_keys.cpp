@@ -43,8 +43,7 @@ void run_access_key_tests()
     assert(memcmp(plaintext, vector.plaintext, sizeof(plaintext)) == 0);
 
     // fire_slot1_n1: the opened plaintext decodes to a FIRE command with the
-    // expected minute. confirmId itself is checked separately below, against
-    // M_CONFIRMS[].
+    // expected minute.
     protocol::Command decoded;
     if (protocol::DecodeCommand(plaintext, decoded) && decoded.isFire) {
       assert(decoded.minuteOfDay == 542);
@@ -69,14 +68,6 @@ void run_access_key_tests()
            -EBADMSG);
   }
   assert(fireVectorSeen); // fire_slot1_n1 must be present in M_COMMANDS and decode as FIRE.
-
-  // confirmId - the device's authenticated receipt burst for a FIRE command.
-  for (const vectors::ConfirmVector& vector : vectors::M_CONFIRMS) {
-    uint8_t confirmId[protocol::M_UUID_BYTES] {};
-
-    assert(ConfirmId(vector.dayKey, vector.n, vector.event, confirmId) == 0);
-    assert(memcmp(confirmId, vector.confirmId, sizeof(confirmId)) == 0);
-  }
 
   // Distinct slots on the same day must have unrelated day keys.
   {

@@ -1,11 +1,12 @@
 // Fire fob - Thingy:53 demo tool. BENCH / DEMO ONLY (tools/fire_fob/README.md).
 //
 // Each press of the button sends a FIRE to each MFS in secrets/fire_fob_keys.h, 10 s
-// apart, as the engineer slot in that header, and listens for each unit's FIRE
-// confirmation (confirmId(n, 0x01)): a triple GREEN flash per unit confirmed, one
-// long RED flash per unit not confirmed within 45 s. BLUE while a run is in progress
-// (presses are ignored). A disarmed MFS rehearses (red LED after 10 s); an ARMED MFS
-// FIRES ITS OUTPUTS after 10 s and cannot be stopped.
+// apart, as the engineer slot in that header. Fire and forget: the MFS sends no receipt,
+// so the fob does not listen. One GREEN flash per unit once its FIRE is advertised
+// ("sent", not "received"), one long RED flash per unit whose FIRE could not be sent.
+// BLUE while a run is in progress (presses are ignored). An MFS acts on a FIRE about
+// 100 ms after hearing it, with no countdown: a disarmed MFS rehearses (red LED); an
+// ARMED MFS FIRES ITS OUTPUTS and cannot be stopped.
 //
 // Rules carried over from docs/tan-scheme.md: each sequence number is saved to flash
 // BEFORE its FIRE is advertised, so a reset never reuses an AES-CCM nonce; every FIRE
@@ -39,7 +40,7 @@ namespace alc
     constexpr uint32_t M_DAY_BOUNDARY_SECS { 4 * 3600 };
     constexpr uint32_t M_SECONDS_PER_DAY { 86400 };
     constexpr uint32_t M_SECONDS_PER_MINUTE { 60 };
-    constexpr uint8_t M_PROTOCOL_VERSION { 0x04 };
+    constexpr uint8_t M_PROTOCOL_VERSION { 0x05 };
     constexpr uint8_t M_UUID_BYTES { 16 };
     constexpr uint8_t M_ID_BYTES { 4 };
     constexpr uint8_t M_NONCE_BYTES { 11 };
@@ -48,8 +49,8 @@ namespace alc
     constexpr uint8_t M_SEALED_BYTES { M_PLAINTEXT_BYTES + M_TAG_BYTES };
 
     constexpr int64_t M_STAGGER_MS { 10000 };
-    constexpr int64_t M_CONFIRM_TIMEOUT_MS { 45000 };
     // 30 s per FIRE, as the app: the MFS listens 100 ms every 7.245 s.
+    constexpr int64_t M_ADV_WINDOW_MS { 30000 };
     constexpr uint16_t M_ADV_TIMEOUT_10MS { 3000 };
     constexpr uint16_t M_ADV_INTERVAL_UNITS { 80 };
     constexpr int32_t M_POLL_MS { 20 };
@@ -57,6 +58,7 @@ namespace alc
     constexpr int32_t M_FLASH_OFF_MS { 150 };
     constexpr int32_t M_LONG_FLASH_MS { 1000 };
     constexpr uint8_t M_TRIPLE { 3 };
+    constexpr uint8_t M_SINGLE { 1 };
 
     const gpio_dt_spec s_red    = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
     const gpio_dt_spec s_green  = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
@@ -71,11 +73,6 @@ namespace alc
 
     psa_key_id_t s_keys[M_DEVICE_COUNT] {};
     struct bt_le_ext_adv* s_sets[M_DEVICE_COUNT] {};
-
-    // Shared with the Bluetooth RX thread: the confirmation each device is awaited for.
-    uint8_t s_expected[M_DEVICE_COUNT][M_UUID_BYTES] {};
-    atomic_t s_waiting[M_DEVICE_COUNT] {};
-    atomic_t s_confirmed[M_DEVICE_COUNT] {};
 
     int settingsSet(const char* name, size_t length, settings_read_cb readCb, void* cbArg)
     {
@@ -166,23 +163,6 @@ namespace alc
       gpio_pin_set_dt(&s_blue, blue > 0 ? 1 : 0);
     }
 
-    void onScan(const bt_addr_le_t*, int8_t, uint8_t, struct net_buf_simple* ad)
-    {
-      while (ad->len > 1) {
-        const uint8_t length { net_buf_simple_pull_u8(ad) };
-        if (length == 0 || length > ad->len) { return; }
-        const uint8_t type { net_buf_simple_pull_u8(ad) };
-        const uint8_t* data { static_cast<const uint8_t*>(net_buf_simple_pull_mem(ad, length - 1)) };
-        if (type != BT_DATA_UUID128_ALL || length - 1 != M_UUID_BYTES) { continue; }
-        for (uint8_t index = 0; index < M_DEVICE_COUNT; index++) {
-          if (atomic_get(&s_waiting[index]) && memcmp(data, s_expected[index], M_UUID_BYTES) == 0) {
-            atomic_set(&s_waiting[index], 0);
-            atomic_set(&s_confirmed[index], 1);
-          }
-        }
-      }
-    }
-
     int initKeys()
     {
       psa_status_t status { psa_crypto_init() };
@@ -244,8 +224,6 @@ namespace alc
     int initRadio()
     {
       const struct bt_le_adv_param param BT_LE_ADV_PARAM_INIT(0, M_ADV_INTERVAL_UNITS, M_ADV_INTERVAL_UNITS, nullptr);
-      const struct bt_le_scan_param scan BT_LE_SCAN_PARAM_INIT(BT_LE_SCAN_TYPE_PASSIVE, BT_LE_SCAN_OPT_NONE, BT_GAP_SCAN_FAST_INTERVAL,
-                                                               BT_GAP_SCAN_FAST_INTERVAL);
       int result { bt_enable(nullptr) };
 
       if (result < 0) {
@@ -259,9 +237,7 @@ namespace alc
           return result;
         }
       }
-      result = bt_le_scan_start(&scan, onScan);
-      if (result < 0) { LOG_ERR("Scan start failed: %d!", result); }
-      return result;
+      return 0;
     }
 
     int sendFire(uint8_t index)
@@ -295,22 +271,20 @@ namespace alc
       s_ad[index].data     = s_uuid[index];
       result               = bt_le_ext_adv_set_data(s_sets[index], &s_ad[index], 1, nullptr, 0);
       if (result == 0) {
-        memcpy(s_expected[index], device.confirmIds[n], M_UUID_BYTES);
-        atomic_set(&s_confirmed[index], 0);
-        atomic_set(&s_waiting[index], 1);
         start.timeout = M_ADV_TIMEOUT_10MS;
         result        = bt_le_ext_adv_start(s_sets[index], &start);
       }
       if (result < 0) {
         LOG_ERR("%s: FIRE advert failed: %d!", device.serial, result);
-        atomic_set(&s_waiting[index], 0);
         return result;
       }
       LOG_INF("FIRE -> %s (0x%08X) slot %u n %u minute %u.", device.serial, device.deviceId, fob::keys::M_SLOT, n, minute);
       return 0;
     }
 
-    // One press: FIRE to each device, M_STAGGER_MS apart; confirmations flash as they arrive.
+    // One press: FIRE to each device, M_STAGGER_MS apart, a green flash as each is sent. The run
+    // (and the blue LED) lasts until the last advert has run its 30 s window, so a second press
+    // cannot restart an advertising set that is still sending.
     void runSequence()
     {
       const int64_t startMs { k_uptime_get() };
@@ -331,21 +305,13 @@ namespace alc
             if (sendFire(index) < 0) {
               done[index] = true;
               remaining--;
-              flash(s_red, 1, M_LONG_FLASH_MS);
+              flash(s_red, M_SINGLE, M_LONG_FLASH_MS);
+            } else {
+              flash(s_green, M_SINGLE, M_FLASH_ON_MS);
             }
-          } else if (sent[index] && !done[index] && atomic_get(&s_confirmed[index])) {
+          } else if (sent[index] && !done[index] && nowMs >= dueMs + M_ADV_WINDOW_MS) {
             done[index] = true;
             remaining--;
-            bt_le_ext_adv_stop(s_sets[index]);
-            LOG_INF("Confirmation from %s.", M_DEVICES[index].serial);
-            flash(s_green, M_TRIPLE, M_FLASH_ON_MS);
-          } else if (sent[index] && !done[index] && nowMs >= dueMs + M_CONFIRM_TIMEOUT_MS) {
-            done[index] = true;
-            remaining--;
-            atomic_set(&s_waiting[index], 0);
-            bt_le_ext_adv_stop(s_sets[index]);
-            LOG_WRN("No confirmation from %s within %lld s.", M_DEVICES[index].serial, M_CONFIRM_TIMEOUT_MS / MSEC_PER_SEC);
-            flash(s_red, 1, M_LONG_FLASH_MS);
           }
         }
         k_msleep(M_POLL_MS);

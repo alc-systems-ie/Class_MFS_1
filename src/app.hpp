@@ -14,11 +14,15 @@
 #include "command_scanner.hpp"
 #include "detection_engine.hpp"
 #include "device_clock.hpp"
+#include "fire_gate.hpp"
 #include "fire_sequence.hpp"
 #include "led_indicator.hpp"
 #include "led_sequencer.hpp"
 #include "npm2100.hpp"
 #include "output_switch.hpp"
+#include "report_counter.hpp"
+#include "report_keys.hpp"
+#include "report_policy.hpp"
 #include "scan_policy.hpp"
 #include "settings.hpp"
 
@@ -199,6 +203,23 @@ namespace alc
       // disabled for the whole boot - see m_access_ready.
       int initAccess();
 
+      // Derives the event report key from the KMU device secret, the device ID and
+      // CONFIG_MFS_REPORT_GENERATION, loads the counter floor and reserves the
+      // first block. Called from initAccess() once the settings subsystem is up.
+      // Any failure leaves reports off for the boot - logged, no warning LED: the
+      // device works without them. Generation 0 disables them.
+      int initReports();
+
+      // Seals one event report with the cached battery reading and starts its
+      // 100 ms burst. -EPERM if reports are off or the event is switched off,
+      // -ENOSPC if no counter is reserved, or the crypto or advertiser error. The
+      // counter refill is the main loop's, never this path's.
+      int sendReport(report::ReportEvent event);
+
+      // Reads VBAT into m_battery_mv and the report policy. A failed read logs
+      // and keeps the last value.
+      void readBattery();
+
       // Drains the scanner queue. While the clock is invalid a candidate is offered
       // ONLY to the time-sync check; once valid, ONLY to AccessControl.
       void serviceCandidates();
@@ -312,16 +333,43 @@ namespace alc
       // which the engine also runs as a "cooldown", is not logged as one.
       bool m_logging_cooldown;
 
-      // The FIRE command's 10 s unstoppable countdown and bounded assertion
-      // window. Serviced every main-loop tick; its live latch is ORed into the
-      // output in updateOutputState() and its rehearsal latch lights red. It
-      // self-terminates through the engine one-shot - no second disarm path.
+      // The FIRE command's bounded assertion window, started at once on FIRE.
+      // Serviced every main-loop tick; its live latch is ORed into the output in
+      // updateOutputState() and its rehearsal latch lights red. It
+      // self-terminates through the engine one-shot - no second disarm path - and
+      // every disarm cancels it.
       FireSequence m_fire;
 
-      // The confirmation burst - a non-connectable advertising window opened on
-      // FIRE receipt (both live and rehearsal), carrying confirmId as its
-      // service UUID. Serviced every main-loop tick; see applyCommand().
+      // Holds the fire output back for the 100 ms after a fire condition begins,
+      // while the fired report goes out. Updated only in updateOutputState(); a
+      // falling condition (disarm, fault) cancels the pending fire.
+      FireGate m_fire_gate;
+
+      // The event report burst - a non-connectable advertising window. Serviced
+      // every main-loop tick; started only by sendReport().
       CommandAdvertiser m_advertiser;
+
+      // The report key, derived once at boot. Never logged.
+      uint8_t m_report_key[report::M_REPORT_KEY_BYTES];
+
+      // True once the report key and the first counter block are in place.
+      bool m_reports_ready;
+
+      // The report nonce counter: block-reserved and persisted before use.
+      ReportCounter m_report_counter;
+
+      // Which arm-state and low-battery reports are due.
+      ReportPolicy m_report_policy;
+
+      // Earliest uptime of the next counter refill attempt - a failing store is
+      // retried at M_REPORT_REFILL_RETRY_MS, not every tick.
+      int64_t m_next_refill_ms;
+
+      // Uptime of the last VBAT read - see M_BATTERY_READ_INTERVAL_MS.
+      int64_t m_last_battery_read_ms;
+
+      // The last VBAT reading, mV, carried in every report. -1 = not measured.
+      int32_t m_battery_mv;
 
       // Activation counting, cooldown, the delay, the detection period and the
       // stuck-AWAKE watchdog - in both arm states. Declared after everything its

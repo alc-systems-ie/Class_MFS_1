@@ -51,7 +51,17 @@ Plaintext, replacing `docs/tan-scheme.md` §6.1:
 | 3 | — | sensitivity byte | Settings only |
 | 4–5 | 0–10 | UTC minute of day, LE | every type; ≥ 1440 rejects |
 | 4–5 | 11–15 | reserved — ignored | |
-| 6–7 | — | per-variant extension | MFS_1 must ignore, never validate |
+| 6–7 | — | per-variant extension | MFS_1 must ignore, never validate — **except byte 6 bits 0–3 since 2026-11-24, below** |
+
+> **Amended 2026-11-24 — byte 6, report switches** (`docs/superpowers/specs/2026-11-24-event-reports-design.md`
+> §5.5). Byte 6 bits 0–3 are the event-report switches of a **Settings** command: bit 0
+> low battery, bit 1 activated, bit 2 deactivated, bit 3 fired. A set bit
+> **suppresses** that report, so zero means all on — the default, and what any
+> command that leaves the byte zero means. Bits 4–7 and byte 7 stay reserved and
+> ignored, never validated. Arm and Disarm do not read the byte. They are applied
+> only by a Settings command while Inactive and persisted in `params/v1`, which
+> grew from 5 to 6 bytes (a 5-byte record still loads, all reports on).
+> `protocolVersion` is `0x05` (`0x04` was the FIRE command).
 
 - **Type `00` is reserved and rejects**, like reserved mode: not consumed, logged
   as malformed. An all-zero plaintext therefore does nothing, rather than

@@ -149,7 +149,7 @@ if [ "$last" = "DRY-RUN: nrfutil device protection-get --serial-number 853003346
 if grep -q 'Debug port verified locked (protection-get: All)' "$out"; then pass "lock verified"; else fail "lock verified"; fi
 if grep -q 'Device batch completed (batch_end without error) in [0-9][0-9]* s' "$out"; then pass "batch judged by batch_end, elapsed seconds printed"; else fail "batch judged by batch_end, elapsed seconds printed"; fi
 if grep -q "Key file written: 2 keys, slots $secret_slot and $provision_slot" "$out"; then pass "key file holds both keys at the slots from kmu_slots.hpp"; else fail "key file holds both keys"; fi
-if grep -q 'Derived conf: CONFIG_ALC_DEVICE_SERIAL CONFIG_MFS_DEVICE_ID$' "$out"; then pass "derived conf holds only serial and ID"; else fail "derived conf holds only serial and ID"; fi
+if grep -q 'Derived conf: CONFIG_ALC_DEVICE_SERIAL CONFIG_MFS_DEVICE_ID CONFIG_MFS_REPORT_GENERATION$' "$out"; then pass "derived conf holds only serial, ID and generation"; else fail "derived conf holds only serial, ID and generation"; fi
 if grep -q 'debug-unlocked.conf' "$out"; then fail "locked build must not use debug-unlocked.conf"; else pass "locked build omits debug-unlocked.conf"; fi
 if grep -q 'Sync the clock from the app, then send one Disarm' "$out" && grep -q '500 ms on / 2500 ms off' "$out" && grep -q 'orange triple' "$out" &&
   grep -q 'orange 3 s warning at boot' "$out"; then
@@ -466,6 +466,31 @@ if [ "$status" -ne 0 ] && grep -q 'not found' "$out"; then pass "missing conf re
 make_conf "MFS1-0000-00009" "$fake_secret" "$fake_provision"
 run sh "$script" "$serial" --dry-run
 if [ "$status" -ne 0 ] && [ "$(device_commands)" -eq 0 ]; then pass "conf for another serial refused"; else fail "conf for another serial refused"; fi
+
+echo "Report generation"
+make_conf "$serial" "$fake_secret" "$fake_provision"
+cp "$work/secrets/$serial.conf" "$work/conf.before"
+run sh "$script" "$serial" --dry-run
+if [ "$status" -eq 0 ] && grep -qx 'Report generation: 0 -> 1 (not saved).' "$out" && grep -q '^Derived conf:.*CONFIG_MFS_REPORT_GENERATION' "$out"; then
+  pass "no generation line: 0 -> 1, in the derived conf"
+else fail "no generation line: 0 -> 1, in the derived conf"; fi
+if cmp -s "$work/conf.before" "$work/secrets/$serial.conf"; then pass "dry run leaves the conf byte-identical"; else fail "dry run leaves the conf byte-identical"; fi
+echo 'CONFIG_MFS_REPORT_GENERATION=41' >> "$work/secrets/$serial.conf"
+cp "$work/secrets/$serial.conf" "$work/conf.before"
+run sh "$script" "$serial" --dry-run
+if [ "$status" -eq 0 ] && grep -qx 'Report generation: 41 -> 42 (not saved).' "$out"; then pass "generation 41 -> 42"; else fail "generation 41 -> 42"; fi
+if cmp -s "$work/conf.before" "$work/secrets/$serial.conf"; then pass "dry run leaves a generation conf byte-identical"; else fail "dry run leaves a generation conf byte-identical"; fi
+run sh "$script" "$serial" --build --dry-run
+if [ "$status" -eq 0 ] && grep -qx 'Report generation: 41 -> 42 (not saved).' "$out"; then pass "--build does not save"; else fail "--build does not save"; fi
+if [ "$status" -eq 0 ] && grep -q 'never flash it by hand' "$out"; then pass "--build warns against a hand flash"; else fail "--build warns against a hand flash"; fi
+sed 's/^CONFIG_MFS_REPORT_GENERATION=.*/CONFIG_MFS_REPORT_GENERATION=65535/' "$work/conf.before" > "$work/secrets/$serial.conf"
+run sh "$script" "$serial" --dry-run
+if [ "$status" -ne 0 ] && grep -q 'report generation' "$out" && ! grep -q 'west build' "$out"; then pass "generation 65535 refused"; else fail "generation 65535 refused"; fi
+for bad in abc 007 -1 ""; do
+  sed "s/^CONFIG_MFS_REPORT_GENERATION=.*/CONFIG_MFS_REPORT_GENERATION=$bad/" "$work/conf.before" > "$work/secrets/$serial.conf"
+  run sh "$script" "$serial" --dry-run
+  if [ "$status" -ne 0 ] && grep -q 'report generation' "$out" && ! grep -q 'west build' "$out"; then pass "generation '$bad' refused"; else fail "generation '$bad' refused"; fi
+done
 
 echo
 echo "$passed passed, $failed failed."

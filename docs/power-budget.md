@@ -324,7 +324,7 @@ window. Making this an app-set option is tracked in `docs/todo.md`.
 | RX, LNA on | 2.9 mA | 100 ms / 5970 ms = 1.675% | **48.6 µA** |
 | Power down | 45 nA | ~98% | 0.04 µA |
 | PG (transition) | 1.1 mA | µs per scan | negligible |
-| TX, +10 dBm (POUTB) | 38 mA | FIRE confirmation burst only | negligible |
+| TX, +10 dBm (POUTB) | 38 mA | event reports only (below) | negligible |
 
 **+48.6 µA: 68.8 µA → 117.4 µA, 2.4 years → ~1.4 years** on the 1450 mAh
 CR123A. Continuous-scan periods (the 10 s arming exit delay, a pending armed
@@ -339,6 +339,19 @@ than feared — though still the largest single change this budget has seen.
 splits the requested +10 dBm at the antenna (`CONFIG_BT_CTLR_TX_PWR_ANTENNA=10`)
 into 0 dBm from the SoC plus 10 dB from the FEM. POUTA (+20 dB) is for bench
 tools only.
+
+**Event reports and the 6 h battery read — negligible (2026-11-24,
+`docs/superpowers/specs/2026-11-24-event-reports-design.md` §5.3–§5.4).** The device's
+only transmissions are event reports, sent only while armed: a 100 ms burst at a 20 ms
+interval, about 5 advertising events × 3 channels. One 16-byte-UUID advert is ~34 bytes
+on air, ~0.27 ms at LE 1M, so a report is ~5 × 3 × 0.27 ≈ **4 ms of TX**. At the FEM's
+38 mA at POUTB (table §2, nRF21540 PS I<sub>TX_10dBm</sub>), rounded up to ~45 mA for the
+SoC radio at 0 dBm and ramp-up (the SoC TX current is not tabulated here), that is
+~0.2 mC per report. Reports are rare — an arm, a disarm, a fire, a low battery — so even
+an implausible 100 a day averages **~0.2 µA**, and a realistic handful a day ~0.01 µA. The
+V<sub>BAT</sub> read every 6 h is a short PMIC ADC conversion over I<sup>2</sup>C — of order
+a millisecond of CPU at 2.6 mA (table §2), four times a day: nanoamps. Neither moves the
+~117 µA average.
 
 ### 5.1 Transmit was ~40 dB low in GPIO+SPI mode — fixed 2026-11-16
 
@@ -740,7 +753,8 @@ to day N and a lost day-N sheet works again.
 **Decision: the production engineer/provisioner tool is Android.** Arbitrary
 manufacturer-specific advertising data is available, so §8.7.1 is adopted as
 written: the tool advertises, the device stays scan-only for its entire life and
-never advertises at all.
+never advertises at all. (Still true for time sync and every command. The one later
+exception is the armed device's one-way **event reports**, 2026-11-24 — §5 above.)
 
 **Constraint retained anyway: every advertising payload fits one 128-bit service
 UUID — 16 bytes.** This keeps an iOS tool possible without a protocol change, and it
