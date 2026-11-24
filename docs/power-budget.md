@@ -326,7 +326,7 @@ window. Making this an app-set option is tracked in `docs/todo.md`.
 | Power down | 45 nA | ~98% | 0.04 µA |
 | PG (transition) | 1.1 mA | µs per scan | negligible |
 | TX, +10 dBm (POUTB) | 38 mA | event reports only (below) | negligible |
-| TX, +20 dBm (POUTA) | ~110 mA typ, nRF21540 PS (to confirm) | the fired report only: one 100 ms burst per device life | negligible |
+| TX, +20 dBm (POUTA) | ~110 mA (to confirm) | the fired report only: one 100 ms burst per fire | negligible |
 
 **+48.6 µA: 68.8 µA → 117.4 µA, 2.4 years → ~1.4 years** on the 1450 mAh
 CR123A. Continuous-scan periods (the 10 s arming exit delay, a pending armed
@@ -341,10 +341,10 @@ than feared — though still the largest single change this budget has seen.
 the Irish EIRP allocation: the controller splits the requested +10 dBm at the antenna
 (`CONFIG_BT_CTLR_TX_PWR_ANTENNA=10`) into 0 dBm from the SoC plus 10 dB from the FEM.
 **The fired report alone goes at +20 dBm (POUTA)** (owner 2026-11-24,
-`docs/superpowers/specs/2026-11-24-fire-report-power-design.md`): at the ETSI EN 300 328 100 mW EIRP limit before antenna gain, which the owner
-accepted for this case. MPSL picks the preset per transmission (runtime PA gain
+`docs/superpowers/specs/2026-11-24-fire-report-power-design.md`): at the ETSI EN 300 328 100 mW EIRP limit before antenna gain, so with any positive antenna gain or POUTA tolerance the fired report may exceed it; the owner
+accepted that for this one case (2026-11-24). MPSL picks the preset per transmission (runtime PA gain
 control, GPIO-only mode, never SPI). POUTA draws ~110 mA typ (nRF21540 PS, to confirm),
-but it is one ~4 ms-on-air, 100 ms burst once per device life, so the budget does not move.
+but it is one ~4 ms-on-air, 100 ms burst per fire, so the budget does not move.
 
 **Event reports and the 6 h battery read — negligible (2026-11-24,
 `docs/superpowers/specs/2026-11-24-event-reports-design.md` §5.3–§5.4).** The device's

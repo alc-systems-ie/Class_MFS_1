@@ -242,7 +242,8 @@ Constraints from that analysis that are easy to violate by accident:
   (`docs/todo.md`). **POUTB (+10 dB) on every transmission except the
   fired event report**, for Irish EIRP compliance. The fired report goes at
   **+20 dBm (POUTA)** (owner 2026-11-24, `docs/superpowers/specs/2026-11-24-fire-report-power-design.md`) — at the ETSI EN 300 328 100 mW
-  EIRP limit before antenna gain, which the owner accepted for this case.
+  EIRP limit before antenna gain, so with any positive antenna gain or POUTA tolerance the fired report may exceed it; the owner accepted
+  that for this one case (2026-11-24).
 - **The nRF21540 runs in MPSL's GPIO-only mode, never GPIO+SPI** (2026-11-16,
   `docs/power-budget.md` §5.1). In GPIO+SPI mode MPSL wrote TX_GAIN 6–8 before
   every transmission, so every MFS and the Drawer Master transmitted ~40 dB low

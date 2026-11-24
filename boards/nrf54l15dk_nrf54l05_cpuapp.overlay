@@ -142,7 +142,8 @@
      * GPIO-only mode - no spi-if (2026-11-16, power-budget section 5.1). With
      * spi-if, MPSL ran it in GPIO+SPI mode and wrote TX_GAIN 6-8 before every
      * transmission: ~40 dB below the factory POUTB preset. Without spi-if, MPSL
-     * holds MODE high, selecting POUTB (+10 dB, factory calibrated). Do not
+     * drives MODE per transmission (runtime PA gain control): POUTB (+10 dB) by
+     * default, POUTA (+20 dB) for the fired report only (owner 2026-11-24). Do not
      * restore spi-if without an RSSI check against a bare-DK reference. */
     nrf_radio_fem: nrf21540_fem {
         compatible  = "nordic,nrf21540-fem";

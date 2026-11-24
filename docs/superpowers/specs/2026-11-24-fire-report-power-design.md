@@ -13,7 +13,8 @@ first end-to-end relay (00008, motion fire, 40 cm from the hub) arrived at −53
   low battery stay at **+10 dBm** (POUTB). The LNA/receive path is unchanged.
 - **Regulatory (owner ruling 2026-11-24):** the standing rule "POUTB (+10 dB) only, per the Irish EIRP
   allocation" gains one exception — the fired report at +20 dBm. +20 dBm conducted is already at the
-  ETSI EN 300 328 100 mW EIRP limit before antenna gain; the owner accepted that for this case.
+  ETSI EN 300 328 100 mW EIRP limit before antenna gain, so with any positive antenna gain or POUTA tolerance the fired report may exceed it; the owner accepted
+  that for this one case (2026-11-24).
 - **Mechanism:** `CONFIG_MPSL_FEM_NRF21540_RUNTIME_PA_GAIN_CONTROL=y` (MPSL drives the MODE pin per
   transmission, choosing POUTA or POUTB from the requested power; GPIO-only mode is kept) and
   `CONFIG_BT_CTLR_TX_PWR_DYNAMIC_CONTROL=y` (per-advert-set power via the vendor HCI command
