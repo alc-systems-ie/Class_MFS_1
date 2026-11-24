@@ -43,5 +43,5 @@ only — no device secret leaves the Mac), builds, and flashes.
 - The MFS clock must be synced (as for any command), and the order of firing is kept by
   the 10 s stagger (an MFS hears a command 0–7.3 s after it starts).
 - Compile check without real keys: `python3 tools/fire_fob/gen_fob_keys.py --fake --out <dir>`
-  writes an all-zero header there (never flash it); build with `-DFOB_KEYS_DIR=<dir>`.
+  writes an all-zero header there (never flash it); build with the environment variable `FOB_KEYS_DIR=<dir>` set (a `-D` does not reach the app image under sysbuild).
 - Radio: nRF21540 at POUTB, **+10 dBm** (GPIO mode), within the Irish EIRP allocation.
