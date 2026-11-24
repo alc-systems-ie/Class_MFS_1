@@ -282,8 +282,8 @@ the NM); counter reservation (block, refill, reset skip); the report policy tabl
   queue** beside the per-device report slots (which are keyed by device ID and cannot
   hold these), oldest first, ACKed like the existing records, dropping the oldest when
   full. The builder sizes it. **(builder's call)**
-- The bridge publishes each one to the **local** broker, e.g.
-  `alc/hub/<hub serial>/uuid` with `{"uuid", "rssi", "utc", "utc_known"}`. `utc` is
+- The bridge publishes each one on
+  **`CLASS/<hub serial>/uuid`** (owner, 2026-11-24; on the CLASS broker, else the local one) with `{"uuid", "rssi", "utc", "utc_known"}`. `utc` is
   when the hub heard it: the bridge's NTP-disciplined clock minus the record's `age`.
   A record that lost its age across a hub reset (`age -1`) carries the forwarding time
   with `utc_known: false`, and the NM passes that on (§7.2). **(builder's call)**
@@ -302,7 +302,7 @@ mini beside the bridge under launchd, like the bridge.)
   where devices are flashed; the stand-in adds a long-running reader of them, not a new
   copy. It is the only place outside the device that can read reports; treat the host as
   a secrets host, and never log a key or a derived key.
-- **Input:** subscribes to `alc/hub/+/uuid` on the local broker.
+- **Input:** subscribes to `CLASS/+/uuid` on the broker the bridge publishes to (§6).
 - **Matching:** for each UUID, look up `reportId` in a precomputed table of each
   device's window `[floor, floor + 1024)` under each generation it is trying (§4.3: from
   the last heard `g` up to the file's current `g`, newest first); on a hit, decrypt and
