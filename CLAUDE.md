@@ -38,7 +38,7 @@ left it powered down in the RF path and range was ~5 m — see
 | Scan | **100 ms passive every 7.245 s** (1.38% RX duty cycle; 5.970 s until 2026-11-14) |
 | ADXL367 | Continuous measurement mode, 100 Hz ODR |
 | nRF21540 FEM | **Fitted, driven by MPSL in GPIO-only mode** — LNA on for every scan (no bypass mode), POUTB +10 dBm on TX via the MODE pin. **Never GPIO+SPI** (transmitted ~40 dB low, 2026-11-16) |
-| Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; protocol version **0x05** (explicit command type 0x03, FIRE 0x04, event reports 0x05) |
+| Access | **Day keys** — AES-128-CCM commands, rotating IDs, 8 slots, window 16. No paper TANs; explicit command type; protocol version **0x05** since 2026-11-24 (event reports; 0x04 was FIRE, 0x03 the command types) |
 | Day boundary | **04:00 UTC**, no multi-day validity window |
 | Timekeeping | **LFXO** 32.768 kHz (fitted), GRTC-sourced. **No external RTC** (BOM, reaffirmed 2026-09-13). Invalid on every boot until provisioner sync |
 | Battery | CR123A, **~1.4 year** expected life at ~117 µA average (69 µA + 49 µA FEM LNA) |

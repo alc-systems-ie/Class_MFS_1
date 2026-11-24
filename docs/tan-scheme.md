@@ -201,7 +201,7 @@ The device is scan-only. The phone advertises one 128-bit service UUID carrying 
 
 ### 6.1 Wire format
 
-**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section (including `protocolVersion` `0x03`) where they disagree.
+**Amended 2026-09-14** — command types: `docs/superpowers/specs/2026-09-14-command-types-amendment.md` supersedes this section where they disagree. (It set `protocolVersion` `0x03`; the current value is `0x05` — §3's `protocolVersion` row. Byte 6 bits 0–3 are the event-report switches since 2026-11-24, amendment §2.1.)
 
 
 On-air order (a scanner's hex dump; the app builds the UUID string reversed):
