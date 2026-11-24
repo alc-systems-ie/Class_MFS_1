@@ -47,6 +47,13 @@ only stored records are `params/v1` (settings - ruled out) and `access/v1` (day 
 slot counters), and no code path from either to detection was found. Untested: days of uptime
 after a live fire, repeated presses, a fire into a real e-match load.
 
+## Update 11-24
+
+- **00004 still detects** (owner, 2026-11-24), about 4.9 days after its 11-19 12:14 UTC reflash
+  and well past the 36.4 h tick-wrap mark (twice over). Uptime alone did not reproduce the fault
+  on this image, which weakens the tick-wrap hypothesis. It does not rule out uptime combined
+  with the 11-16 history (live FIREs, then days running).
+
 ## State at close (11-19)
 
 - **00004**: unlocked + `CONFIG_LOG_BACKEND_RTT_MODE_OVERWRITE=y`, soaking. When it stops
