@@ -18,6 +18,7 @@ void run_scan_policy_tests();
 void run_key_ref_tests();
 void run_key_check_tests();
 void run_report_key_tests();
+void run_report_counter_tests();
 
 int main()
 {
@@ -39,6 +40,7 @@ int main()
   run_key_ref_tests();
   run_key_check_tests();
   run_report_key_tests();
+  run_report_counter_tests();
   printf("ALL TESTS PASSED\n");
   return 0;
 }
