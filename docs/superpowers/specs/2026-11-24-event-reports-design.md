@@ -270,13 +270,15 @@ the NM); counter reservation (block, refill, reset skip); the report policy tabl
 - The DK listener additionally forwards **every non-connectable advert whose data is
   exactly one AD structure: a Complete List of 128-bit Service UUIDs holding one UUID**
   (the MFS report shape — `CommandAdvertiser` sends nothing else), as a new line, e.g.
-  `MFSUUID <32 hex> rssi <n> rec <r> age <ms|-1>`. It cannot tell a report from a
-  command or a stranger's advert of the same shape, and does not try: the NM sorts them.
+  `MFSUUID <32 hex> rssi <n> rec <r> age <ms|-1>`. Phone commands are
+  connectable adverts (class_app's `ble_peripheral` sets connectable; Android adds a Flags
+  AD, iOS is always connectable) and fail the shape filter, so they are not relayed. The hub
+  cannot tell a report from a stranger's advert of the same shape or a fob FIRE, and does not
+  try: the NM sorts them.
   The tight shape filter keeps strangers' traffic rare; such adverts are public
   broadcasts, so storing and relaying them to the local broker is acceptable.
   **(builder's call)**
-- **Identical UUIDs are de-duplicated** at the hub (a burst sends ~5 copies; a phone
-  repeats a command for 30 s) — e.g. drop a UUID seen in the last 60 s.
+- **Identical UUIDs are de-duplicated** at the hub (a report burst sends ~5 copies) — e.g. drop a UUID seen in the last 60 s.
   **(builder's call)**
 - **Reports must survive a bridge outage**: a **new, single, anonymous store-and-forward
   queue** beside the per-device report slots (which are keyed by device ID and cannot
