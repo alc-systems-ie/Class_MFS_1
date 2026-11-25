@@ -16,8 +16,23 @@ is reflashed.
 Serial format (CLAUDE.md, owner 2026-09-15): MODEL-MMYY-NNNNN, the batch number
 as 5 hex digits.
 
+Per device it also writes two QR codes into <out>/<batch>-qr/ for Network Manager
+enrolment (class_nm):
+  - <serial>-label.png: CLASS1:D:<serial>:<deviceId>. Public identity only; it is
+    printed on the device label.
+  - <serial>-secret.png: CLASS1:S:<serial>:<deviceId>:<secret hex>:<provision hex>:0
+    (report generation 0 at generation time). It carries both keys: mode 0600, never
+    printed or logged, and to be scanned once into the NM and then kept offline.
+QR output needs segno, imported lazily. Without it the script still runs and prints
+"QR codes skipped". To get the QR codes:
+    uv run --with segno --with openpyxl python3 tools/gen_fleet_credentials.py --model MFS1 --mmyy 1126 --count 10
+
+Device IDs 0x00000000-0x000000FF are never generated: the Network Manager reserves
+them (it uses small IDs as placeholders for retired hub positions).
+
 Run from the class_mfs_1 root, e.g. for ten devices made November 2026:
     python3 tools/gen_fleet_credentials.py --model MFS1 --mmyy 1126 --count 10
+Use --out-dir to write somewhere other than secrets/ (the tests use a temporary directory).
 """
 import argparse
 import os
@@ -32,10 +47,53 @@ from openpyxl.styles import Alignment, Font, PatternFill
 M_KEY_BYTES = 32
 M_ID_BYTES = 4
 M_FONT = "Arial"
+M_RESERVED_ID_MAX = 0xFF
+M_QR_SCALE = 8
 
 
 def serial_of(model: str, mmyy: str, index: int) -> str:
     return f"{model}-{mmyy}-{index:05X}"
+
+
+def newDeviceId(usedIds: set, draw=None) -> int:
+    """Returns a random device ID above the reserved range and not already used."""
+    if draw is None:
+        def draw() -> int:
+            return int.from_bytes(secrets.token_bytes(M_ID_BYTES), "big")
+    deviceId = draw()
+    while deviceId <= M_RESERVED_ID_MAX or deviceId in usedIds:
+        deviceId = draw()
+    return deviceId
+
+
+def labelQrText(serial: str, device_id: str) -> str:
+    return f"CLASS1:D:{serial}:{device_id}"
+
+
+def secretQrText(serial: str, device_id: str, secret: str, provision: str) -> str:
+    return f"CLASS1:S:{serial}:{device_id}:{secret}:{provision}:0"
+
+
+def writeQrPng(segno, text: str, path: pathlib.Path, mode: int) -> None:
+    # O_EXCL: never overwrite. The explicit mode keeps the secret PNG owner-only.
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(descriptor, "wb") as handle:
+        segno.make(text, error="m").save(handle, kind="png", scale=M_QR_SCALE)
+
+
+def writeQrCodes(qr_dir: pathlib.Path, rows: list) -> bool:
+    """Writes the label and secret QR PNGs. Returns False when segno is not installed."""
+    try:
+        import segno
+    except ImportError:
+        return False
+    qr_dir.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(qr_dir, 0o700)
+    for row in rows:
+        writeQrPng(segno, labelQrText(row["serial"], row["id"]), qr_dir / f"{row['serial']}-label.png", 0o644)
+        writeQrPng(segno, secretQrText(row["serial"], row["id"], row["secret"], row["provision"]),
+                   qr_dir / f"{row['serial']}-secret.png", 0o600)
+    return True
 
 
 def conf_text(serial: str, device_id: str, secret: str, provision: str) -> str:
@@ -113,6 +171,7 @@ def main() -> None:
     parser.add_argument("--mmyy", required=True, help="month and year made, e.g. 1126")
     parser.add_argument("--count", type=int, required=True, help="number of devices")
     parser.add_argument("--first", type=int, default=1, help="first batch number (default 1)")
+    parser.add_argument("--out-dir", type=pathlib.Path, default=None, help="output directory (default: <class_mfs_1>/secrets)")
     args = parser.parse_args()
 
     if not re.fullmatch(r"[A-Z0-9]{4}", args.model):
@@ -127,23 +186,22 @@ def main() -> None:
     os.umask(0o077)
 
     here = pathlib.Path(__file__).resolve().parent.parent
-    out_dir = here / "secrets"
+    out_dir = args.out_dir.resolve() if args.out_dir else here / "secrets"
+    qr_dir = out_dir / f"{args.model}-{args.mmyy}-qr"
     batch = f"{args.model}-{args.mmyy}"
     workbook_path = out_dir / f"{batch}-credentials.xlsx"
     serials = [serial_of(args.model, args.mmyy, args.first + offset) for offset in range(args.count)]
 
-    existing = [p for p in [workbook_path] + [out_dir / f"{s}.conf" for s in serials] if p.exists()]
+    existing = [p for p in [workbook_path, qr_dir] + [out_dir / f"{s}.conf" for s in serials] if p.exists()]
     if existing:
         sys.exit("Refusing to overwrite - a flashed device would be locked out:\n  " + "\n  ".join(str(p) for p in existing))
 
-    out_dir.mkdir(mode=0o700, exist_ok=True)
+    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(out_dir, 0o700)
     used_ids = set()
     rows = []
     for serial in serials:
-        device_id = 0
-        while device_id == 0 or device_id in used_ids:
-            device_id = int.from_bytes(secrets.token_bytes(M_ID_BYTES), "big")
+        device_id = newDeviceId(used_ids)
         used_ids.add(device_id)
         secret = secrets.token_hex(M_KEY_BYTES).upper()
         provision = secrets.token_hex(M_KEY_BYTES).upper()
@@ -157,7 +215,11 @@ def main() -> None:
             handle.write(conf_text(serial, row["id"], secret, provision))
 
     write_workbook(workbook_path, batch, rows)
-    print(f"Wrote {len(rows)} credential files and {workbook_path.relative_to(here)}.")
+    print(f"Wrote {len(rows)} credential files and {workbook_path}.")
+    if writeQrCodes(qr_dir, rows):
+        print(f"Wrote {2 * len(rows)} QR codes into {qr_dir}.")
+    else:
+        print("QR codes skipped (install segno: uv run --with segno --with openpyxl python3 tools/gen_fleet_credentials.py ...).")
     for row in rows:
         print(f"  {row['serial']}  ID {row['id']}")
 

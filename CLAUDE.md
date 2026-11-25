@@ -507,6 +507,15 @@ DK is **1057755043**. `sh tools/test_flash_device.sh` is the host test of the sc
 (dry-run only, fake keys) — run it **and** `make test` after touching the script
 (`make test` does not run it).
 
+**Credentials generator and the Network Manager** (`tools/gen_fleet_credentials.py`). Run it as
+`uv run --with segno --with openpyxl python3 tools/gen_fleet_credentials.py --model MFS1 --mmyy 1126 --count 10`
+and it also writes, per device, into `secrets/<batch>-qr/`: `<serial>-label.png`
+(`CLASS1:D:<serial>:<deviceId>`, public) and `<serial>-secret.png`
+(`CLASS1:S:<serial>:<deviceId>:<secret hex>:<provision hex>:0`, generation 0, mode 0600, carries both keys:
+scan it once into the NM, keep it offline, never print or log its text). Without segno the script still
+runs and prints "QR codes skipped". `--out-dir` redirects all output away from `secrets/` (tests use a temporary
+directory). **Device IDs 0x00000000-0x000000FF are never generated**: the NM reserves them (placeholders for retired hub positions).
+
 `--keep-nvs` is **withdrawn**: every flash erases NVS — the engineer slots' sequence
 counters and the day floor — so the device restarts at sequence 0 while the app's
 counters carry on: a slot with more than 16 Sends today then gets the counter
