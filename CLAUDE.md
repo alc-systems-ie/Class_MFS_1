@@ -514,7 +514,7 @@ and it also writes, per device, into `secrets/<batch>-qr/`: `<serial>-label.png`
 (`CLASS1:S:<serial>:<deviceId>:<secret hex>:<provision hex>:0`, generation 0, mode 0600, carries both keys:
 scan it once into the NM, keep it offline, never print or log its text). Without segno the script still
 runs and prints "QR codes skipped". `--out-dir` redirects all output away from `secrets/` (tests use a temporary
-directory). **Device IDs 0x00000000-0x000000FF are never generated**: the NM reserves them (placeholders for retired hub positions).
+directory; it must not already exist). All PNGs, labels included, are 0600. **Device IDs 0x00000000-0x000000FF are never generated**: the NM reserves them (placeholders for retired hub positions).
 
 `--keep-nvs` is **withdrawn**: every flash erases NVS — the engineer slots' sequence
 counters and the day floor — so the device restarts at sequence 0 while the app's
@@ -591,6 +591,7 @@ The established pattern for driver classes in this workspace is a plain `g++` te
 ```sh
 make test          # compiles driver + tests/test_*.cpp into ./test_runner and runs it
 sh tools/test_flash_device.sh   # the flash script, dry-run only, fake keys
+uv run --with segno --with openpyxl python3 tools/test_gen_fleet_credentials.py   # credentials generator, temp dir only
 make clean
 ```
 

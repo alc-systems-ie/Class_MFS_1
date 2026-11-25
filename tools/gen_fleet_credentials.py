@@ -19,7 +19,8 @@ as 5 hex digits.
 Per device it also writes two QR codes into <out>/<batch>-qr/ for Network Manager
 enrolment (class_nm):
   - <serial>-label.png: CLASS1:D:<serial>:<deviceId>. Public identity only; it is
-    printed on the device label.
+    printed on the device label. Written 0600 like everything else here (umask 077):
+    deliberately not 0644, so the whole batch directory stays owner-only.
   - <serial>-secret.png: CLASS1:S:<serial>:<deviceId>:<secret hex>:<provision hex>:0
     (report generation 0 at generation time). It carries both keys: mode 0600, never
     printed or logged, and to be scanned once into the NM and then kept offline.
@@ -75,7 +76,7 @@ def secretQrText(serial: str, device_id: str, secret: str, provision: str) -> st
 
 
 def writeQrPng(segno, text: str, path: pathlib.Path, mode: int) -> None:
-    # O_EXCL: never overwrite. The explicit mode keeps the secret PNG owner-only.
+    # O_EXCL: never overwrite. Every PNG is owner-only (the label is public but shares the 0700 directory).
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     with os.fdopen(descriptor, "wb") as handle:
         segno.make(text, error="m").save(handle, kind="png", scale=M_QR_SCALE)
@@ -90,7 +91,7 @@ def writeQrCodes(qr_dir: pathlib.Path, rows: list) -> bool:
     qr_dir.mkdir(mode=0o700, exist_ok=True)
     os.chmod(qr_dir, 0o700)
     for row in rows:
-        writeQrPng(segno, labelQrText(row["serial"], row["id"]), qr_dir / f"{row['serial']}-label.png", 0o644)
+        writeQrPng(segno, labelQrText(row["serial"], row["id"]), qr_dir / f"{row['serial']}-label.png", 0o600)
         writeQrPng(segno, secretQrText(row["serial"], row["id"], row["secret"], row["provision"]),
                    qr_dir / f"{row['serial']}-secret.png", 0o600)
     return True
@@ -196,8 +197,14 @@ def main() -> None:
     if existing:
         sys.exit("Refusing to overwrite - a flashed device would be locked out:\n  " + "\n  ".join(str(p) for p in existing))
 
+    # Only a directory this run creates is chmodded: a pre-existing --out-dir keeps its owner's mode.
+    default_dir = here / "secrets"
+    if out_dir.exists() and out_dir != default_dir:
+        sys.exit(f"Refusing to use the existing --out-dir {out_dir}: give a directory that does not exist yet.")
+    created = not out_dir.exists()
     out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(out_dir, 0o700)
+    if created or out_dir == default_dir:
+        os.chmod(out_dir, 0o700)
     used_ids = set()
     rows = []
     for serial in serials:
